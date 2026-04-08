@@ -6,6 +6,7 @@ import { Resend } from "resend";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
+import { registerMcp } from "./mcp";
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -57,6 +58,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── WebSocket ─────────────────────────────────────────────────
   setupWebSocket(httpServer);
+
+  // ── MCP Server ────────────────────────────────────────────────
+  registerMcp(app);
 
   // ── Health ────────────────────────────────────────────────────
   app.get("/health", (_req, res) => {
