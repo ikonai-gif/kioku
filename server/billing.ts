@@ -43,18 +43,38 @@ function planFromPriceId(priceId: string): string {
   return "starter";
 }
 
-// ── Auth helper — resolves userId from Bearer token (apiKey) or session ───────
+// ── Auth helper — resolves userId from Bearer/API key or x-session-token JWT ──
 async function resolveUser(req: Request): Promise<number | null> {
+  // X-API-Key header
+  const apiKeyHeader = req.headers["x-api-key"] as string | undefined;
+  if (apiKeyHeader && apiKeyHeader.startsWith("kk_")) {
+    const user = await storage.getUserByApiKey(apiKeyHeader);
+    if (user) return user.id;
+  }
+
   // Bearer token (API key)
   const authHeader = req.headers["authorization"] ?? "";
   if (authHeader.startsWith("Bearer ")) {
     const key = authHeader.slice(7).trim();
-    if (key) {
+    if (key.startsWith("kk_")) {
       const user = await storage.getUserByApiKey(key);
       return user?.id ?? null;
     }
   }
-  // Session (dashboard)
+
+  // x-session-token header (JWT or demo-session)
+  const sessionToken = req.headers["x-session-token"] as string | undefined;
+  if (sessionToken === "demo-session") return 1; // demo user
+  if (sessionToken) {
+    try {
+      const jwt = await import("jsonwebtoken");
+      const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
+      const payload = jwt.default.verify(sessionToken, JWT_SECRET) as { userId: number };
+      return payload.userId ?? null;
+    } catch {}
+  }
+
+  // Express session fallback
   const session = (req as any).session;
   return session?.userId ?? null;
 }
