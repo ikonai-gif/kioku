@@ -13,7 +13,7 @@ function KiokuLogo({ size = 32 }: { size?: number }) {
   return (
     <img
       src={logoSrc}
-      alt="KIOKU"
+      alt="KIOKU™ — Agent Control Center by IKONBAI™"
       width={size}
       height={size}
       style={{ borderRadius: 8, objectFit: "cover", flexShrink: 0 }}
@@ -60,7 +60,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2.5">
             <KiokuLogo size={28} />
             <div>
-              <div className="text-sm font-semibold text-sidebar-foreground tracking-tight">KIOKU™</div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-semibold text-sidebar-foreground tracking-tight">KIOKU™</span>
+                <span className="text-[9px] font-semibold uppercase tracking-widest text-yellow-400 bg-yellow-400/10 px-1 py-0.5 rounded border border-yellow-400/20">Beta</span>
+              </div>
               <div className="text-[10px] text-sidebar-foreground/50 -mt-0.5">Agent Control Center</div>
             </div>
           </div>
@@ -108,8 +111,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <LogOut className="w-3.5 h-3.5" />
             </Button>
           </div>
-          <div className="px-3 pt-1">
-            <p className="text-[9px] text-sidebar-foreground/25">IKONBAI™, Inc. · Patent Pending</p>
+          <div className="px-3 pt-1 space-y-0.5">
+            <p className="text-[9px] text-sidebar-foreground/25">© {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending</p>
+            <div className="flex gap-2">
+              <a href="#/privacy" className="text-[9px] text-sidebar-foreground/30 hover:text-sidebar-foreground/60 underline">Privacy</a>
+              <a href="#/terms" className="text-[9px] text-sidebar-foreground/30 hover:text-sidebar-foreground/60 underline">Terms</a>
+            </div>
           </div>
         </div>
       </aside>
@@ -120,6 +127,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="flex items-center gap-2">
           <KiokuLogo size={24} />
           <span className="text-sm font-semibold text-sidebar-foreground">KIOKU™</span>
+          <span className="text-[9px] font-semibold uppercase tracking-widest text-yellow-400 bg-yellow-400/10 px-1 py-0.5 rounded border border-yellow-400/20">Beta</span>
         </div>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="w-9 h-9 p-0 text-sidebar-foreground/70" onClick={toggle}>
@@ -146,7 +154,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <div className="flex items-center gap-2.5">
                 <KiokuLogo size={26} />
                 <div>
-                  <div className="text-sm font-semibold text-sidebar-foreground">KIOKU™</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-semibold text-sidebar-foreground">KIOKU™</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-widest text-yellow-400 bg-yellow-400/10 px-1 py-0.5 rounded border border-yellow-400/20">Beta</span>
+                  </div>
                   <div className="text-[10px] text-sidebar-foreground/50">Agent Control Center</div>
                 </div>
               </div>
@@ -190,7 +201,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               >
                 <LogOut className="w-3.5 h-3.5 mr-2" /> Sign out
               </Button>
-              <p className="text-[9px] text-sidebar-foreground/25">IKONBAI™, Inc. · Patent Pending</p>
+              <p className="text-[9px] text-sidebar-foreground/25">© {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending</p>
+              <div className="flex gap-2">
+                <a href="#/privacy" onClick={() => setDrawerOpen(false)} className="text-[9px] text-sidebar-foreground/30 hover:text-sidebar-foreground/60 underline">Privacy</a>
+                <a href="#/terms" onClick={() => setDrawerOpen(false)} className="text-[9px] text-sidebar-foreground/30 hover:text-sidebar-foreground/60 underline">Terms</a>
+              </div>
             </div>
           </div>
         </div>
