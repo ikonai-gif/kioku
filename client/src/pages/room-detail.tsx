@@ -148,6 +148,16 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       </div>
 
       {/* ── Messages area ────────────────────────────────────────────────── */}
+      {/* ── AI Disclosure (FTC/EU AI Act) ──────────────────────────────── */}
+      <div className="mx-3 md:mx-5 mt-2 px-3 py-2 rounded-lg bg-yellow-400/5 border border-yellow-400/15 flex items-center gap-2">
+        <Bot className="w-3.5 h-3.5 text-yellow-400/70 flex-shrink-0" />
+        <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
+          <span className="font-semibold text-yellow-400/70">AI Disclosure:</span>{" "}
+          This War Room™ may include AI-generated responses. Content does not constitute professional advice.
+          KIOKU™ is a product of IKONBAI™, Inc.
+        </p>
+      </div>
+
       <div className="flex-1 overflow-auto px-3 md:px-5 py-4 space-y-3">
         {msgsLoading && (
           <div className="space-y-3">
