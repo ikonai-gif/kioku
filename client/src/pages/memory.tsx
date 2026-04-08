@@ -73,7 +73,7 @@ export default function MemoryPage() {
   });
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-5">
+    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4 md:space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -100,7 +100,7 @@ export default function MemoryPage() {
             }}
             data-testid="button-export-csv"
           >
-            <Download className="w-3.5 h-3.5" /> CSV
+            <Download className="w-3.5 h-3.5" /> <span className="hidden sm:inline">CSV</span>
           </Button>
           {/* Export JSON */}
           <Button
@@ -115,7 +115,7 @@ export default function MemoryPage() {
             }}
             data-testid="button-export-json"
           >
-            <Download className="w-3.5 h-3.5" /> JSON
+            <Download className="w-3.5 h-3.5" /> <span className="hidden sm:inline">JSON</span>
           </Button>
           <Button
             size="sm"

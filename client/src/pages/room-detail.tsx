@@ -148,7 +148,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       </div>
 
       {/* ── Messages area ────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto px-5 py-4 space-y-3">
+      <div className="flex-1 overflow-auto px-3 md:px-5 py-4 space-y-3">
         {msgsLoading && (
           <div className="space-y-3">
             {[1, 2, 3].map(i => <div key={i} className="h-14 bg-card rounded-xl animate-pulse" />)}
@@ -200,7 +200,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       </div>
 
       {/* ── Input area ───────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 border-t border-border bg-background px-5 py-4 space-y-3">
+      <div className="flex-shrink-0 border-t border-border bg-background px-3 md:px-5 py-3 md:py-4 space-y-2.5">
 
         {/* ── In Room — participant toggle strip ── */}
         {roomAgents.length > 0 && (

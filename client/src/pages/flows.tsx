@@ -286,7 +286,7 @@ export default function FlowsPage() {
     <div className="flex h-screen overflow-hidden">
 
       {/* ── Left sidebar: agent palette ─────────────────────────────────── */}
-      <div className="w-52 flex-shrink-0 border-r border-border bg-card flex flex-col">
+      <div className="hidden md:flex w-52 flex-shrink-0 border-r border-border bg-card flex-col">
         <div className="px-4 py-3 border-b border-border">
           <p className="text-xs font-semibold text-foreground">Agents</p>
           <p className="text-[10px] text-muted-foreground mt-0.5">Drag onto canvas →</p>
