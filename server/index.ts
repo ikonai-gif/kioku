@@ -23,6 +23,13 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+// Prevent CDN caching of API routes
+app.use(["/api", "/v1", "/mcp", "/health"], (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  next();
+});
+
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
