@@ -4,6 +4,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff } from "lucide-react";
+import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
 import { cn } from "@/lib/utils";
 
@@ -176,10 +177,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             )}
             data-testid={`msg-${msg.id}`}
           >
-            <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-0.5"
-              style={{ background: msg.agentColor + "30", color: msg.agentColor }}>
-              {msg.agentName?.[0]}
-            </div>
+            <AgentAvatar name={msg.agentName ?? ""} color={msg.agentColor} size="sm" className="mt-0.5" />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                 <span className="text-xs font-semibold" style={{ color: msg.agentColor }}>
@@ -230,6 +228,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 >
                   <div className={cn("w-1.5 h-1.5 rounded-full", online ? "animate-pulse" : "bg-muted-foreground/30")}
                     style={online ? { background: a.color } : {}} />
+                  <AgentAvatar name={a.name} color={a.color} size="sm" />
                   {a.name}
                   {online
                     ? <Wifi className="w-2.5 h-2.5 opacity-60" />

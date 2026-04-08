@@ -75,6 +75,8 @@ export const flows = sqliteTable("flows", {
   agentIds: text("agent_ids").notNull().default("[]"), // JSON array of agent ids
   // canvas positions: JSON { [agentId]: {x, y} }
   positions: text("positions").notNull().default("{}"),
+  // per-agent roles+tasks: JSON { [agentId]: { role: string, task: string } }
+  agentRoles: text("agent_roles").notNull().default("{}"),
   createdAt: integer("created_at").notNull(),
 });
 

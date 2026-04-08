@@ -202,12 +202,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/flows/:id", (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { name, description, agentIds, positions } = req.body;
+    const { name, description, agentIds, positions, agentRoles } = req.body;
     const updated = storage.updateFlow(Number(req.params.id), {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),
       ...(agentIds !== undefined && { agentIds: JSON.stringify(agentIds) }),
       ...(positions !== undefined && { positions: JSON.stringify(positions) }),
+      ...(agentRoles !== undefined && { agentRoles: JSON.stringify(agentRoles) }),
     });
     res.json(updated);
   });

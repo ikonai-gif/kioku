@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, ZoomIn, ZoomOut, Maximize2, X, Info } from "lucide-react";
+import { Plus, Trash2, ZoomIn, ZoomOut, Maximize2, X, Info, Save } from "lucide-react";
+import { AgentAvatar } from "@/lib/agent-icon";
 import { cn } from "@/lib/utils";
 
 // ─── Flow palette — each flow gets one of these colors ───────────────────────
@@ -133,6 +134,26 @@ export default function FlowsPage() {
 
   const { data: agents = [] } = useQuery<any[]>({ queryKey: ["/api/agents"] });
   const { data: flows = [] } = useQuery<any[]>({ queryKey: ["/api/flows"] });
+
+  // agent roles state: { [agentId]: { role, task } }
+  const [rolesEdit, setRolesEdit] = useState<Record<number, { role: string; task: string }>>({});
+  const [rolesSaving, setRolesSaving] = useState(false);
+
+  // ── Load roles when edge selected ────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedEdge) return;
+    const edgeData = edges.find(e => e.id === selectedEdge);
+    if (!edgeData) return;
+    const flow = (flows as any[]).find((f: any) => f.id === edgeData.flowId);
+    if (!flow) return;
+    try {
+      const saved = JSON.parse(flow.agentRoles || "{}");
+      const ids: number[] = JSON.parse(flow.agentIds || "[]");
+      const init: Record<number, { role: string; task: string }> = {};
+      ids.forEach(id => { init[id] = saved[id] ?? { role: "", task: "" }; });
+      setRolesEdit(init);
+    } catch {}
+  }, [selectedEdge, flows]);
 
   // ── Load edges from flows ────────────────────────────────────────────────
   useEffect(() => {
@@ -291,10 +312,7 @@ export default function FlowsPage() {
                 )}
                 data-testid={`sidebar-agent-${agent.id}`}
               >
-                <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
-                  style={{ background: agent.color + "33", color: agent.color }}>
-                  {agent.name[0]}
-                </div>
+                <AgentAvatar name={agent.name} color={agent.color} size="sm" />
                 <span className="text-xs text-foreground truncate">{agent.name}</span>
                 {onCanvas && <span className="text-[9px] text-muted-foreground ml-auto">placed</span>}
               </div>
@@ -481,12 +499,55 @@ export default function FlowsPage() {
                 <p className="text-[10px] text-muted-foreground">{flow.description}</p>
               )}
 
-              <div className="pt-1">
-                <p className="text-[10px] text-muted-foreground mb-1">Label color</p>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-4 h-4 rounded-full" style={{ background: selectedEdgeData.color }} />
-                  <span className="text-[10px] font-mono text-muted-foreground">{selectedEdgeData.color}</span>
-                </div>
+              {/* ── Role & Task per agent ── */}
+              <div className="pt-1 space-y-3">
+                <p className="text-[10px] font-semibold text-foreground">Roles & Tasks</p>
+                {agentIds.map(id => {
+                  const a = agentById(id);
+                  if (!a) return null;
+                  const entry = rolesEdit[id] ?? { role: "", task: "" };
+                  return (
+                    <div key={id} className="space-y-1.5 p-2.5 rounded-lg border border-border">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <div className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold"
+                          style={{ background: a.color + "33", color: a.color }}>{a.name[0]}</div>
+                        <span className="text-[10px] font-semibold" style={{ color: a.color }}>{a.name}</span>
+                      </div>
+                      <Input
+                        placeholder="Role (e.g. Orchestrator)"
+                        value={entry.role}
+                        onChange={e => setRolesEdit(r => ({ ...r, [id]: { ...entry, role: e.target.value } }))}
+                        className="h-7 text-[11px] px-2"
+                        data-testid={`input-role-${id}`}
+                      />
+                      <Input
+                        placeholder="Task (e.g. Review outputs)"
+                        value={entry.task}
+                        onChange={e => setRolesEdit(r => ({ ...r, [id]: { ...entry, task: e.target.value } }))}
+                        className="h-7 text-[11px] px-2"
+                        data-testid={`input-task-${id}`}
+                      />
+                    </div>
+                  );
+                })}
+                <Button
+                  size="sm"
+                  className="w-full h-8 text-xs gap-1.5"
+                  style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
+                  disabled={rolesSaving}
+                  data-testid="button-save-roles"
+                  onClick={async () => {
+                    setRolesSaving(true);
+                    try {
+                      await apiRequest("PATCH", `/api/flows/${selectedEdgeData.flowId}`, { agentRoles: rolesEdit });
+                      await queryClient.invalidateQueries({ queryKey: ["/api/flows"] });
+                      toast({ title: "Roles saved" });
+                    } finally { setRolesSaving(false); }
+                  }}
+                >
+                  <Save className="w-3 h-3" />
+                  {rolesSaving ? "Saving…" : "Save Roles"}
+                </Button>
               </div>
             </div>
 

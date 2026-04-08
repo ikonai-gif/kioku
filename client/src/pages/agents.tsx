@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, Bot, Clock } from "lucide-react";
+import { AgentAvatar } from "@/lib/agent-icon";
 import { cn } from "@/lib/utils";
 
 const AGENT_COLORS = ["#D4AF37", "#3B82F6", "#A855F7", "#10B981", "#F97316", "#EF4444"];
@@ -101,10 +102,7 @@ export default function AgentsPage() {
             {/* Header */}
             <div className="flex items-start justify-between mb-3">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-base font-bold flex-shrink-0"
-                  style={{ background: agent.color + "22", color: agent.color }}>
-                  {agent.name[0]}
-                </div>
+                <AgentAvatar name={agent.name} color={agent.color} size="lg" />
                 <div>
                   <div className="text-sm font-semibold text-foreground">{agent.name}</div>
                   <div className={cn(

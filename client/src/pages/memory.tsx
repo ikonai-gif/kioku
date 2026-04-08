@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Trash2, Brain, Plus } from "lucide-react";
+import { Search, Trash2, Brain, Plus, Download } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -80,15 +80,53 @@ export default function MemoryPage() {
           <h1 className="text-lg font-semibold text-foreground">Memory Browser</h1>
           <p className="text-sm text-muted-foreground mt-0.5">{(memories as any[]).length} memories</p>
         </div>
-        <Button
-          size="sm"
-          className="h-8 text-xs gap-1.5"
-          style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
-          onClick={() => setCreating(true)}
-          data-testid="button-add-memory"
-        >
-          <Plus className="w-3.5 h-3.5" /> Add Memory
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Export CSV */}
+          <Button
+            size="sm" variant="outline"
+            className="h-8 text-xs gap-1.5"
+            onClick={() => {
+              const rows = (filteredMemories as any[]);
+              if (!rows.length) return;
+              const header = "id,content,type,agentName,importance,createdAt";
+              const body = rows.map((m: any) =>
+                `${m.id},"${String(m.content).replace(/"/g, '""')}",${m.type},${m.agentName ?? ""},${m.importance},${new Date(m.createdAt).toISOString()}`
+              ).join("\n");
+              const blob = new Blob([header + "\n" + body], { type: "text/csv" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a"); a.href = url;
+              a.download = `kioku-memory-${Date.now()}.csv`; a.click();
+              URL.revokeObjectURL(url);
+            }}
+            data-testid="button-export-csv"
+          >
+            <Download className="w-3.5 h-3.5" /> CSV
+          </Button>
+          {/* Export JSON */}
+          <Button
+            size="sm" variant="outline"
+            className="h-8 text-xs gap-1.5"
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(filteredMemories, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a"); a.href = url;
+              a.download = `kioku-memory-${Date.now()}.json`; a.click();
+              URL.revokeObjectURL(url);
+            }}
+            data-testid="button-export-json"
+          >
+            <Download className="w-3.5 h-3.5" /> JSON
+          </Button>
+          <Button
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
+            onClick={() => setCreating(true)}
+            data-testid="button-add-memory"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add Memory
+          </Button>
+        </div>
       </div>
 
       {/* Search */}

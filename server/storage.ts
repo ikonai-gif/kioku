@@ -17,6 +17,9 @@ import { randomBytes, createHash } from "crypto";
 const sqlite = new Database("kioku-dashboard.db");
 export const db = drizzle(sqlite);
 
+// Migrate: add agent_roles column if not exists
+try { sqlite.exec("ALTER TABLE flows ADD COLUMN agent_roles TEXT NOT NULL DEFAULT '{}'"); } catch {}
+
 // Init tables
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -66,8 +69,11 @@ sqlite.exec(`
     description TEXT,
     agent_ids TEXT NOT NULL DEFAULT '[]',
     positions TEXT NOT NULL DEFAULT '{}',
+    agent_roles TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL
   );
+  -- Add agent_roles column if upgrading existing DB
+  -- (safe to run multiple times — IF NOT EXISTS handles it)
   CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -134,7 +140,7 @@ export interface IStorage {
   getFlows(userId: number): Flow[];
   getFlow(id: number): Flow | undefined;
   createFlow(data: InsertFlow): Flow;
-  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string }>): Flow | undefined;
+  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>): Flow | undefined;
   deleteFlow(id: number): void;
 
   // Rooms
@@ -257,7 +263,7 @@ export class Storage implements IStorage {
   createFlow(data: InsertFlow): Flow {
     return db.insert(flows).values({ ...data, createdAt: Date.now() }).returning().get();
   }
-  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string }>) {
+  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>) {
     return db.update(flows).set(data).where(eq(flows.id, id)).returning().get();
   }
   deleteFlow(id: number) {
