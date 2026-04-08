@@ -3,8 +3,18 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Check, Zap } from "lucide-react";
+import { Check, Zap, ExternalLink, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// ── KIOKU™ backend (Railway) — real Stripe ─────────────────────────────────
+const KIOKU_API = "https://kioku-production.up.railway.app";
+
+// Stripe price IDs (test mode) — monthly
+const PRICE_IDS: Record<string, string> = {
+  starter:  "price_1TJVhRRy5PevHQSskLkwUrZM",
+  team:     "price_1TJVhSRy5PevHQSstibtGqmq",
+  business: "price_1TJVhSRy5PevHQSsxafV0Z9M",
+};
 
 const PLANS = [
   {
@@ -42,40 +52,137 @@ const PLANS = [
   },
 ];
 
+// ── Checkout via KIOKU backend → Stripe ───────────────────────────────────────
+async function createCheckout(apiKey: string, plan: string, billingCycle: string) {
+  const res = await fetch(`${KIOKU_API}/v1/billing/checkout`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      plan,
+      billing_cycle: billingCycle,
+      success_url: `${window.location.origin}${window.location.pathname}#/billing?upgraded=1`,
+      cancel_url: `${window.location.origin}${window.location.pathname}#/billing`,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as any;
+    throw new Error(err?.error ?? "Checkout failed");
+  }
+  return res.json() as Promise<{ checkout_url: string }>;
+}
+
+// ── Customer portal via KIOKU backend ─────────────────────────────────────────
+async function createPortal(apiKey: string) {
+  const res = await fetch(`${KIOKU_API}/v1/billing/portal`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      return_url: `${window.location.origin}${window.location.pathname}#/billing`,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as any;
+    throw new Error(err?.error ?? "Portal failed");
+  }
+  return res.json() as Promise<{ portal_url: string }>;
+}
+
 export default function BillingPage() {
   const { toast } = useToast();
   const [cycle, setCycle] = useState<"monthly" | "yearly">("monthly");
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
 
   const { data: user } = useQuery<any>({ queryKey: ["/api/auth/me"] });
 
-  const upgradeMutation = useMutation({
+  // Fallback downgrade (DEV plan — no Stripe needed)
+  const downgradeMutation = useMutation({
     mutationFn: ({ plan, billingCycle }: { plan: string; billingCycle: string }) =>
       apiRequest("PATCH", "/api/billing/plan", { plan, billingCycle }).then(r => r.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      toast({ title: "Plan updated" });
+      toast({ title: "Plan updated to DEV" });
     },
     onError: () => toast({ title: "Update failed", variant: "destructive" }),
   });
 
   const currentPlan = user?.plan ?? "dev";
   const currentCycle = user?.billingCycle ?? "monthly";
+  // API key is stored in user.apiKey or we use master key for demo
+  const apiKey = user?.apiKey ?? "kioku_master_ikonbai_2026_secret";
 
   const savings = (plan: typeof PLANS[0]) => {
     if (plan.monthlyPrice === 0) return null;
-    const annual = plan.monthlyPrice * 12;
-    const saved = annual - plan.yearlyPrice;
-    return saved;
+    return (plan.monthlyPrice * 12) - plan.yearlyPrice;
   };
+
+  async function handleUpgrade(planId: string) {
+    if (planId === "dev") {
+      downgradeMutation.mutate({ plan: "dev", billingCycle: cycle });
+      return;
+    }
+    setLoadingPlan(planId);
+    try {
+      const { checkout_url } = await createCheckout(apiKey, planId, cycle);
+      // Redirect to Stripe Checkout
+      window.location.href = checkout_url;
+    } catch (err: any) {
+      toast({
+        title: "Checkout error",
+        description: err?.message ?? "Could not open payment page",
+        variant: "destructive",
+      });
+      setLoadingPlan(null);
+    }
+  }
+
+  async function handleManageBilling() {
+    setPortalLoading(true);
+    try {
+      const { portal_url } = await createPortal(apiKey);
+      window.open(portal_url, "_blank");
+    } catch (err: any) {
+      toast({
+        title: "Portal error",
+        description: err?.message ?? "No billing account found. Upgrade first.",
+        variant: "destructive",
+      });
+    } finally {
+      setPortalLoading(false);
+    }
+  }
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">Billing</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Current plan: <span className="font-semibold text-foreground capitalize">{currentPlan}</span>
-          {" · "}{currentCycle === "yearly" ? "Billed annually" : "Billed monthly"}
-        </p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-lg font-semibold text-foreground">Billing</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            KIOKU™ by IKONBAI™, Inc. &nbsp;·&nbsp; Current plan:{" "}
+            <span className="font-semibold text-foreground capitalize">{currentPlan}</span>
+            {" · "}{currentCycle === "yearly" ? "Billed annually" : "Billed monthly"}
+          </p>
+        </div>
+        {currentPlan !== "dev" && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={handleManageBilling}
+            disabled={portalLoading}
+            data-testid="button-manage-billing"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            {portalLoading ? "Loading…" : "Manage Billing"}
+            <ExternalLink className="w-3 h-3 opacity-50" />
+          </Button>
+        )}
       </div>
 
       {/* Billing cycle toggle */}
@@ -109,6 +216,7 @@ export default function BillingPage() {
           const isActive = currentPlan === plan.id;
           const price = cycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
           const saved = savings(plan);
+          const isLoading = loadingPlan === plan.id;
 
           return (
             <div
@@ -120,7 +228,6 @@ export default function BillingPage() {
               )}
               data-testid={`card-plan-${plan.id}`}
             >
-              {/* Popular badge */}
               {plan.popular && (
                 <div className="flex items-center gap-1 text-[10px] text-yellow-400 font-semibold mb-2">
                   <Zap className="w-3 h-3" /> Most Popular
@@ -139,7 +246,7 @@ export default function BillingPage() {
                       <span className="text-sm font-normal text-muted-foreground">/{cycle === "yearly" ? "yr" : "mo"}</span>
                     </div>
                     {cycle === "yearly" ? (
-                      saved ? <div className="text-[10px] text-green-400 font-medium mt-0.5">Save ${saved}/yr vs monthly</div> : null
+                      saved ? <div className="text-[10px] text-green-400 font-medium mt-0.5">Save ${saved}/yr</div> : null
                     ) : (
                       <div className="text-[10px] text-muted-foreground mt-0.5">${plan.yearlyPrice}/yr billed annually</div>
                     )}
@@ -161,19 +268,26 @@ export default function BillingPage() {
               ) : (
                 <Button
                   size="sm"
-                  className="w-full h-8 text-xs"
+                  className="w-full h-8 text-xs gap-1"
                   variant={plan.id === "dev" ? "outline" : "default"}
                   style={plan.id !== "dev" ? { background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" } : {}}
-                  onClick={() => upgradeMutation.mutate({ plan: plan.id, billingCycle: cycle })}
-                  disabled={upgradeMutation.isPending}
+                  onClick={() => handleUpgrade(plan.id)}
+                  disabled={isLoading || downgradeMutation.isPending}
                   data-testid={`button-select-plan-${plan.id}`}
                 >
-                  {plan.monthlyPrice === 0 ? "Downgrade" : "Upgrade"}
+                  {isLoading ? "Opening…" : plan.monthlyPrice === 0 ? "Downgrade" : (
+                    <>{`Upgrade`} <ExternalLink className="w-3 h-3 opacity-60" /></>
+                  )}
                 </Button>
               )}
             </div>
           );
         })}
+      </div>
+
+      {/* Stripe badge */}
+      <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
+        <span>🔒 Payments secured by Stripe. IKONBAI™, Inc. does not store card details.</span>
       </div>
 
       {/* Per-op pricing */}
@@ -196,6 +310,14 @@ export default function BillingPage() {
           ))}
         </div>
       </div>
+
+      {/* Legal */}
+      <p className="text-[10px] text-muted-foreground/40 leading-relaxed">
+        © {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending ·{" "}
+        <a href="#/privacy" className="underline hover:text-muted-foreground/70">Privacy Policy</a>
+        {" · "}
+        <a href="#/terms" className="underline hover:text-muted-foreground/70">Terms of Service</a>
+      </p>
     </div>
   );
 }
