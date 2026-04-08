@@ -1,6 +1,6 @@
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
-import { eq, desc, and } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import { eq, desc, ilike, or, sql } from "drizzle-orm";
 import {
   users, agents, memories, flows, rooms, roomMessages, logs, magicTokens,
   type User, type InsertUser,
@@ -12,312 +12,366 @@ import {
   type Log, type InsertLog,
   type MagicToken, type InsertMagicToken,
 } from "@shared/schema";
-import { randomBytes, createHash } from "crypto";
+import { randomBytes } from "crypto";
 
-const sqlite = new Database("kioku-dashboard.db");
-export const db = drizzle(sqlite);
+// ── DB connection ─────────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku",
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
 
-// Migrate: add agent_roles column if not exists
-try { sqlite.exec("ALTER TABLE flows ADD COLUMN agent_roles TEXT NOT NULL DEFAULT '{}'"); } catch {}
+export const db = drizzle(pool);
 
-// Init tables
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    company TEXT,
-    plan TEXT NOT NULL DEFAULT 'dev',
-    billing_cycle TEXT NOT NULL DEFAULT 'monthly',
-    api_key TEXT NOT NULL UNIQUE,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS magic_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    expires_at INTEGER NOT NULL,
-    used INTEGER NOT NULL DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS agents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    color TEXT NOT NULL DEFAULT '#D4AF37',
-    status TEXT NOT NULL DEFAULT 'idle',
-    memories_count INTEGER NOT NULL DEFAULT 0,
-    last_active_at INTEGER,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    agent_id INTEGER,
-    agent_name TEXT,
-    content TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'semantic',
-    importance REAL NOT NULL DEFAULT 0.5,
-    namespace TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS flows (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    agent_ids TEXT NOT NULL DEFAULT '[]',
-    positions TEXT NOT NULL DEFAULT '{}',
-    agent_roles TEXT NOT NULL DEFAULT '{}',
-    created_at INTEGER NOT NULL
-  );
-  -- Add agent_roles column if upgrading existing DB
-  -- (safe to run multiple times — IF NOT EXISTS handles it)
-  CREATE TABLE IF NOT EXISTS rooms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    status TEXT NOT NULL DEFAULT 'standby',
-    agent_ids TEXT NOT NULL DEFAULT '[]',
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS room_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id INTEGER NOT NULL,
-    agent_id INTEGER,
-    agent_name TEXT NOT NULL,
-    agent_color TEXT NOT NULL DEFAULT '#D4AF37',
-    content TEXT NOT NULL,
-    is_decision INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    agent_name TEXT,
-    agent_color TEXT NOT NULL DEFAULT '#D4AF37',
-    operation TEXT NOT NULL,
-    detail TEXT NOT NULL,
-    latency_ms INTEGER,
-    created_at INTEGER NOT NULL
-  );
-`);
+// ── Schema init (idempotent) ──────────────────────────────────────────────────
+export async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id           SERIAL PRIMARY KEY,
+      email        TEXT NOT NULL UNIQUE,
+      name         TEXT NOT NULL,
+      company      TEXT,
+      plan         TEXT NOT NULL DEFAULT 'dev',
+      billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+      api_key      TEXT NOT NULL UNIQUE,
+      created_at   BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS magic_tokens (
+      id         SERIAL PRIMARY KEY,
+      email      TEXT NOT NULL,
+      token      TEXT NOT NULL UNIQUE,
+      expires_at BIGINT NOT NULL,
+      used       BOOLEAN NOT NULL DEFAULT FALSE
+    );
+    CREATE TABLE IF NOT EXISTS agents (
+      id             SERIAL PRIMARY KEY,
+      user_id        INTEGER NOT NULL,
+      name           TEXT NOT NULL,
+      description    TEXT,
+      color          TEXT NOT NULL DEFAULT '#D4AF37',
+      status         TEXT NOT NULL DEFAULT 'idle',
+      memories_count INTEGER NOT NULL DEFAULT 0,
+      last_active_at BIGINT,
+      enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at     BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS memories (
+      id         SERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      agent_id   INTEGER,
+      agent_name TEXT,
+      content    TEXT NOT NULL,
+      type       TEXT NOT NULL DEFAULT 'semantic',
+      importance REAL NOT NULL DEFAULT 0.5,
+      namespace  TEXT,
+      embedding  TEXT,
+      created_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS flows (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      name        TEXT NOT NULL,
+      description TEXT,
+      agent_ids   TEXT NOT NULL DEFAULT '[]',
+      positions   TEXT NOT NULL DEFAULT '{}',
+      agent_roles TEXT NOT NULL DEFAULT '{}',
+      created_at  BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS rooms (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      name        TEXT NOT NULL,
+      description TEXT,
+      status      TEXT NOT NULL DEFAULT 'standby',
+      agent_ids   TEXT NOT NULL DEFAULT '[]',
+      created_at  BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS room_messages (
+      id          SERIAL PRIMARY KEY,
+      room_id     INTEGER NOT NULL,
+      agent_id    INTEGER,
+      agent_name  TEXT NOT NULL,
+      agent_color TEXT NOT NULL DEFAULT '#D4AF37',
+      content     TEXT NOT NULL,
+      is_decision BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at  BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS logs (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      agent_name  TEXT,
+      agent_color TEXT NOT NULL DEFAULT '#D4AF37',
+      operation   TEXT NOT NULL,
+      detail      TEXT NOT NULL,
+      latency_ms  INTEGER,
+      created_at  BIGINT NOT NULL
+    );
+  `);
+}
 
 function generateApiKey(): string {
   return "kk_" + randomBytes(24).toString("hex");
 }
 
+// ── Cosine similarity for embedding search ────────────────────────────────────
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 export interface IStorage {
-  // Users
-  getUserByEmail(email: string): User | undefined;
-  getUserByApiKey(apiKey: string): User | undefined;
-  getUserById(id: number): User | undefined;
-  createUser(data: { email: string; name: string; company?: string; plan?: string }): User;
-  updateUserPlan(id: number, plan: string, billingCycle: string): User | undefined;
+  getUserByEmail(email: string): Promise<User | undefined>;
+  getUserByApiKey(apiKey: string): Promise<User | undefined>;
+  getUserById(id: number): Promise<User | undefined>;
+  createUser(data: { email: string; name: string; company?: string; plan?: string }): Promise<User>;
+  updateUserPlan(id: number, plan: string, billingCycle: string): Promise<User | undefined>;
 
-  // Magic tokens
-  createMagicToken(email: string): string;
-  verifyMagicToken(token: string): string | null; // returns email or null
+  createMagicToken(email: string): Promise<string>;
+  verifyMagicToken(token: string): Promise<string | null>;
 
-  // Agents
-  getAgents(userId: number): Agent[];
-  getAgent(id: number): Agent | undefined;
-  createAgent(data: InsertAgent): Agent;
-  updateAgentStatus(id: number, status: string): void;
-  toggleAgent(id: number, enabled: boolean): void;
-  deleteAgent(id: number): void;
+  getAgents(userId: number): Promise<Agent[]>;
+  getAgent(id: number): Promise<Agent | undefined>;
+  createAgent(data: InsertAgent): Promise<Agent>;
+  updateAgentStatus(id: number, status: string): Promise<void>;
+  toggleAgent(id: number, enabled: boolean): Promise<void>;
+  deleteAgent(id: number): Promise<void>;
 
-  // Memories
-  getMemories(userId: number, limit?: number): Memory[];
-  searchMemories(userId: number, query: string): Memory[];
-  createMemory(data: InsertMemory): Memory;
-  deleteMemory(id: number): void;
-  getMemoriesCount(userId: number): number;
+  getMemories(userId: number, limit?: number): Promise<Memory[]>;
+  searchMemories(userId: number, query: string, queryEmbedding?: number[]): Promise<Memory[]>;
+  createMemory(data: InsertMemory): Promise<Memory>;
+  deleteMemory(id: number): Promise<void>;
+  getMemoriesCount(userId: number): Promise<number>;
 
-  // Flows
-  getFlows(userId: number): Flow[];
-  getFlow(id: number): Flow | undefined;
-  createFlow(data: InsertFlow): Flow;
-  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>): Flow | undefined;
-  deleteFlow(id: number): void;
+  getFlows(userId: number): Promise<Flow[]>;
+  getFlow(id: number): Promise<Flow | undefined>;
+  createFlow(data: InsertFlow): Promise<Flow>;
+  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>): Promise<Flow | undefined>;
+  deleteFlow(id: number): Promise<void>;
 
-  // Rooms
-  getRooms(userId: number): Room[];
-  getRoom(id: number): Room | undefined;
-  createRoom(data: InsertRoom): Room;
-  updateRoom(id: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Room | undefined;
-  deleteRoom(id: number): void;
+  getRooms(userId: number): Promise<Room[]>;
+  getRoom(id: number): Promise<Room | undefined>;
+  createRoom(data: InsertRoom): Promise<Room>;
+  updateRoom(id: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Promise<Room | undefined>;
+  deleteRoom(id: number): Promise<void>;
 
-  // Room messages
-  getRoomMessages(roomId: number): RoomMessage[];
-  addRoomMessage(data: InsertRoomMessage): RoomMessage;
+  getRoomMessages(roomId: number): Promise<RoomMessage[]>;
+  addRoomMessage(data: InsertRoomMessage): Promise<RoomMessage>;
 
-  // Logs
-  getLogs(userId: number, limit?: number): Log[];
-  addLog(data: InsertLog): Log;
+  getLogs(userId: number, limit?: number): Promise<Log[]>;
+  addLog(data: InsertLog): Promise<Log>;
 
-  // Stats
-  getStats(userId: number): { totalMemories: number; totalOps: number; avgLatency: number; activeAgents: number };
+  getStats(userId: number): Promise<{ totalMemories: number; totalOps: number; avgLatency: number; activeAgents: number }>;
 }
 
 export class Storage implements IStorage {
-  getUserByEmail(email: string) {
-    return db.select().from(users).where(eq(users.email, email)).get();
+
+  // ── Users ──────────────────────────────────────────────────────────────────
+  async getUserByEmail(email: string) {
+    return db.select().from(users).where(eq(users.email, email)).limit(1).then(r => r[0]);
   }
-  getUserByApiKey(apiKey: string) {
-    return db.select().from(users).where(eq(users.apiKey, apiKey)).get();
+  async getUserByApiKey(apiKey: string) {
+    return db.select().from(users).where(eq(users.apiKey, apiKey)).limit(1).then(r => r[0]);
   }
-  getUserById(id: number) {
-    return db.select().from(users).where(eq(users.id, id)).get();
+  async getUserById(id: number) {
+    return db.select().from(users).where(eq(users.id, id)).limit(1).then(r => r[0]);
   }
-  createUser(data: { email: string; name: string; company?: string; plan?: string }): User {
-    const existing = this.getUserByEmail(data.email);
+  async createUser(data: { email: string; name: string; company?: string; plan?: string }): Promise<User> {
+    const existing = await this.getUserByEmail(data.email);
     if (existing) return existing;
     const apiKey = generateApiKey();
-    const now = Date.now();
-    const result = db.insert(users).values({
+    const [result] = await db.insert(users).values({
       email: data.email,
       name: data.name,
       company: data.company ?? null,
       plan: data.plan ?? "dev",
       billingCycle: "monthly",
       apiKey,
-      createdAt: now,
-    }).returning().get();
+      createdAt: Date.now(),
+    }).returning();
     return result;
   }
-  updateUserPlan(id: number, plan: string, billingCycle: string) {
-    return db.update(users).set({ plan, billingCycle }).where(eq(users.id, id)).returning().get();
+  async updateUserPlan(id: number, plan: string, billingCycle: string) {
+    return db.update(users).set({ plan, billingCycle }).where(eq(users.id, id)).returning().then(r => r[0]);
   }
 
-  createMagicToken(email: string): string {
+  // ── Magic tokens ───────────────────────────────────────────────────────────
+  async createMagicToken(email: string): Promise<string> {
     const token = randomBytes(32).toString("hex");
-    const expiresAt = Date.now() + 15 * 60 * 1000; // 15 min
-    db.insert(magicTokens).values({ email, token, expiresAt, used: 0 }).run();
+    const expiresAt = Date.now() + 15 * 60 * 1000;
+    await db.insert(magicTokens).values({ email, token, expiresAt, used: false });
     return token;
   }
-  verifyMagicToken(token: string): string | null {
-    const record = db.select().from(magicTokens).where(eq(magicTokens.token, token)).get();
-    if (!record) return null;
-    if (record.used) return null;
-    if (Date.now() > record.expiresAt) return null;
-    db.update(magicTokens).set({ used: 1 }).where(eq(magicTokens.token, token)).run();
+  async verifyMagicToken(token: string): Promise<string | null> {
+    const [record] = await db.select().from(magicTokens).where(eq(magicTokens.token, token)).limit(1);
+    if (!record || record.used || Date.now() > record.expiresAt) return null;
+    await db.update(magicTokens).set({ used: true }).where(eq(magicTokens.token, token));
     return record.email;
   }
 
-  getAgents(userId: number) {
-    return db.select().from(agents).where(eq(agents.userId, userId)).all();
+  // ── Agents ─────────────────────────────────────────────────────────────────
+  async getAgents(userId: number) {
+    return db.select().from(agents).where(eq(agents.userId, userId));
   }
-  getAgent(id: number) {
-    return db.select().from(agents).where(eq(agents.id, id)).get();
+  async getAgent(id: number) {
+    return db.select().from(agents).where(eq(agents.id, id)).limit(1).then(r => r[0]);
   }
-  createAgent(data: InsertAgent): Agent {
-    return db.insert(agents).values({ ...data, createdAt: Date.now() }).returning().get();
+  async createAgent(data: InsertAgent): Promise<Agent> {
+    const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
+    return result;
   }
-  updateAgentStatus(id: number, status: string) {
-    db.update(agents).set({ status, lastActiveAt: Date.now() }).where(eq(agents.id, id)).run();
+  async updateAgentStatus(id: number, status: string) {
+    await db.update(agents).set({ status, lastActiveAt: Date.now() }).where(eq(agents.id, id));
   }
-  toggleAgent(id: number, enabled: boolean) {
-    db.update(agents).set({ enabled: enabled ? 1 : 0 }).where(eq(agents.id, id)).run();
+  async toggleAgent(id: number, enabled: boolean) {
+    await db.update(agents).set({ enabled }).where(eq(agents.id, id));
   }
-  deleteAgent(id: number) {
-    db.delete(agents).where(eq(agents.id, id)).run();
+  async deleteAgent(id: number) {
+    await db.delete(agents).where(eq(agents.id, id));
   }
 
-  getMemories(userId: number, limit = 100) {
-    return db.select().from(memories).where(eq(memories.userId, userId)).orderBy(desc(memories.createdAt)).limit(limit).all();
+  // ── Memories ───────────────────────────────────────────────────────────────
+  async getMemories(userId: number, limit = 100) {
+    return db.select().from(memories).where(eq(memories.userId, userId))
+      .orderBy(desc(memories.createdAt)).limit(limit);
   }
-  searchMemories(userId: number, query: string) {
-    const all = this.getMemories(userId, 500);
+  async searchMemories(userId: number, query: string, queryEmbedding?: number[]) {
+    const all = await this.getMemories(userId, 1000);
+
+    // Semantic search if embedding provided
+    if (queryEmbedding && queryEmbedding.length > 0) {
+      const scored = all
+        .filter(m => m.embedding)
+        .map(m => {
+          try {
+            const emb = JSON.parse(m.embedding!) as number[];
+            return { m, score: cosineSimilarity(queryEmbedding, emb) };
+          } catch { return { m, score: 0 }; }
+        })
+        .sort((a, b) => b.score - a.score)
+        .filter(x => x.score > 0.7)
+        .map(x => x.m);
+
+      // Fallback to text if no semantic results
+      if (scored.length > 0) return scored.slice(0, 20);
+    }
+
+    // Text fallback
     const q = query.toLowerCase();
-    return all.filter(m => m.content.toLowerCase().includes(q) || (m.agentName ?? "").toLowerCase().includes(q));
+    return all.filter(m =>
+      m.content.toLowerCase().includes(q) ||
+      (m.agentName ?? "").toLowerCase().includes(q)
+    ).slice(0, 20);
   }
-  createMemory(data: InsertMemory): Memory {
-    const mem = db.insert(memories).values({ ...data, createdAt: Date.now() }).returning().get();
-    // update agent count
+  async createMemory(data: InsertMemory): Promise<Memory> {
+    const [mem] = await db.insert(memories).values({ ...data, createdAt: Date.now() }).returning();
     if (data.agentId) {
-      const agent = this.getAgent(data.agentId);
+      const agent = await this.getAgent(data.agentId);
       if (agent) {
-        db.update(agents).set({ memoriesCount: agent.memoriesCount + 1, lastActiveAt: Date.now(), status: "online" }).where(eq(agents.id, data.agentId)).run();
+        await db.update(agents).set({
+          memoriesCount: agent.memoriesCount + 1,
+          lastActiveAt: Date.now(),
+          status: "online",
+        }).where(eq(agents.id, data.agentId));
       }
     }
     return mem;
   }
-  deleteMemory(id: number) {
-    db.delete(memories).where(eq(memories.id, id)).run();
+  async deleteMemory(id: number) {
+    await db.delete(memories).where(eq(memories.id, id));
   }
-  getMemoriesCount(userId: number) {
-    return this.getMemories(userId, 10000).length;
-  }
-
-  getFlows(userId: number) {
-    return db.select().from(flows).where(eq(flows.userId, userId)).all();
-  }
-  getFlow(id: number) {
-    return db.select().from(flows).where(eq(flows.id, id)).get();
-  }
-  createFlow(data: InsertFlow): Flow {
-    return db.insert(flows).values({ ...data, createdAt: Date.now() }).returning().get();
-  }
-  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>) {
-    return db.update(flows).set(data).where(eq(flows.id, id)).returning().get();
-  }
-  deleteFlow(id: number) {
-    db.delete(flows).where(eq(flows.id, id)).run();
+  async getMemoriesCount(userId: number) {
+    const result = await pool.query<{ count: string }>(
+      "SELECT COUNT(*) as count FROM memories WHERE user_id = $1", [userId]
+    );
+    return parseInt(result.rows[0]?.count ?? "0");
   }
 
-  getRooms(userId: number) {
-    return db.select().from(rooms).where(eq(rooms.userId, userId)).all();
+  // ── Flows ──────────────────────────────────────────────────────────────────
+  async getFlows(userId: number) {
+    return db.select().from(flows).where(eq(flows.userId, userId));
   }
-  getRoom(id: number) {
-    return db.select().from(rooms).where(eq(rooms.id, id)).get();
+  async getFlow(id: number) {
+    return db.select().from(flows).where(eq(flows.id, id)).limit(1).then(r => r[0]);
   }
-  createRoom(data: InsertRoom): Room {
-    return db.insert(rooms).values({ ...data, createdAt: Date.now() }).returning().get();
+  async createFlow(data: InsertFlow): Promise<Flow> {
+    const [result] = await db.insert(flows).values({ ...data, createdAt: Date.now() }).returning();
+    return result;
   }
-  updateRoom(id: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>) {
-    return db.update(rooms).set(data).where(eq(rooms.id, id)).returning().get();
+  async updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>) {
+    return db.update(flows).set(data).where(eq(flows.id, id)).returning().then(r => r[0]);
   }
-  deleteRoom(id: number) {
-    db.delete(rooms).where(eq(rooms.id, id)).run();
-  }
-
-  getRoomMessages(roomId: number) {
-    return db.select().from(roomMessages).where(eq(roomMessages.roomId, roomId)).orderBy(roomMessages.createdAt).all();
-  }
-  addRoomMessage(data: InsertRoomMessage): RoomMessage {
-    return db.insert(roomMessages).values({ ...data, createdAt: Date.now() }).returning().get();
+  async deleteFlow(id: number) {
+    await db.delete(flows).where(eq(flows.id, id));
   }
 
-  getLogs(userId: number, limit = 50) {
-    return db.select().from(logs).where(eq(logs.userId, userId)).orderBy(desc(logs.createdAt)).limit(limit).all();
+  // ── Rooms ──────────────────────────────────────────────────────────────────
+  async getRooms(userId: number) {
+    return db.select().from(rooms).where(eq(rooms.userId, userId));
   }
-  addLog(data: InsertLog): Log {
-    return db.insert(logs).values({ ...data, createdAt: Date.now() }).returning().get();
+  async getRoom(id: number) {
+    return db.select().from(rooms).where(eq(rooms.id, id)).limit(1).then(r => r[0]);
+  }
+  async createRoom(data: InsertRoom): Promise<Room> {
+    const [result] = await db.insert(rooms).values({ ...data, createdAt: Date.now() }).returning();
+    return result;
+  }
+  async updateRoom(id: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>) {
+    return db.update(rooms).set(data).where(eq(rooms.id, id)).returning().then(r => r[0]);
+  }
+  async deleteRoom(id: number) {
+    await db.delete(rooms).where(eq(rooms.id, id));
   }
 
-  getStats(userId: number) {
-    const userAgents = this.getAgents(userId);
-    const totalMemories = this.getMemoriesCount(userId);
-    const userLogs = this.getLogs(userId, 1000);
+  // ── Room Messages ──────────────────────────────────────────────────────────
+  async getRoomMessages(roomId: number) {
+    return db.select().from(roomMessages).where(eq(roomMessages.roomId, roomId))
+      .orderBy(roomMessages.createdAt);
+  }
+  async addRoomMessage(data: InsertRoomMessage): Promise<RoomMessage> {
+    const [result] = await db.insert(roomMessages).values({ ...data, createdAt: Date.now() }).returning();
+    return result;
+  }
+
+  // ── Logs ───────────────────────────────────────────────────────────────────
+  async getLogs(userId: number, limit = 50) {
+    return db.select().from(logs).where(eq(logs.userId, userId))
+      .orderBy(desc(logs.createdAt)).limit(limit);
+  }
+  async addLog(data: InsertLog): Promise<Log> {
+    const [result] = await db.insert(logs).values({ ...data, createdAt: Date.now() }).returning();
+    return result;
+  }
+
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  async getStats(userId: number) {
+    const [userAgents, totalMemories, userLogs] = await Promise.all([
+      this.getAgents(userId),
+      this.getMemoriesCount(userId),
+      this.getLogs(userId, 1000),
+    ]);
     const totalOps = userLogs.length;
     const latencies = userLogs.filter(l => l.latencyMs).map(l => l.latencyMs!);
-    const avgLatency = latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0;
+    const avgLatency = latencies.length
+      ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
+      : 0;
     const activeAgents = userAgents.filter(a => a.status === "online" && a.enabled).length;
     return { totalMemories, totalOps, avgLatency, activeAgents };
   }
-
 }
 
 export const storage = new Storage();
 
-// Bootstrap demo user — clean slate, no seed data
-(function initDemoUser() {
-  const existing = storage.getUserByEmail("demo@kioku.ai");
+// Bootstrap demo user on startup
+export async function initDemoUser() {
+  const existing = await storage.getUserByEmail("demo@kioku.ai");
   if (!existing) {
-    storage.createUser({ email: "demo@kioku.ai", name: "Demo User", plan: "dev" });
-    console.log("[KIOKU] Demo user created (clean)");
+    await storage.createUser({ email: "demo@kioku.ai", name: "Demo User", plan: "dev" });
   }
-})();
+}

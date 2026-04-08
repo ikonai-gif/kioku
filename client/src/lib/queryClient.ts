@@ -33,7 +33,7 @@ export async function apiRequest(
 }
 
 const defaultQueryFn = async ({ queryKey }: { queryKey: readonly unknown[] }) => {
-  const path = Array.isArray(queryKey) ? queryKey[0] as string : queryKey as string;
+  const path = Array.isArray(queryKey) ? (queryKey[0] as string) : (queryKey as unknown as string);
   const res = await apiRequest("GET", path);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));

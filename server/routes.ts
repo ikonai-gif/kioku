@@ -3,6 +3,8 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
 import { Resend } from "resend";
+import { embedText, embeddingsEnabled } from "./embeddings";
+import { setupWebSocket, broadcastToRoom } from "./ws";
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -52,6 +54,9 @@ function createSessionToken(userId: number): string {
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
+  // ── WebSocket ─────────────────────────────────────────────────
+  setupWebSocket(httpServer);
+
   // ── Health ────────────────────────────────────────────────────
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", ts: new Date().toISOString() });
@@ -62,21 +67,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/auth/magic-link", async (req, res) => {
     const { email, name, company } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
-    let user = storage.getUserByEmail(email);
-    if (!user) user = storage.createUser({ email, name: name || email.split("@")[0], company });
-    const token = storage.createMagicToken(email);
+    let user = await storage.getUserByEmail(email);
+    if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
+    const token = await storage.createMagicToken(email);
     await sendMagicLinkEmail(email, token);
     const isDev = !process.env.RESEND_API_KEY;
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   });
 
-  app.post("/api/auth/verify", (req, res) => {
+  app.post("/api/auth/verify", async (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "Token required" });
-    const email = storage.verifyMagicToken(token);
+    const email = await storage.verifyMagicToken(token);
     if (!email) return res.status(401).json({ error: "Invalid or expired token" });
-    let user = storage.getUserByEmail(email);
-    if (!user) user = storage.createUser({ email, name: email.split("@")[0] });
+    let user = await storage.getUserByEmail(email);
+    if (!user) user = await storage.createUser({ email, name: email.split("@")[0] });
     const sessionToken = createSessionToken(user.id);
     res.json({ ok: true, sessionToken, user });
   });
@@ -84,59 +89,61 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/auth/request-magic-link", async (req, res) => {
     const { email, name, company } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
-    let user = storage.getUserByEmail(email);
-    if (!user) user = storage.createUser({ email, name: name || email.split("@")[0], company });
-    const token = storage.createMagicToken(email);
+    let user = await storage.getUserByEmail(email);
+    if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
+    const token = await storage.createMagicToken(email);
     await sendMagicLinkEmail(email, token);
     const isDev = !process.env.RESEND_API_KEY;
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   });
 
-  app.post("/api/auth/verify-magic-link", (req, res) => {
+  app.post("/api/auth/verify-magic-link", async (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "Token required" });
-    const email = storage.verifyMagicToken(token);
+    const email = await storage.verifyMagicToken(token);
     if (!email) return res.status(401).json({ error: "Invalid or expired token" });
-    let user = storage.getUserByEmail(email);
-    if (!user) user = storage.createUser({ email, name: email.split("@")[0] });
+    let user = await storage.getUserByEmail(email);
+    if (!user) user = await storage.createUser({ email, name: email.split("@")[0] });
     const sessionToken = createSessionToken(user.id);
     res.json({ ok: true, sessionToken, user });
   });
 
-  app.get("/api/auth/me", (req, res) => {
+  app.get("/api/auth/me", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const user = storage.getUserById(userId);
+    const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json(user);
   });
 
-  app.post("/api/auth/logout", (req, res) => {
-    const auth = req.headers["x-session-token"] as string;
-    if (auth) sessions.delete(auth);
-    res.json({ ok: true });
+  app.post("/api/auth/logout", async (req, res) => {
+    res.json({ ok: true }); // JWT is stateless — client discards token
   });
 
   // ── Stats ─────────────────────────────────────────────────────
-  app.get("/api/stats", (req, res) => {
+  app.get("/api/stats", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(storage.getStats(userId));
+    res.json(await storage.getStats(userId));
+  });
+
+  app.get("/api/embed/status", (_req, res) => {
+    res.json({ enabled: embeddingsEnabled, model: "text-embedding-3-small" });
   });
 
   // ── Agents ────────────────────────────────────────────────────
-  app.get("/api/agents", (req, res) => {
+  app.get("/api/agents", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(storage.getAgents(userId));
+    res.json(await storage.getAgents(userId));
   });
 
-  app.post("/api/agents", (req, res) => {
+  app.post("/api/agents", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, color } = req.body;
     if (!name) return res.status(400).json({ error: "Name required" });
-    const agent = storage.createAgent({
+    const agent = await storage.createAgent({
       userId,
       name,
       description: description || null,
@@ -144,47 +151,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       status: "idle",
       memoriesCount: 0,
       lastActiveAt: null,
-      enabled: 1,
+      enabled: true,
     });
     res.json(agent);
   });
 
-  app.patch("/api/agents/:id/toggle", (req, res) => {
+  app.patch("/api/agents/:id/toggle", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
     const { enabled, status } = req.body;
     if (status !== undefined) {
       // direct status set: "online" | "offline" | "idle"
-      storage.updateAgentStatus(agentId, status);
+      await storage.updateAgentStatus(agentId, status);
     } else {
-      storage.toggleAgent(agentId, !!enabled);
+      await storage.toggleAgent(agentId, !!enabled);
     }
     res.json({ ok: true });
   });
 
-  app.delete("/api/agents/:id", (req, res) => {
+  app.delete("/api/agents/:id", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    storage.deleteAgent(Number(req.params.id));
+    await storage.deleteAgent(Number(req.params.id));
     res.json({ ok: true });
   });
 
   // ── Memories ──────────────────────────────────────────────────
-  app.get("/api/memories", (req, res) => {
+  app.get("/api/memories", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const q = req.query.q as string;
-    const results = q ? storage.searchMemories(userId, q) : storage.getMemories(userId);
+    let results;
+    if (q) {
+      const queryEmbedding = await embedText(q);
+      results = await storage.searchMemories(userId, q, queryEmbedding ?? undefined);
+    } else {
+      results = await storage.getMemories(userId);
+    }
     res.json(results);
   });
 
-  app.post("/api/memories", (req, res) => {
+  app.post("/api/memories", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentId, agentName, content, type, importance, namespace } = req.body;
     if (!content) return res.status(400).json({ error: "Content required" });
-    const mem = storage.createMemory({
+    // Generate embedding asynchronously — don't block response
+    const embedding = await embedText(content);
+    const mem = await storage.createMemory({
       userId,
       agentId: agentId ?? null,
       agentName: agentName ?? null,
@@ -192,9 +207,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       type: type ?? "semantic",
       importance: importance ?? 0.5,
       namespace: namespace ?? "default",
+      embedding: embedding ? JSON.stringify(embedding) : null,
     });
     // Log it
-    storage.addLog({
+    await storage.addLog({
       userId,
       agentName: agentName ?? "System",
       agentColor: "#D4AF37",
@@ -205,26 +221,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(mem);
   });
 
-  app.delete("/api/memories/:id", (req, res) => {
+  app.delete("/api/memories/:id", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    storage.deleteMemory(Number(req.params.id));
+    await storage.deleteMemory(Number(req.params.id));
     res.json({ ok: true });
   });
 
   // ── Flows ─────────────────────────────────────────────────────
-  app.get("/api/flows", (req, res) => {
+  app.get("/api/flows", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(storage.getFlows(userId));
+    res.json(await storage.getFlows(userId));
   });
 
-  app.post("/api/flows", (req, res) => {
+  app.post("/api/flows", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds, positions } = req.body;
     if (!name) return res.status(400).json({ error: "Name required" });
-    const flow = storage.createFlow({
+    const flow = await storage.createFlow({
       userId,
       name,
       description: description || null,
@@ -234,11 +250,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(flow);
   });
 
-  app.patch("/api/flows/:id", (req, res) => {
+  app.patch("/api/flows/:id", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds, positions, agentRoles } = req.body;
-    const updated = storage.updateFlow(Number(req.params.id), {
+    const updated = await storage.updateFlow(Number(req.params.id), {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),
       ...(agentIds !== undefined && { agentIds: JSON.stringify(agentIds) }),
@@ -248,26 +264,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(updated);
   });
 
-  app.delete("/api/flows/:id", (req, res) => {
+  app.delete("/api/flows/:id", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    storage.deleteFlow(Number(req.params.id));
+    await storage.deleteFlow(Number(req.params.id));
     res.json({ ok: true });
   });
 
   // ── Rooms ─────────────────────────────────────────────────────
-  app.get("/api/rooms", (req, res) => {
+  app.get("/api/rooms", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(storage.getRooms(userId));
+    res.json(await storage.getRooms(userId));
   });
 
-  app.post("/api/rooms", (req, res) => {
+  app.post("/api/rooms", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds } = req.body;
     if (!name) return res.status(400).json({ error: "Name required" });
-    const room = storage.createRoom({
+    const room = await storage.createRoom({
       userId,
       name,
       description: description || null,
@@ -277,11 +293,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(room);
   });
 
-  app.patch("/api/rooms/:id", (req, res) => {
+  app.patch("/api/rooms/:id", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, status, agentIds } = req.body;
-    const updated = storage.updateRoom(Number(req.params.id), {
+    const updated = await storage.updateRoom(Number(req.params.id), {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),
       ...(status !== undefined && { status }),
@@ -290,36 +306,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(updated);
   });
 
-  app.delete("/api/rooms/:id", (req, res) => {
+  app.delete("/api/rooms/:id", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    storage.deleteRoom(Number(req.params.id));
+    await storage.deleteRoom(Number(req.params.id));
     res.json({ ok: true });
   });
 
   // ── Room Messages ─────────────────────────────────────────────
-  app.get("/api/rooms/:id/messages", (req, res) => {
+  app.get("/api/rooms/:id/messages", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(storage.getRoomMessages(Number(req.params.id)));
+    res.json(await storage.getRoomMessages(Number(req.params.id)));
   });
 
-  app.post("/api/rooms/:id/messages", (req, res) => {
+  app.post("/api/rooms/:id/messages", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentId, agentName, agentColor, content, isDecision } = req.body;
     if (!content || !agentName) return res.status(400).json({ error: "agentName and content required" });
-    const msg = storage.addRoomMessage({
+    const msg = await storage.addRoomMessage({
       roomId: Number(req.params.id),
       agentId: agentId ?? null,
       agentName,
       agentColor: agentColor ?? "#D4AF37",
       content,
-      isDecision: isDecision ? 1 : 0,
+      isDecision: !!isDecision,
     });
     // Auto-save decision to memories
     if (isDecision) {
-      storage.createMemory({
+      await storage.createMemory({
         userId,
         agentId: agentId ?? null,
         agentName,
@@ -330,7 +346,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
     // Log it
-    storage.addLog({
+    await storage.addLog({
       userId,
       agentName,
       agentColor: agentColor ?? "#D4AF37",
@@ -338,23 +354,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       detail: isDecision ? `Decision logged: "${content.slice(0, 50)}…"` : `${agentName} contributed to deliberation`,
       latencyMs: null,
     });
+    // Broadcast to WebSocket subscribers
+    broadcastToRoom(Number(req.params.id), msg);
     res.json(msg);
   });
 
   // ── Logs / Live Feed ──────────────────────────────────────────
-  app.get("/api/logs", (req, res) => {
+  app.get("/api/logs", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(storage.getLogs(userId));
+    res.json(await storage.getLogs(userId));
   });
 
   // ── Billing / Plan ────────────────────────────────────────────
-  app.patch("/api/billing/plan", (req, res) => {
+  app.patch("/api/billing/plan", async (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { plan, billingCycle } = req.body;
     if (!plan || !billingCycle) return res.status(400).json({ error: "plan and billingCycle required" });
-    const updated = storage.updateUserPlan(userId, plan, billingCycle);
+    const updated = await storage.updateUserPlan(userId, plan, billingCycle);
     res.json(updated);
   });
 

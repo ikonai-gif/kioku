@@ -29,14 +29,75 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const { data: agents = [] } = useQuery<any[]>({ queryKey: ["/api/agents"] });
   const { data: flows = [] } = useQuery<any[]>({ queryKey: ["/api/flows"] });
 
+  const [wsConnected, setWsConnected] = useState(false);
+
   const { data: messages = [], isLoading: msgsLoading } = useQuery<any[]>({
     queryKey: ["/api/rooms", roomId, "messages"],
     queryFn: async () => {
       const r = await apiRequest("GET", `/api/rooms/${roomId}/messages`);
       return r.json();
     },
-    refetchInterval: 4000,
+    // Fallback polling only when WebSocket is disconnected
+    refetchInterval: wsConnected ? false : 4000,
   });
+
+  // ── WebSocket real-time ───────────────────────────────────────────────
+  useEffect(() => {
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = `${protocol}://${window.location.host}/ws`;
+    let ws: WebSocket;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+    let unmounted = false;
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        if (unmounted) { ws.close(); return; }
+        setWsConnected(true);
+        ws.send(JSON.stringify({ type: "subscribe", roomId }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "message") {
+            // Append new message to cache without full refetch
+            queryClient.setQueryData<any[]>(
+              ["/api/rooms", roomId, "messages"],
+              (prev) => {
+                if (!prev) return [data];
+                // Deduplicate by id
+                if (prev.some((m) => m.id === data.id)) return prev;
+                return [...prev, data];
+              }
+            );
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        if (!unmounted) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
+    connect();
+
+    return () => {
+      unmounted = true;
+      clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [roomId]);
 
   const roomAgentIds: number[] = room ? JSON.parse(room.agentIds || "[]") : [];
   const roomAgents = (agents as any[]).filter((a: any) => roomAgentIds.includes(a.id));
@@ -101,7 +162,16 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             </a>
           </Link>
           <div className="flex-1 min-w-0">
-            <h1 className="text-sm font-semibold text-foreground">{room?.name ?? "Room"}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-semibold text-foreground">{room?.name ?? "Room"}</h1>
+              <span
+                title={wsConnected ? "Real-time connected" : "Polling fallback"}
+                className={cn(
+                  "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                  wsConnected ? "bg-emerald-400 animate-pulse" : "bg-muted-foreground/40"
+                )}
+              />
+            </div>
             {room?.description && (
               <p className="text-[10px] text-muted-foreground">{room.description}</p>
             )}
