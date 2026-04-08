@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Send, CheckCircle2, Star, Bot } from "lucide-react";
+import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff } from "lucide-react";
 import { Link } from "wouter";
 import { cn } from "@/lib/utils";
 
@@ -203,6 +203,42 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
 
       {/* ── Input area ───────────────────────────────────────────────────── */}
       <div className="flex-shrink-0 border-t border-border bg-background px-5 py-4 space-y-3">
+
+        {/* ── In Room — participant toggle strip ── */}
+        {roomAgents.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap border-b border-border pb-3">
+            <span className="text-[10px] text-muted-foreground">In Room:</span>
+            {roomAgents.map((a: any) => {
+              const online = a.status === "online";
+              return (
+                <button
+                  key={a.id}
+                  data-testid={`button-toggle-agent-${a.id}`}
+                  onClick={() => {
+                    const newStatus = online ? "offline" : "online";
+                    apiRequest("PATCH", `/api/agents/${a.id}/toggle`, { status: newStatus })
+                      .then(() => queryClient.invalidateQueries({ queryKey: ["/api/agents"] }));
+                  }}
+                  title={online ? `${a.name} — click to disable` : `${a.name} — click to enable`}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all",
+                    online
+                      ? "border-transparent"
+                      : "border-border text-muted-foreground opacity-40 grayscale hover:opacity-60"
+                  )}
+                  style={online ? { background: a.color + "22", border: `1px solid ${a.color}55`, color: a.color } : {}}
+                >
+                  <div className={cn("w-1.5 h-1.5 rounded-full", online ? "animate-pulse" : "bg-muted-foreground/30")}
+                    style={online ? { background: a.color } : {}} />
+                  {a.name}
+                  {online
+                    ? <Wifi className="w-2.5 h-2.5 opacity-60" />
+                    : <WifiOff className="w-2.5 h-2.5" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Speaking as — agent pills */}
         <div className="flex items-center gap-2 flex-wrap">

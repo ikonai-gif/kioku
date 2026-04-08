@@ -117,8 +117,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/agents/:id/toggle", (req, res) => {
     const userId = getSessionUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { enabled } = req.body;
-    storage.toggleAgent(Number(req.params.id), !!enabled);
+    const agentId = Number(req.params.id);
+    const { enabled, status } = req.body;
+    if (status !== undefined) {
+      // direct status set: "online" | "offline" | "idle"
+      storage.updateAgentStatus(agentId, status);
+    } else {
+      storage.toggleAgent(agentId, !!enabled);
+    }
     res.json({ ok: true });
   });
 
