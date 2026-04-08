@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { initDb, initDemoUser } from "./storage";
+import { rateLimitMiddleware } from "./ratelimit";
 
 const app = express();
 const httpServer = createServer(app);
@@ -29,6 +30,9 @@ app.use(["/api", "/v1", "/mcp", "/health"], (_req, res, next) => {
   res.setHeader("Pragma", "no-cache");
   next();
 });
+
+// Rate limiting — per plan, per user
+app.use(rateLimitMiddleware);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
