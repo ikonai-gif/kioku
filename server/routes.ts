@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 import { Resend } from "resend";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom } from "./ws";
+import { triggerAgentResponses } from "./deliberation";
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -357,6 +358,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Broadcast to WebSocket subscribers
     broadcastToRoom(Number(req.params.id), msg);
     res.json(msg);
+
+    // Trigger AI agent responses asynchronously (non-blocking)
+    const roomId = Number(req.params.id);
+    const room = await storage.getRoom(roomId);
+    if (room) {
+      const roomAgentIds: number[] = JSON.parse(room.agentIds || "[]");
+      triggerAgentResponses(
+        roomId,
+        userId,
+        agentId ?? null,
+        agentName,
+        content,
+        roomAgentIds
+      ).catch((e) => console.error("[deliberation]", e));
+    }
   });
 
   // ── Logs / Live Feed ──────────────────────────────────────────
