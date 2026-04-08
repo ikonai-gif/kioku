@@ -54,7 +54,7 @@ const PLANS = [
 
 // ── Checkout via KIOKU backend → Stripe ───────────────────────────────────────
 async function createCheckout(apiKey: string, plan: string, billingCycle: string) {
-  const res = await fetch(`${KIOKU_API}/v1/billing/checkout`, {
+  const res = await fetch(`${KIOKU_API}/api/billing/checkout`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -76,7 +76,7 @@ async function createCheckout(apiKey: string, plan: string, billingCycle: string
 
 // ── Customer portal via KIOKU backend ─────────────────────────────────────────
 async function createPortal(apiKey: string) {
-  const res = await fetch(`${KIOKU_API}/v1/billing/portal`, {
+  const res = await fetch(`${KIOKU_API}/api/billing/portal`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,

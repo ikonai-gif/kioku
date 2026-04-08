@@ -62,7 +62,7 @@ async function resolveUser(req: Request): Promise<number | null> {
 // ── Register billing routes ────────────────────────────────────────────────────
 export function registerBilling(app: Express) {
   // ── POST /v1/billing/checkout — create Stripe Checkout session ─────────────
-  app.post("/v1/billing/checkout", async (req: Request, res: Response) => {
+  app.post("/api/billing/checkout", async (req: Request, res: Response) => {
     if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
 
     const userId = await resolveUser(req);
@@ -117,7 +117,7 @@ export function registerBilling(app: Express) {
   });
 
   // ── POST /v1/billing/portal — create Stripe Customer Portal session ─────────
-  app.post("/v1/billing/portal", async (req: Request, res: Response) => {
+  app.post("/api/billing/portal", async (req: Request, res: Response) => {
     if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
 
     const userId = await resolveUser(req);
@@ -145,7 +145,7 @@ export function registerBilling(app: Express) {
 
   // ── POST /v1/billing/webhook — Stripe webhook ──────────────────────────────
   app.post(
-    "/v1/billing/webhook",
+    "/api/billing/webhook",
     // raw body required for Stripe signature verification
     (req: Request, res: Response, next: any) => {
         // rawBody is set by express.json verify callback in index.ts
@@ -224,7 +224,7 @@ export function registerBilling(app: Express) {
   );
 
   // ── GET /v1/billing/status — current plan info ────────────────────────────
-  app.get("/v1/billing/status", async (req: Request, res: Response) => {
+  app.get("/api/billing/status", async (req: Request, res: Response) => {
     const userId = await resolveUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
