@@ -8,9 +8,10 @@ export const users = pgTable("users", {
   email:        text("email").notNull().unique(),
   name:         text("name").notNull(),
   company:      text("company"),
-  plan:         text("plan").notNull().default("dev"),       // dev | starter | team | business
-  billingCycle: text("billing_cycle").notNull().default("monthly"),
-  apiKey:       text("api_key").notNull().unique(),
+  plan:             text("plan").notNull().default("dev"),       // dev | starter | team | business
+  billingCycle:     text("billing_cycle").notNull().default("monthly"),
+  stripeCustomerId: text("stripe_customer_id"),
+  apiKey:           text("api_key").notNull().unique(),
   createdAt:    bigint("created_at", { mode: "number" }).notNull(),
 });
 

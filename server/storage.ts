@@ -108,6 +108,10 @@ export async function initDb() {
       created_at  BIGINT NOT NULL
     );
   `);
+  // Phase 3: add stripe_customer_id column if not exists (safe migration)
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+  `);
 }
 
 function generateApiKey(): string {
@@ -132,6 +136,8 @@ export interface IStorage {
   getUserById(id: number): Promise<User | undefined>;
   createUser(data: { email: string; name: string; company?: string; plan?: string }): Promise<User>;
   updateUserPlan(id: number, plan: string, billingCycle: string): Promise<User | undefined>;
+  updateStripeCustomerId(id: number, stripeCustomerId: string): Promise<void>;
+  getUser(id: number): Promise<User | undefined>;
 
   createMagicToken(email: string): Promise<string>;
   verifyMagicToken(token: string): Promise<string | null>;
@@ -199,6 +205,12 @@ export class Storage implements IStorage {
   }
   async updateUserPlan(id: number, plan: string, billingCycle: string) {
     return db.update(users).set({ plan, billingCycle }).where(eq(users.id, id)).returning().then(r => r[0]);
+  }
+  async updateStripeCustomerId(id: number, stripeCustomerId: string) {
+    await db.update(users).set({ stripeCustomerId }).where(eq(users.id, id));
+  }
+  async getUser(id: number) {
+    return this.getUserById(id);
   }
 
   // ── Magic tokens ───────────────────────────────────────────────────────────
