@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Link } from "wouter";
+import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 function StatCard({ icon: Icon, label, value, sub, color }: {
   icon: any; label: string; value: string | number; sub?: string; color: string;
@@ -214,16 +217,42 @@ export default function DashboardPage() {
 }
 
 function APIKeyCard() {
-  const { data: user } = useQuery({ queryKey: ["/api/auth/me"] });
+  const { data: user, refetch } = useQuery({ queryKey: ["/api/auth/me"] });
+  const { toast } = useToast();
   const [show, setShow] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const isDemo = (user as any)?.id === 1;
+
+  async function handleRotate() {
+    if (!confirm("Rotate API key? Your current key will stop working immediately.")) return;
+    setRotating(true);
+    try {
+      const res = await apiRequest("POST", "/api/auth/rotate-key");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await refetch();
+      toast({ title: "API key rotated", description: "New key is active." });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message, variant: "destructive" });
+    } finally {
+      setRotating(false);
+    }
+  }
 
   return (
     <div className="bg-card border border-card-border rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
         <div>
           <h2 className="text-sm font-semibold text-foreground">API Key</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Use this key to authenticate KIOKU API requests</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Authenticate KIOKU API requests with this key</p>
         </div>
+        {!isDemo && (
+          <button
+            className="text-[11px] text-red-400 hover:text-red-300 font-medium disabled:opacity-40"
+            onClick={handleRotate}
+            disabled={rotating}
+          >{rotating ? "Rotating…" : "Regenerate"}</button>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <div className="flex-1 bg-muted rounded-lg px-3 py-2 font-mono text-xs text-foreground truncate">
@@ -236,14 +265,14 @@ function APIKeyCard() {
         {(user as any)?.apiKey && (
           <button
             className="text-xs text-muted-foreground hover:text-foreground px-2"
-            onClick={() => navigator.clipboard.writeText((user as any).apiKey)}
+            onClick={() => { navigator.clipboard.writeText((user as any).apiKey); toast({ title: "Copied" }); }}
           >Copy</button>
         )}
       </div>
       <div className="mt-3 bg-muted/50 rounded-lg p-3">
         <p className="text-[10px] text-muted-foreground font-mono">
-          curl -X POST https://kioku-production.up.railway.app/v1/memories \<br />
-          &nbsp;&nbsp;-H "Authorization: Bearer {'<YOUR_API_KEY>'}" \<br />
+          curl -X POST https://usekioku.com/api/memories \<br />
+          &nbsp;&nbsp;-H "X-API-Key: {'<YOUR_KEY>'}" \<br />
           &nbsp;&nbsp;-d {'{"content":"User prefers dark mode","type":"semantic"}'}
         </p>
       </div>
@@ -251,5 +280,3 @@ function APIKeyCard() {
   );
 }
 
-// Need useState import
-import { useState } from "react";

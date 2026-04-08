@@ -137,6 +137,7 @@ export interface IStorage {
   createUser(data: { email: string; name: string; company?: string; plan?: string }): Promise<User>;
   updateUserPlan(id: number, plan: string, billingCycle: string): Promise<User | undefined>;
   updateStripeCustomerId(id: number, stripeCustomerId: string): Promise<void>;
+  rotateApiKey(id: number): Promise<User | undefined>;
   getUser(id: number): Promise<User | undefined>;
 
   createMagicToken(email: string): Promise<string>;
@@ -208,6 +209,10 @@ export class Storage implements IStorage {
   }
   async updateStripeCustomerId(id: number, stripeCustomerId: string) {
     await db.update(users).set({ stripeCustomerId }).where(eq(users.id, id));
+  }
+  async rotateApiKey(id: number) {
+    const newKey = generateApiKey();
+    return db.update(users).set({ apiKey: newKey }).where(eq(users.id, id)).returning().then(r => r[0]);
   }
   async getUser(id: number) {
     return this.getUserById(id);

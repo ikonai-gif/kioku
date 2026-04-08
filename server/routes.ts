@@ -388,6 +388,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(await storage.getLogs(userId));
   });
 
+  // ── API Key Rotation ──────────────────────────────────────────
+  app.post("/api/auth/rotate-key", async (req, res) => {
+    const userId = getSessionUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (userId === 1) return res.status(403).json({ error: "Demo account key cannot be rotated" });
+    const user = await storage.rotateApiKey(userId);
+    res.json({ ok: true, apiKey: user?.apiKey });
+  });
+
   // ── Waitlist ──────────────────────────────────────────────────
   app.post("/api/waitlist", async (req, res) => {
     const { email, name, company, useCase } = req.body;

@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Check, Zap, ExternalLink, Settings } from "lucide-react";
+import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── KIOKU™ backend (Railway) — real Stripe ─────────────────────────────────
@@ -285,6 +285,9 @@ export default function BillingPage() {
         })}
       </div>
 
+      {/* Usage stats */}
+      <UsageCard plan={currentPlan} />
+
       {/* Stripe badge */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
         <span>🔒 Payments secured by Stripe. IKONBAI™, Inc. does not store card details.</span>
@@ -318,6 +321,65 @@ export default function BillingPage() {
         {" · "}
         <a href="#/terms" className="underline hover:text-muted-foreground/70">Terms of Service</a>
       </p>
+    </div>
+  );
+}
+
+// ── Plan limit definitions (mirror ratelimit.ts) ──────────────────────────
+const PLAN_LIMITS: Record<string, { daily: number; memories: number; agents: number; rooms: number }> = {
+  dev:        { daily:      1_000, memories:   500, agents:  3, rooms: 1 },
+  starter:    { daily:     10_000, memories: 10_000, agents: 10, rooms: 5 },
+  growth:     { daily:    100_000, memories: 999_999, agents: 99, rooms: 99 },
+  enterprise: { daily: 99_999_999, memories: 999_999, agents: 99, rooms: 99 },
+};
+
+function UsageBar({ label, used, limit, icon: Icon }: { label: string; used: number; limit: number; icon: any }) {
+  const pct = limit >= 99_999 ? 0 : Math.min(100, Math.round((used / limit) * 100));
+  const unlimited = limit >= 99_999;
+  const color = pct > 90 ? "bg-red-400" : pct > 70 ? "bg-yellow-400" : "bg-green-400";
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between text-xs">
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <Icon className="w-3.5 h-3.5" />
+          {label}
+        </div>
+        <span className="font-mono text-foreground">
+          {used.toLocaleString()} {unlimited ? "/ ∞" : `/ ${limit.toLocaleString()}`}
+        </span>
+      </div>
+      {!unlimited && (
+        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+          <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UsageCard({ plan }: { plan: string }) {
+  const { data: stats } = useQuery<any>({ queryKey: ["/api/stats"] });
+  const { data: agents = [] } = useQuery<any[]>({ queryKey: ["/api/agents"] });
+  const { data: rooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
+  const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS["dev"];
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5">
+      <div className="mb-4">
+        <h2 className="text-sm font-semibold text-foreground">Current Usage</h2>
+        <p className="text-xs text-muted-foreground mt-0.5 capitalize">{plan} plan limits</p>
+      </div>
+      <div className="space-y-4">
+        <UsageBar label="Memories" used={(stats as any)?.totalMemories ?? 0} limit={limits.memories} icon={Brain} />
+        <UsageBar label="Agents" used={(agents as any[]).length} limit={limits.agents} icon={Bot} />
+        <UsageBar label="Rooms" used={(rooms as any[]).length} limit={limits.rooms} icon={MessageSquare} />
+        <div className="pt-1 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between">
+          <span>API requests / day</span>
+          <span className="font-mono text-foreground">
+            {limits.daily >= 99_999_999 ? "Unlimited" : limits.daily.toLocaleString()}
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
