@@ -15,18 +15,18 @@ export function serveStatic(app: Express) {
     );
   }
 
-  // Serve static assets (JS, CSS, images, etc.)
-  app.use(express.static(distPath));
-
-  // Root → landing page
+  // Root → landing page (MUST be before express.static so index.html doesn't win)
   app.get("/", (_req: Request, res: Response) => {
     res.sendFile(path.resolve(distPath, "landing.html"));
   });
 
-  // /app and all SPA sub-routes → index.html
+  // /app → SPA index.html
   app.get("/app", (_req: Request, res: Response) => {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
+
+  // Serve static assets (JS, CSS, images, fonts, etc.)
+  app.use(express.static(distPath));
 
   // Everything else falls through to index.html (SPA catch-all)
   app.use("/{*path}", (_req: Request, res: Response) => {
