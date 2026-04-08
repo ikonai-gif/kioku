@@ -1,4 +1,4 @@
-import express, { type Express } from "express";
+import express, { type Express, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
 
@@ -15,10 +15,21 @@ export function serveStatic(app: Express) {
     );
   }
 
+  // Serve static assets (JS, CSS, images, etc.)
   app.use(express.static(distPath));
 
-  // fall through to index.html if the file doesn't exist
-  app.use("/{*path}", (_req, res) => {
+  // Root → landing page
+  app.get("/", (_req: Request, res: Response) => {
+    res.sendFile(path.resolve(distPath, "landing.html"));
+  });
+
+  // /app and all SPA sub-routes → index.html
+  app.get("/app", (_req: Request, res: Response) => {
+    res.sendFile(path.resolve(distPath, "index.html"));
+  });
+
+  // Everything else falls through to index.html (SPA catch-all)
+  app.use("/{*path}", (_req: Request, res: Response) => {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

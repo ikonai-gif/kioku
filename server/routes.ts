@@ -388,6 +388,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(await storage.getLogs(userId));
   });
 
+  // ── Waitlist ──────────────────────────────────────────────────
+  app.post("/api/waitlist", async (req, res) => {
+    const { email, name, company, useCase } = req.body;
+    if (!email) return res.status(400).json({ error: "Email required" });
+    // Store as a user (reuse magic-link flow — already handles duplicates)
+    let user = await storage.getUserByEmail(email);
+    if (!user) {
+      user = await storage.createUser({
+        email,
+        name: name || email.split("@")[0],
+        company: company || null,
+      });
+    }
+    // Send confirmation email if Resend is configured
+    if (resend) {
+      try {
+        await resend.emails.send({
+          from: "KIOKU™ <noreply@usekioku.com>",
+          to: email,
+          subject: "You're on the KIOKU™ waitlist",
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#070D1A;color:#EAE6DC;border-radius:12px;border:1px solid rgba(212,175,55,0.2)">
+              <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
+              <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Memory &amp; Deliberation Platform by IKONBAI™</p>
+              <p style="margin:0 0 16px">You're on the list${name ? `, ${name}` : ""}. We'll reach out when early access opens.</p>
+              <p style="font-size:13px;color:#7A8FAD;margin:0">— The KIOKU™ team</p>
+            </div>
+          `,
+        });
+      } catch (e) {
+        console.error("[waitlist] email error:", e);
+      }
+    }
+    console.log(`[waitlist] ${email}${company ? ` (${company})` : ""}${useCase ? ` use: ${useCase}` : ""}`);
+    res.json({ ok: true, message: "You're on the waitlist. We'll be in touch." });
+  });
+
   // ── Billing / Plan ────────────────────────────────────────────
   app.patch("/api/billing/plan", async (req, res) => {
     const userId = getSessionUser(req);

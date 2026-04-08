@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KIOKU™ — Agent Memory & Deliberation Platform by IKONBAI™</title>
+  <meta name="description" content="The only agent memory platform built for decisions. Persistent memory, multi-agent deliberation, and auditable decision trails. MCP-native. Patent Pending." />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta property="og:title" content="KIOKU™ — Agent Memory & Deliberation Platform" />
+  <meta property="og:description" content="The only agent memory platform built for decisions — not just context." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy:    #0a0f1e;
+      --navy2:   #0d1529;
+      --navy3:   #111c36;
+      --gold:    #D4AF37;
+      --gold2:   #c9a227;
+      --gold-dim: rgba(212,175,55,0.15);
+      --gold-glow: rgba(212,175,55,0.08);
+      --text:    #e8eaf0;
+      --muted:   #7a8499;
+      --border:  rgba(212,175,55,0.12);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: linear-gradient(160deg, var(--navy) 0%, var(--navy2) 50%, #0b1220 100%);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem; height: 64px;
+      background: rgba(10,15,30,0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 1.1rem; font-weight: 700; letter-spacing: 0.04em;
+      color: var(--text); text-decoration: none;
+    }
+    .nav-logo svg { width: 28px; height: 28px; }
+    .nav-badge {
+      font-size: 0.6rem; font-weight: 600; letter-spacing: 0.12em;
+      background: var(--gold-dim); color: var(--gold);
+      border: 1px solid rgba(212,175,55,0.3);
+      padding: 2px 7px; border-radius: 4px;
+    }
+    .nav-links { display: flex; align-items: center; gap: 1.5rem; }
+    .nav-links a {
+      font-size: 0.85rem; color: var(--muted); text-decoration: none;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .btn-nav {
+      font-size: 0.8rem; font-weight: 600; padding: 7px 18px;
+      border-radius: 7px; cursor: pointer; text-decoration: none;
+      border: 1px solid var(--gold); color: var(--navy);
+      background: var(--gold); transition: all 0.2s;
+    }
+    .btn-nav:hover { background: var(--gold2); }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+      padding: 80px 2rem 4rem;
+      position: relative;
+    }
+    .hero::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse 80% 60% at 50% 40%, rgba(212,175,55,0.06) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-label {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--gold);
+      border: 1px solid rgba(212,175,55,0.25);
+      background: rgba(212,175,55,0.06);
+      padding: 6px 14px; border-radius: 100px;
+      margin-bottom: 2rem;
+    }
+    .hero-label::before {
+      content: ''; width: 6px; height: 6px;
+      background: var(--gold); border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+
+    .hero h1 {
+      font-size: clamp(2.4rem, 6vw, 4.2rem);
+      font-weight: 700; line-height: 1.1;
+      letter-spacing: -0.03em;
+      max-width: 820px;
+      margin-bottom: 1.5rem;
+    }
+    .hero h1 em {
+      font-style: normal;
+      background: linear-gradient(135deg, var(--gold) 0%, #f0d060 50%, var(--gold) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-sub {
+      font-size: clamp(1rem, 2vw, 1.2rem);
+      color: var(--muted); line-height: 1.7;
+      max-width: 580px; margin-bottom: 2.5rem;
+    }
+
+    .hero-cta {
+      display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center;
+    }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 0.95rem; font-weight: 600; padding: 14px 28px;
+      border-radius: 10px; cursor: pointer; text-decoration: none;
+      background: var(--gold); color: var(--navy);
+      border: none; transition: all 0.2s;
+      box-shadow: 0 0 30px rgba(212,175,55,0.2);
+    }
+    .btn-primary:hover {
+      background: var(--gold2);
+      box-shadow: 0 0 40px rgba(212,175,55,0.35);
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 0.95rem; font-weight: 500; padding: 14px 28px;
+      border-radius: 10px; cursor: pointer; text-decoration: none;
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border); transition: all 0.2s;
+    }
+    .btn-secondary:hover { border-color: rgba(212,175,55,0.4); background: var(--gold-glow); }
+
+    .hero-note {
+      margin-top: 1.5rem;
+      font-size: 0.75rem; color: var(--muted);
+      letter-spacing: 0.03em;
+    }
+    .hero-note span { color: var(--gold); }
+
+    /* ── TERMINAL PREVIEW ── */
+    .terminal-wrap {
+      margin-top: 4rem; width: 100%; max-width: 680px;
+      border-radius: 14px; overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: 0 0 60px rgba(212,175,55,0.06), 0 20px 60px rgba(0,0,0,0.4);
+    }
+    .terminal-bar {
+      background: var(--navy3); padding: 10px 16px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .dot { width: 11px; height: 11px; border-radius: 50%; }
+    .dot-r { background: #ff5f57; }
+    .dot-y { background: #febc2e; }
+    .dot-g { background: #28c840; }
+    .terminal-title { margin-left: auto; margin-right: auto; font-size: 0.75rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+    .terminal-body {
+      background: #060b17; padding: 1.5rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem; line-height: 1.9;
+    }
+    .t-dim   { color: #3a4a6b; }
+    .t-green { color: #4ade80; }
+    .t-gold  { color: var(--gold); }
+    .t-blue  { color: #60a5fa; }
+    .t-muted { color: #5a6a8a; }
+    .t-white { color: #c8d0e8; }
+    .cursor { display: inline-block; width: 8px; height: 14px; background: var(--gold); animation: blink 1s step-end infinite; vertical-align: middle; }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* ── SECTION ── */
+    section { padding: 6rem 2rem; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    .section-label {
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--gold); margin-bottom: 1rem;
+    }
+    .section-title {
+      font-size: clamp(1.8rem, 4vw, 2.8rem); font-weight: 700;
+      line-height: 1.15; letter-spacing: -0.02em; margin-bottom: 1rem;
+    }
+    .section-sub { font-size: 1.05rem; color: var(--muted); line-height: 1.7; max-width: 520px; }
+
+    /* ── DIVIDER ── */
+    .divider { border: none; border-top: 1px solid var(--border); margin: 0; }
+
+    /* ── FEATURES ── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1.5px; margin-top: 4rem;
+      border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+    }
+    .feature-card {
+      background: var(--navy2); padding: 2rem;
+      position: relative; overflow: hidden;
+      transition: background 0.2s;
+    }
+    .feature-card:hover { background: var(--navy3); }
+    .feature-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .feature-card:hover::before { opacity: 1; }
+    .feature-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      background: var(--gold-dim); border: 1px solid rgba(212,175,55,0.2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem; margin-bottom: 1.2rem;
+    }
+    .feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .feature-card p { font-size: 0.88rem; color: var(--muted); line-height: 1.6; }
+    .feature-tag {
+      display: inline-block; margin-top: 1rem;
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--gold);
+      background: var(--gold-dim); border: 1px solid rgba(212,175,55,0.2);
+      padding: 3px 9px; border-radius: 4px;
+    }
+
+    /* ── VS TABLE ── */
+    .vs-section { background: rgba(212,175,55,0.02); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .vs-table { width: 100%; border-collapse: collapse; margin-top: 3rem; }
+    .vs-table th {
+      padding: 1rem 1.5rem; text-align: left;
+      font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em;
+      color: var(--muted); border-bottom: 1px solid var(--border);
+    }
+    .vs-table th.highlight { color: var(--gold); }
+    .vs-table td {
+      padding: 1rem 1.5rem; font-size: 0.88rem;
+      border-bottom: 1px solid rgba(212,175,55,0.05);
+    }
+    .vs-table tr:last-child td { border-bottom: none; }
+    .vs-table td:first-child { color: var(--muted); font-size: 0.82rem; }
+    .check { color: #4ade80; font-weight: 700; }
+    .cross { color: #f87171; }
+    .partial { color: var(--gold); }
+
+    /* ── PRICING ── */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem; margin-top: 3rem;
+    }
+    .price-card {
+      background: var(--navy2); border: 1px solid var(--border);
+      border-radius: 14px; padding: 2rem; position: relative;
+    }
+    .price-card.popular {
+      border-color: rgba(212,175,55,0.4);
+      box-shadow: 0 0 40px rgba(212,175,55,0.08);
+    }
+    .popular-badge {
+      position: absolute; top: -11px; left: 50%; transform: translateX(-50%);
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; background: var(--gold); color: var(--navy);
+      padding: 3px 12px; border-radius: 100px;
+    }
+    .plan-name { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.75rem; }
+    .plan-name.starter { color: #60a5fa; }
+    .plan-name.team    { color: var(--gold); }
+    .plan-name.biz     { color: #c084fc; }
+    .plan-price { font-size: 2rem; font-weight: 700; line-height: 1; margin-bottom: 0.25rem; }
+    .plan-price span { font-size: 0.9rem; font-weight: 400; color: var(--muted); }
+    .plan-desc { font-size: 0.8rem; color: var(--muted); margin-bottom: 1.5rem; }
+    .plan-features { list-style: none; space-y: 0.5rem; }
+    .plan-features li {
+      font-size: 0.82rem; color: var(--muted); padding: 0.3rem 0;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .plan-features li::before { content: '✓'; color: #4ade80; font-weight: 700; flex-shrink: 0; }
+
+    /* ── MCP BADGE ── */
+    .mcp-banner {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 1.5rem;
+      background: linear-gradient(135deg, rgba(212,175,55,0.06) 0%, rgba(212,175,55,0.02) 100%);
+      border: 1px solid rgba(212,175,55,0.2); border-radius: 16px;
+      padding: 2rem 2.5rem; margin-top: 4rem;
+    }
+    .mcp-left h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.4rem; }
+    .mcp-left p { font-size: 0.88rem; color: var(--muted); }
+    .mcp-logos { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .mcp-logo {
+      font-size: 0.75rem; font-weight: 600; padding: 6px 14px;
+      border-radius: 7px; background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1); color: var(--muted);
+    }
+
+    /* ── WAITLIST ── */
+    .waitlist-section {
+      text-align: center;
+      background: linear-gradient(180deg, transparent 0%, rgba(212,175,55,0.04) 100%);
+      border-top: 1px solid var(--border);
+    }
+    .waitlist-box {
+      max-width: 480px; margin: 3rem auto 0;
+    }
+    .waitlist-form { display: flex; gap: 0.75rem; flex-wrap: wrap; justify-content: center; }
+    .waitlist-input {
+      flex: 1; min-width: 220px;
+      background: var(--navy3); border: 1px solid var(--border);
+      color: var(--text); border-radius: 9px; padding: 12px 16px;
+      font-size: 0.9rem; font-family: inherit; outline: none;
+      transition: border-color 0.2s;
+    }
+    .waitlist-input:focus { border-color: rgba(212,175,55,0.5); }
+    .waitlist-input::placeholder { color: var(--muted); }
+    .btn-waitlist {
+      background: var(--gold); color: var(--navy);
+      border: none; border-radius: 9px; padding: 12px 24px;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      font-family: inherit; transition: all 0.2s;
+    }
+    .btn-waitlist:hover { background: var(--gold2); }
+    .waitlist-success {
+      display: none; margin-top: 1rem;
+      font-size: 0.85rem; color: #4ade80;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2.5rem 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 1rem;
+    }
+    footer p { font-size: 0.78rem; color: var(--muted); }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+    .footer-links { display: flex; gap: 1.5rem; }
+
+    /* ── STAT ROW ── */
+    .stats-row {
+      display: flex; gap: 3rem; flex-wrap: wrap;
+      margin-top: 5rem; padding-top: 3rem;
+      border-top: 1px solid var(--border);
+    }
+    .stat-item { }
+    .stat-num { font-size: 2rem; font-weight: 700; color: var(--gold); }
+    .stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+
+    @media (max-width: 640px) {
+      .nav-links { display: none; }
+      .features-grid { grid-template-columns: 1fr; border-radius: 12px; }
+      .vs-table { font-size: 0.8rem; }
+      .vs-table th, .vs-table td { padding: 0.75rem 0.75rem; }
+      .hero h1 { font-size: 2rem; }
+      .mcp-banner { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="/" class="nav-logo">
+    <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="KIOKU logo">
+      <rect x="2" y="2" width="24" height="24" rx="6" stroke="#D4AF37" stroke-width="1.5"/>
+      <path d="M8 8L8 20M8 14L14 8M8 14L14 20" stroke="#D4AF37" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="19" cy="10" r="2.5" fill="#D4AF37"/>
+      <circle cx="19" cy="18" r="2.5" stroke="#D4AF37" stroke-width="1.5"/>
+      <line x1="19" y1="12.5" x2="19" y2="15.5" stroke="#D4AF37" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    KIOKU™
+    <span class="nav-badge">BETA</span>
+  </a>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#mcp">MCP</a>
+    <a href="#waitlist">Early Access</a>
+  </div>
+  <a href="/app" class="btn-nav">Open Dashboard →</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-label">Now in Private Beta</div>
+  <h1>The Only Agent Memory<br/>Built for <em>Decisions</em></h1>
+  <p class="hero-sub">
+    KIOKU™ gives your AI agents persistent memory, structured deliberation rooms,
+    and a queryable audit trail of every decision made — not just context.
+  </p>
+  <div class="hero-cta">
+    <a href="#waitlist" class="btn-primary">
+      Request Early Access
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+    <a href="/app" class="btn-secondary">View Demo Dashboard</a>
+  </div>
+  <p class="hero-note"><span>Patent Pending</span> · MCP Native · IKONBAI™, Inc.</p>
+
+  <!-- Terminal -->
+  <div class="terminal-wrap">
+    <div class="terminal-bar">
+      <div class="dot dot-r"></div>
+      <div class="dot dot-y"></div>
+      <div class="dot dot-g"></div>
+      <span class="terminal-title">kioku-sdk — agent memory</span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="t-dim">// Store a decision with full context</span></div>
+      <div><span class="t-blue">const</span> <span class="t-white">kioku</span> <span class="t-muted">=</span> <span class="t-green">new</span> <span class="t-white">KiokuClient</span><span class="t-muted">({</span></div>
+      <div>&nbsp;&nbsp;<span class="t-gold">apiKey</span><span class="t-muted">:</span> <span class="t-green">"kk_••••••••••"</span><span class="t-muted">,</span></div>
+      <div><span class="t-muted">});</span></div>
+      <div>&nbsp;</div>
+      <div><span class="t-blue">await</span> <span class="t-white">kioku</span><span class="t-muted">.</span><span class="t-gold">memories</span><span class="t-muted">.</span><span class="t-white">store</span><span class="t-muted">({</span></div>
+      <div>&nbsp;&nbsp;<span class="t-gold">content</span><span class="t-muted">:</span> <span class="t-green">"Approved $2M budget for Q3 infra"</span><span class="t-muted">,</span></div>
+      <div>&nbsp;&nbsp;<span class="t-gold">agentName</span><span class="t-muted">:</span> <span class="t-green">"CFO-Agent"</span><span class="t-muted">,</span></div>
+      <div>&nbsp;&nbsp;<span class="t-gold">type</span><span class="t-muted">:</span> <span class="t-green">"episodic"</span><span class="t-muted">,</span></div>
+      <div>&nbsp;&nbsp;<span class="t-gold">importance</span><span class="t-muted">:</span> <span class="t-white">0.95</span></div>
+      <div><span class="t-muted">});</span></div>
+      <div>&nbsp;</div>
+      <div><span class="t-dim">// ✓ Stored with embedding · id: 4821 · namespace: finance</span></div>
+      <div><span class="cursor"></span></div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="container">
+    <div class="section-label">Core Capabilities</div>
+    <h2 class="section-title">Everything your agents<br/>need to remember — and decide</h2>
+    <p class="section-sub">Purpose-built for multi-agent workflows where decisions matter and context must persist across sessions.</p>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🧠</div>
+        <h3>Persistent Semantic Memory</h3>
+        <p>OpenAI embeddings with cosine similarity search. Agents retrieve relevant memories by meaning, not just keywords. Hierarchical namespaces with AUDN isolation.</p>
+        <span class="feature-tag">Patent Pending</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⚔️</div>
+        <h3>Deliberation Rooms</h3>
+        <p>Multiple agents debate, reason, and reach structured decisions in real-time. Every argument is recorded. Every outcome is queryable.</p>
+        <span class="feature-tag">Patent Pending</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📋</div>
+        <h3>Auditable Decision Trail</h3>
+        <p>Complete, immutable history of every agent decision. Who said what, when, and why. Built-in compliance and explainability for enterprise AI.</p>
+        <span class="feature-tag">Unique</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔌</div>
+        <h3>MCP Native</h3>
+        <p>Model Context Protocol endpoint out of the box. Works with Claude, Cursor, and any MCP-compatible agent framework. No custom integration needed.</p>
+        <span class="feature-tag">Industry Standard</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Real-Time WebSocket</h3>
+        <p>Live memory and deliberation updates via WebSocket. Your UI stays synchronized with agent activity as it happens — no polling needed.</p>
+        <span class="feature-tag">Live</span>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🛡️</div>
+        <h3>Multi-Tenant Isolation</h3>
+        <p>AUDN namespace isolation ensures each agent, team, or tenant operates in its own memory space. Enterprise-grade security from day one.</p>
+        <span class="feature-tag">Enterprise</span>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-item">
+        <div class="stat-num">4</div>
+        <div class="stat-label">Patents Filed</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-num">MCP</div>
+        <div class="stat-label">Industry Standard (Jan 2026)</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-num">$60B</div>
+        <div class="stat-label">Market by 2034</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-num">0</div>
+        <div class="stat-label">Competitors with Deliberation + Audit</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- VS TABLE -->
+<section class="vs-section">
+  <div class="container">
+    <div class="section-label">Competitive Position</div>
+    <h2 class="section-title">Why KIOKU™</h2>
+    <p class="section-sub">Every competitor focuses on context retrieval. Only KIOKU™ is built for structured decisions.</p>
+
+    <table class="vs-table">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th class="highlight">KIOKU™</th>
+          <th>Mem0</th>
+          <th>Zep</th>
+          <th>LangMem</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Semantic memory search</td>
+          <td><span class="check">✓</span></td>
+          <td><span class="check">✓</span></td>
+          <td><span class="check">✓</span></td>
+          <td><span class="check">✓</span></td>
+        </tr>
+        <tr>
+          <td>Multi-agent support</td>
+          <td><span class="check">✓</span></td>
+          <td><span class="partial">~</span></td>
+          <td><span class="partial">~</span></td>
+          <td><span class="check">✓</span></td>
+        </tr>
+        <tr>
+          <td>MCP native endpoint</td>
+          <td><span class="check">✓</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+        </tr>
+        <tr>
+          <td>Deliberation Rooms</td>
+          <td><span class="check">✓</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+        </tr>
+        <tr>
+          <td>Auditable decision trail</td>
+          <td><span class="check">✓</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+        </tr>
+        <tr>
+          <td>Namespace (AUDN) isolation</td>
+          <td><span class="check">✓</span></td>
+          <td><span class="partial">~</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+        </tr>
+        <tr>
+          <td>Patent protection</td>
+          <td><span class="check">✓ ×4</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+          <td><span class="cross">✗</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- MCP -->
+<section id="mcp">
+  <div class="container">
+    <div class="section-label">Integrations</div>
+    <h2 class="section-title">Works where your agents work</h2>
+    <p class="section-sub">KIOKU™ speaks MCP — the standard adopted by Anthropic, OpenAI, and Google in January 2026.</p>
+
+    <div class="mcp-banner">
+      <div class="mcp-left">
+        <h3>Model Context Protocol Native</h3>
+        <p>One endpoint. Every MCP-compatible framework connects instantly — no custom integration.</p>
+      </div>
+      <div class="mcp-logos">
+        <span class="mcp-logo">Claude</span>
+        <span class="mcp-logo">Cursor</span>
+        <span class="mcp-logo">LangChain</span>
+        <span class="mcp-logo">AutoGen</span>
+        <span class="mcp-logo">CrewAI</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- PRICING -->
+<section id="pricing">
+  <div class="container">
+    <div class="section-label">Pricing</div>
+    <h2 class="section-title">Start free. Scale with your agents.</h2>
+    <p class="section-sub">Per-operation pricing on top of your plan. Pay only for what your agents use.</p>
+
+    <div class="pricing-grid">
+      <div class="price-card">
+        <div class="plan-name">DEV</div>
+        <div class="plan-price">Free</div>
+        <div class="plan-desc">For solo developers & prototypes</div>
+        <ul class="plan-features">
+          <li>20 req/min</li>
+          <li>1,000 memories</li>
+          <li>Hybrid search</li>
+          <li>Auto-deduplication</li>
+        </ul>
+      </div>
+      <div class="price-card">
+        <div class="plan-name starter">STARTER</div>
+        <div class="plan-price">$9<span>/mo</span></div>
+        <div class="plan-desc">For production agents</div>
+        <ul class="plan-features">
+          <li>60 req/min</li>
+          <li>10,000 memories</li>
+          <li>Redis cache</li>
+          <li>Usage analytics</li>
+        </ul>
+      </div>
+      <div class="price-card popular">
+        <div class="popular-badge">Most Popular</div>
+        <div class="plan-name team">TEAM</div>
+        <div class="plan-price">$49<span>/mo</span></div>
+        <div class="plan-desc">For multi-agent systems</div>
+        <ul class="plan-features">
+          <li>200 req/min</li>
+          <li>100,000 memories</li>
+          <li>Deliberation Room</li>
+          <li>Multi-agent namespaces</li>
+        </ul>
+      </div>
+      <div class="price-card">
+        <div class="plan-name biz">BUSINESS</div>
+        <div class="plan-price">$199<span>/mo</span></div>
+        <div class="plan-desc">For enterprise deployments</div>
+        <ul class="plan-features">
+          <li>600 req/min</li>
+          <li>Unlimited memories</li>
+          <li>Priority support</li>
+          <li>SLA 99.9%</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider" />
+
+<!-- WAITLIST -->
+<section id="waitlist" class="waitlist-section">
+  <div class="container">
+    <div class="section-label" style="text-align:center">Early Access</div>
+    <h2 class="section-title" style="text-align:center">Join the private beta</h2>
+    <p class="section-sub" style="margin:0 auto 0; text-align:center">
+      We're onboarding select teams building with AI agents. Get early access, priority support, and locked-in beta pricing.
+    </p>
+    <div class="waitlist-box">
+      <form class="waitlist-form" id="wlForm">
+        <input type="email" class="waitlist-input" id="wlEmail" placeholder="your@email.com" required />
+        <button type="submit" class="btn-waitlist">Request Access</button>
+      </form>
+      <div class="waitlist-success" id="wlSuccess">
+        ✓ You're on the list. We'll reach out within 48h.
+      </div>
+      <p style="font-size:0.72rem;color:var(--muted);text-align:center;margin-top:1rem;">
+        No spam. Unsubscribe anytime. · <a href="#/privacy" style="color:var(--muted)">Privacy Policy</a>
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <p>© 2026 IKONBAI™, Inc. · Patent Pending · All rights reserved.</p>
+  <div class="footer-links">
+    <a href="/app">Dashboard</a>
+    <a href="#/privacy">Privacy</a>
+    <a href="#/terms">Terms</a>
+  </div>
+</footer>
+
+<script>
+  // Waitlist form
+  document.getElementById('wlForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const email = document.getElementById('wlEmail').value;
+    const btn = this.querySelector('button');
+    btn.textContent = 'Sending...';
+    btn.disabled = true;
+    try {
+      await fetch('/api/waitlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+    } catch(err) {}
+    document.getElementById('wlForm').style.display = 'none';
+    document.getElementById('wlSuccess').style.display = 'block';
+  });
+
+  // Smooth scroll for nav links
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const id = a.getAttribute('href').slice(1);
+      const el = document.getElementById(id);
+      if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+</script>
+</body>
+</html>
