@@ -31,8 +31,8 @@ const navItems = [
   { href: "/billing", icon: CreditCard,      label: "Billing"   },
 ];
 
-// Bottom 5 for mobile tab bar
-const mobileNav = navItems.slice(0, 5);
+// All 7 items in mobile tab bar
+const mobileNav = navItems;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -202,16 +202,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </main>
 
       {/* ── Mobile bottom tab bar ─────────────────────────────────────────── */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex w-full
         bg-sidebar border-t border-sidebar-border">
         {mobileNav.map(({ href, icon: Icon, label }) => {
           const active = isActive(href);
           return (
             <Link key={href} href={href}>
-              <a className="flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors"
+              <a className="flex-1 min-w-0 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors"
                 style={{ color: active ? "hsl(43 74% 52%)" : "hsl(215 20% 55%)" }}>
-                <Icon className="w-5 h-5" />
-                <span className="text-[9px] font-medium">{label}</span>
+                <Icon className="w-5 h-5 flex-shrink-0" />
+                <span className="text-[8px] font-medium truncate w-full text-center px-0.5">{label}</span>
               </a>
             </Link>
           );
