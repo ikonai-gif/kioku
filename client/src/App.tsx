@@ -21,6 +21,7 @@ import PrivacyPage from "./pages/privacy";
 import TermsPage from "./pages/terms";
 import AppLayout from "./components/layout";
 import NotFound from "./pages/not-found";
+import VerifyPage from "./pages/verify";
 
 // ── Page titles ──────────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
@@ -144,6 +145,7 @@ export default function App() {
             <TitleManager />
             {!user ? (
               <Switch>
+                <Route path="/verify" component={VerifyPage} />
                 <Route path="/privacy" component={PrivacyPage} />
                 <Route path="/terms" component={TermsPage} />
                 <Route component={LoginPage} />

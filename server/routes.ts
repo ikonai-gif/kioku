@@ -1,36 +1,73 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import jwt from "jsonwebtoken";
+import { Resend } from "resend";
 
-// Simple session map (in-memory, keyed by session token)
-const sessions = new Map<string, number>(); // token -> userId
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
 
-const DEMO_USER_ID = 1; // seed user id
+async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
+  const baseUrl = process.env.APP_URL || "https://usekioku.com";
+  const link = `${baseUrl}/verify?token=${token}`;
+  if (!resend) {
+    console.log(`[MAGIC LINK] ${email} → ${link}`);
+    return;
+  }
+  await resend.emails.send({
+    from: "KIOKU™ <noreply@usekioku.com>",
+    to: email,
+    subject: "Your KIOKU™ login link",
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#070D1A;color:#EAE6DC;border-radius:12px;border:1px solid rgba(212,175,55,0.2)">
+        <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
+        <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Control Center by IKONBAI™</p>
+        <p style="margin:0 0 24px">Click the button below to sign in. This link expires in 15 minutes.</p>
+        <a href="${link}" style="display:inline-block;padding:12px 28px;background:#D4AF37;color:#070D1A;text-decoration:none;border-radius:8px;font-weight:600">Sign in to KIOKU™</a>
+        <p style="margin:24px 0 0;font-size:12px;color:#7A8FAD">If you didn't request this, ignore this email.</p>
+      </div>
+    `,
+  });
+}
+
+const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
+const DEMO_USER_ID = 1;
 
 function getSessionUser(req: any): number | null {
   const auth = req.headers["x-session-token"] as string;
   if (!auth) return null;
   if (auth === "demo-session") return DEMO_USER_ID;
-  return sessions.get(auth) ?? null;
+  try {
+    const payload = jwt.verify(auth, JWT_SECRET) as { userId: number };
+    return payload.userId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function createSessionToken(userId: number): string {
-  const token = "sess_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-  sessions.set(token, userId);
-  return token;
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "30d" });
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
+  // ── Health ────────────────────────────────────────────────────
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", ts: new Date().toISOString() });
+  });
+
   // ── Auth ──────────────────────────────────────────────────────
   // alias for frontend
-  app.post("/api/auth/magic-link", (req, res) => {
+  app.post("/api/auth/magic-link", async (req, res) => {
     const { email, name, company } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
     let user = storage.getUserByEmail(email);
     if (!user) user = storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = storage.createMagicToken(email);
-    res.json({ ok: true, token, message: "Magic link sent (demo: token included)" });
+    await sendMagicLinkEmail(email, token);
+    const isDev = !process.env.RESEND_API_KEY;
+    res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   });
 
   app.post("/api/auth/verify", (req, res) => {
@@ -44,17 +81,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, sessionToken, user });
   });
 
-  app.post("/api/auth/request-magic-link", (req, res) => {
+  app.post("/api/auth/request-magic-link", async (req, res) => {
     const { email, name, company } = req.body;
     if (!email) return res.status(400).json({ error: "Email required" });
-    // Ensure user exists
     let user = storage.getUserByEmail(email);
-    if (!user) {
-      user = storage.createUser({ email, name: name || email.split("@")[0], company });
-    }
+    if (!user) user = storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = storage.createMagicToken(email);
-    // In production: send via Resend. Here: return token directly for demo
-    res.json({ ok: true, token, message: "Magic link sent (demo: token included)" });
+    await sendMagicLinkEmail(email, token);
+    const isDev = !process.env.RESEND_API_KEY;
+    res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   });
 
   app.post("/api/auth/verify-magic-link", (req, res) => {
