@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KIOKU™ Developer Docs — Agent Memory API</title>
+  <meta name="description" content="KIOKU™ API reference: memory storage, semantic search, deliberation rooms, MCP integration, SDK quickstart." />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy:    #0a0f1e;
+      --navy2:   #0d1529;
+      --navy3:   #111c36;
+      --navy4:   #0f1a30;
+      --gold:    #D4AF37;
+      --gold2:   #c9a227;
+      --gold-dim: rgba(212,175,55,0.15);
+      --gold-glow: rgba(212,175,55,0.06);
+      --text:    #e8eaf0;
+      --muted:   #7a8499;
+      --border:  rgba(212,175,55,0.12);
+      --sidebar-w: 260px;
+      --green:   #4ade80;
+      --red:     #f87171;
+      --blue:    #60a5fa;
+      --orange:  #fb923c;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: linear-gradient(160deg, var(--navy) 0%, var(--navy2) 60%, #0b1220 100%);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    /* ── TOP NAV ── */
+    .topnav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+      height: 56px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 1.5rem;
+      background: rgba(10,15,30,0.92);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav-left { display: flex; align-items: center; gap: 1rem; }
+    .topnav-logo {
+      display: flex; align-items: center; gap: 0.5rem;
+      text-decoration: none; color: var(--gold); font-weight: 700; font-size: 1.1rem;
+      letter-spacing: 0.05em;
+    }
+    .topnav-logo svg { width: 28px; height: 28px; }
+    .docs-badge {
+      font-size: 0.65rem; font-weight: 600; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--navy); background: var(--gold);
+      padding: 2px 8px; border-radius: 3px;
+    }
+    .topnav-right { display: flex; align-items: center; gap: 1rem; }
+    .topnav-right a {
+      color: var(--muted); text-decoration: none; font-size: 0.85rem;
+      transition: color 0.2s;
+    }
+    .topnav-right a:hover { color: var(--text); }
+    .btn-dash {
+      padding: 6px 14px; border-radius: 6px; font-size: 0.8rem; font-weight: 600;
+      background: var(--gold-dim); border: 1px solid var(--border);
+      color: var(--gold); text-decoration: none; transition: all 0.2s;
+    }
+    .btn-dash:hover { background: rgba(212,175,55,0.25); color: var(--gold) !important; }
+
+    /* ── LAYOUT ── */
+    .layout {
+      display: flex;
+      padding-top: 56px;
+      min-height: 100vh;
+    }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      position: fixed;
+      top: 56px; left: 0; bottom: 0;
+      width: var(--sidebar-w);
+      overflow-y: auto;
+      padding: 1.5rem 0;
+      border-right: 1px solid var(--border);
+      background: rgba(10,15,30,0.5);
+      backdrop-filter: blur(8px);
+    }
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .sidebar-section {
+      padding: 0 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .sidebar-label {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 0.5rem; padding: 0 0.25rem;
+    }
+    .sidebar-link {
+      display: block;
+      padding: 5px 0.5rem;
+      border-radius: 5px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      transition: all 0.15s;
+      border-left: 2px solid transparent;
+    }
+    .sidebar-link:hover { color: var(--text); background: var(--gold-glow); }
+    .sidebar-link.active { color: var(--gold); border-left-color: var(--gold); background: var(--gold-glow); }
+    .sidebar-link.sub { padding-left: 1.25rem; font-size: 0.82rem; }
+
+    /* ── MAIN CONTENT ── */
+    .main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      padding: 3rem 4rem 6rem;
+      max-width: calc(var(--sidebar-w) + 860px);
+    }
+
+    /* ── SECTION ── */
+    .doc-section {
+      margin-bottom: 4rem;
+      padding-top: 1rem;
+    }
+    .doc-section + .doc-section {
+      border-top: 1px solid var(--border);
+      padding-top: 3rem;
+    }
+
+    h1 {
+      font-size: 2rem; font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+    h1 span { color: var(--gold); }
+
+    h2 {
+      font-size: 1.35rem; font-weight: 600;
+      color: var(--text);
+      margin-bottom: 1rem;
+      margin-top: 2.5rem;
+    }
+    h2:first-child { margin-top: 0; }
+
+    h3 {
+      font-size: 1rem; font-weight: 600;
+      color: var(--gold);
+      margin-bottom: 0.75rem;
+      margin-top: 2rem;
+      letter-spacing: 0.02em;
+    }
+
+    p { margin-bottom: 1rem; color: var(--text); opacity: 0.9; }
+    p:last-child { margin-bottom: 0; }
+
+    ul, ol { padding-left: 1.25rem; margin-bottom: 1rem; }
+    li { margin-bottom: 0.35rem; opacity: 0.9; }
+
+    a { color: var(--gold); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── INTRO HEADER ── */
+    .intro-header {
+      margin-bottom: 2rem;
+    }
+    .intro-header h1 { font-size: 2.2rem; }
+    .intro-meta {
+      display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.75rem;
+    }
+    .meta-pill {
+      font-size: 0.75rem; padding: 3px 10px; border-radius: 20px;
+      border: 1px solid var(--border); color: var(--muted);
+    }
+    .meta-pill.green { border-color: rgba(74,222,128,0.3); color: var(--green); }
+
+    /* ── CODE BLOCK ── */
+    .code-block {
+      background: rgba(7,13,26,0.8);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 1rem 0 1.5rem;
+      position: relative;
+    }
+    .code-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 14px;
+      background: rgba(212,175,55,0.05);
+      border-bottom: 1px solid var(--border);
+    }
+    .code-lang {
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--gold); opacity: 0.7;
+    }
+    .code-copy {
+      font-size: 0.7rem; color: var(--muted); cursor: pointer;
+      background: none; border: none; padding: 2px 6px;
+      border-radius: 4px; transition: all 0.15s;
+    }
+    .code-copy:hover { color: var(--text); background: var(--gold-dim); }
+    pre {
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: #c8d3e8;
+    }
+    pre::-webkit-scrollbar { height: 4px; }
+    pre::-webkit-scrollbar-track { background: transparent; }
+    pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .t-gold   { color: var(--gold); }
+    .t-green  { color: var(--green); }
+    .t-blue   { color: var(--blue); }
+    .t-red    { color: var(--red); }
+    .t-orange { color: var(--orange); }
+    .t-muted  { color: var(--muted); }
+    .t-str    { color: #a5d6a7; }
+
+    /* ── ENDPOINT TABLE ── */
+    .endpoint-table {
+      width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem;
+      font-size: 0.85rem;
+    }
+    .endpoint-table th {
+      text-align: left; padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted); font-weight: 600; font-size: 0.75rem;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .endpoint-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(212,175,55,0.06);
+      vertical-align: top;
+    }
+    .endpoint-table tr:last-child td { border-bottom: none; }
+    .method {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem; font-weight: 600; padding: 2px 7px;
+      border-radius: 4px; white-space: nowrap;
+    }
+    .method.GET    { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .method.POST   { background: rgba(74,222,128,0.12); color: var(--green); }
+    .method.PATCH  { background: rgba(251,146,60,0.12); color: var(--orange); }
+    .method.DELETE { background: rgba(248,113,113,0.12); color: var(--red); }
+
+    .ep-path {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+      color: var(--text);
+    }
+
+    /* ── PARAM TABLE ── */
+    .param-table {
+      width: 100%; border-collapse: collapse; margin: 0.5rem 0 1.5rem;
+      font-size: 0.83rem;
+    }
+    .param-table th {
+      text-align: left; padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted); font-size: 0.72rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .param-table td { padding: 8px 10px; border-bottom: 1px solid rgba(212,175,55,0.05); }
+    .param-table tr:last-child td { border-bottom: none; }
+    .param-name { font-family: 'JetBrains Mono', monospace; color: var(--gold); font-size: 0.8rem; }
+    .param-type { font-family: 'JetBrains Mono', monospace; color: var(--blue); font-size: 0.78rem; }
+    .required-badge {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--red);
+      background: rgba(248,113,113,0.1); padding: 1px 5px; border-radius: 3px;
+    }
+    .optional-badge {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted);
+      background: rgba(122,132,153,0.1); padding: 1px 5px; border-radius: 3px;
+    }
+
+    /* ── CALLOUT ── */
+    .callout {
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      margin: 1rem 0 1.5rem;
+      border-left: 3px solid;
+      font-size: 0.875rem;
+    }
+    .callout.info {
+      background: rgba(96,165,250,0.08);
+      border-color: var(--blue); color: #93c5fd;
+    }
+    .callout.warn {
+      background: rgba(251,146,60,0.08);
+      border-color: var(--orange); color: #fdba74;
+    }
+    .callout.tip {
+      background: rgba(212,175,55,0.08);
+      border-color: var(--gold); color: #e6cc6a;
+    }
+    .callout strong { display: block; margin-bottom: 0.35rem; font-weight: 700; }
+
+    /* ── PLAN TABLE ── */
+    .plan-table {
+      width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem;
+      font-size: 0.83rem;
+    }
+    .plan-table th {
+      text-align: left; padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted); font-size: 0.72rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .plan-table td { padding: 9px 12px; border-bottom: 1px solid rgba(212,175,55,0.05); }
+    .plan-table tr:last-child td { border-bottom: none; }
+    .check { color: var(--green); }
+    .cross { color: var(--red); }
+
+    /* ── FOOTER ── */
+    .doc-footer {
+      margin-top: 5rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted); font-size: 0.8rem;
+    }
+
+    /* ── MOBILE ── */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main { margin-left: 0; padding: 2rem 1.25rem 4rem; }
+    }
+
+    /* ── ANCHOR OFFSET ── */
+    .anchor { display: block; height: 80px; margin-top: -80px; visibility: hidden; }
+  </style>
+</head>
+<body>
+
+<!-- TOP NAV -->
+<nav class="topnav">
+  <div class="topnav-left">
+    <a href="/" class="topnav-logo">
+      <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="KIOKU logo">
+        <circle cx="14" cy="14" r="12" stroke="#D4AF37" stroke-width="1.5"/>
+        <path d="M9 9 L9 19 M9 14 L15 9 M9 14 L15 19" stroke="#D4AF37" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="19" cy="14" r="3" stroke="#D4AF37" stroke-width="1.5"/>
+        <circle cx="19" cy="14" r="1" fill="#D4AF37"/>
+      </svg>
+      KIOKU™
+    </a>
+    <span class="docs-badge">Docs</span>
+  </div>
+  <div class="topnav-right">
+    <a href="/">Home</a>
+    <a href="/app" class="btn-dash">Open Dashboard →</a>
+  </div>
+</nav>
+
+<!-- LAYOUT -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Getting Started</div>
+      <a href="#overview" class="sidebar-link">Overview</a>
+      <a href="#authentication" class="sidebar-link">Authentication</a>
+      <a href="#quickstart" class="sidebar-link">Quickstart</a>
+      <a href="#sdk" class="sidebar-link">SDK</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">API Reference</div>
+      <a href="#memories" class="sidebar-link">Memories</a>
+      <a href="#agents" class="sidebar-link">Agents</a>
+      <a href="#rooms" class="sidebar-link">Deliberation Rooms</a>
+      <a href="#flows" class="sidebar-link">Flows</a>
+      <a href="#logs" class="sidebar-link">Live Feed / Logs</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Integrations</div>
+      <a href="#mcp" class="sidebar-link">MCP Protocol</a>
+      <a href="#webhooks" class="sidebar-link">Webhooks</a>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Platform</div>
+      <a href="#plans" class="sidebar-link">Plans &amp; Limits</a>
+      <a href="#errors" class="sidebar-link">Error Codes</a>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- OVERVIEW -->
+    <div class="doc-section" id="overview-section">
+      <span class="anchor" id="overview"></span>
+      <div class="intro-header">
+        <h1>KIOKU™ <span>API Reference</span></h1>
+        <div class="intro-meta">
+          <span class="meta-pill">Base URL: https://usekioku.com</span>
+          <span class="meta-pill">REST + WebSocket</span>
+          <span class="meta-pill green">MCP Native</span>
+          <span class="meta-pill">Patent Pending</span>
+        </div>
+      </div>
+
+      <p>KIOKU™ is an agent memory and structured deliberation platform by <strong>IKONBAI™</strong>. It provides persistent semantic memory, multi-agent deliberation rooms, audit trails, and a Model Context Protocol (MCP) server — all accessible via REST API or the official SDK.</p>
+
+      <div class="callout tip">
+        <strong>Partner Preview</strong>
+        KIOKU™ is in Partner Preview. API keys are issued manually. Reach out at <a href="mailto:hello@usekioku.com">hello@usekioku.com</a> or join the <a href="/#waitlist">waitlist</a> for early access.
+      </div>
+    </div>
+
+    <!-- AUTHENTICATION -->
+    <div class="doc-section" id="auth-section">
+      <span class="anchor" id="authentication"></span>
+      <h2>Authentication</h2>
+
+      <p>All API requests require an API key passed via the <code>X-API-Key</code> header. Magic-link sessions use <code>X-Session-Token</code> for dashboard-level access.</p>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">HTTP</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre><span class="t-gold">X-API-Key</span><span class="t-muted">:</span> <span class="t-str">kk_&lt;your_api_key&gt;</span></pre>
+      </div>
+
+      <h3>API Key Format</h3>
+      <p>KIOKU™ API keys are prefixed with <code>kk_</code> followed by a 48-character hex string. Keys are scoped to a single account and environment.</p>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">Example</span>
+        </div>
+        <pre><span class="t-muted"># Example key format</span>
+kk_927661c9ef2f31f5dc6f1d707355c79a4b325ee0afbc770e</pre>
+      </div>
+
+      <div class="callout warn">
+        <strong>Keep your key secret</strong>
+        Never expose your API key in client-side code. Use environment variables or a secrets manager.
+      </div>
+    </div>
+
+    <!-- QUICKSTART -->
+    <div class="doc-section" id="quickstart-section">
+      <span class="anchor" id="quickstart"></span>
+      <h2>Quickstart</h2>
+      <p>Store your first memory in under 60 seconds:</p>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">cURL</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre><span class="t-muted"># Store a memory</span>
+curl <span class="t-blue">-X POST</span> https://usekioku.com/api/memories \
+  -H <span class="t-str">"X-API-Key: kk_&lt;your_key&gt;"</span> \
+  -H <span class="t-str">"Content-Type: application/json"</span> \
+  -d <span class="t-str">'{
+    "content": "User prefers Python over JavaScript for data tasks",
+    "agentName": "ResearchAgent",
+    "type": "semantic",
+    "importance": 0.8
+  }'</span></pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">Response</span>
+        </div>
+        <pre>{
+  <span class="t-gold">"id"</span><span class="t-muted">:</span> <span class="t-blue">42</span>,
+  <span class="t-gold">"content"</span><span class="t-muted">:</span> <span class="t-str">"User prefers Python over JavaScript for data tasks"</span>,
+  <span class="t-gold">"agentName"</span><span class="t-muted">:</span> <span class="t-str">"ResearchAgent"</span>,
+  <span class="t-gold">"type"</span><span class="t-muted">:</span> <span class="t-str">"semantic"</span>,
+  <span class="t-gold">"importance"</span><span class="t-muted">:</span> <span class="t-blue">0.8</span>,
+  <span class="t-gold">"namespace"</span><span class="t-muted">:</span> <span class="t-str">"default"</span>,
+  <span class="t-gold">"createdAt"</span><span class="t-muted">:</span> <span class="t-blue">1775685618047</span>
+}</pre>
+      </div>
+    </div>
+
+    <!-- SDK -->
+    <div class="doc-section" id="sdk-section">
+      <span class="anchor" id="sdk"></span>
+      <h2>JavaScript / TypeScript SDK</h2>
+      <p>The official SDK is available on npm: <a href="https://www.npmjs.com/package/@ikonbai/kioku-sdk" target="_blank">@ikonbai/kioku-sdk</a></p>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">bash</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre>npm install @ikonbai/kioku-sdk</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">TypeScript</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre><span class="t-blue">import</span> { KiokuClient } <span class="t-blue">from</span> <span class="t-str">'@ikonbai/kioku-sdk'</span>;
+
+<span class="t-blue">const</span> <span class="t-gold">kioku</span> = <span class="t-blue">new</span> KiokuClient({
+  apiKey<span class="t-muted">:</span> <span class="t-str">'kk_&lt;your_key&gt;'</span>,
+  baseUrl<span class="t-muted">:</span> <span class="t-str">'https://usekioku.com'</span>,  <span class="t-muted">// optional</span>
+});
+
+<span class="t-muted">// Store memory</span>
+<span class="t-blue">const</span> <span class="t-gold">mem</span> = <span class="t-blue">await</span> kioku.memories.store({
+  content<span class="t-muted">:</span> <span class="t-str">'Decision made: go with microservices'</span>,
+  agentName<span class="t-muted">:</span> <span class="t-str">'ArchAgent'</span>,
+  type<span class="t-muted">:</span> <span class="t-str">'procedural'</span>,
+  importance<span class="t-muted">:</span> <span class="t-blue">0.95</span>,
+  namespace<span class="t-muted">:</span> <span class="t-str">'architecture'</span>,
+});
+
+<span class="t-muted">// Semantic search</span>
+<span class="t-blue">const</span> <span class="t-gold">results</span> = <span class="t-blue">await</span> kioku.memories.search(<span class="t-str">'architecture decisions'</span>);
+console.log(results);</pre>
+      </div>
+    </div>
+
+    <!-- MEMORIES API -->
+    <div class="doc-section" id="memories-section">
+      <span class="anchor" id="memories"></span>
+      <h2>Memories</h2>
+      <p>The core primitive. Memories are persistent, semantically indexed records tied to an agent and namespace.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="method GET">GET</span></td>
+            <td class="ep-path">/api/memories</td>
+            <td>List all memories for the authenticated account</td>
+          </tr>
+          <tr>
+            <td><span class="method GET">GET</span></td>
+            <td class="ep-path">/api/memories?q=query</td>
+            <td>Semantic search across memories</td>
+          </tr>
+          <tr>
+            <td><span class="method POST">POST</span></td>
+            <td class="ep-path">/api/memories</td>
+            <td>Store a new memory</td>
+          </tr>
+          <tr>
+            <td><span class="method DELETE">DELETE</span></td>
+            <td class="ep-path">/api/memories/:id</td>
+            <td>Delete a memory by ID</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>POST /api/memories — Request Body</h3>
+      <table class="param-table">
+        <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="param-name">content</td>
+            <td class="param-type">string</td>
+            <td><span class="required-badge">required</span></td>
+            <td>The memory text (max 10,000 chars)</td>
+          </tr>
+          <tr>
+            <td class="param-name">agentName</td>
+            <td class="param-type">string</td>
+            <td><span class="optional-badge">optional</span></td>
+            <td>Name of the agent storing this memory</td>
+          </tr>
+          <tr>
+            <td class="param-name">agentId</td>
+            <td class="param-type">number</td>
+            <td><span class="optional-badge">optional</span></td>
+            <td>Linked agent ID</td>
+          </tr>
+          <tr>
+            <td class="param-name">type</td>
+            <td class="param-type">string</td>
+            <td><span class="optional-badge">optional</span></td>
+            <td><code>semantic</code> | <code>episodic</code> | <code>procedural</code> | <code>working</code></td>
+          </tr>
+          <tr>
+            <td class="param-name">importance</td>
+            <td class="param-type">number</td>
+            <td><span class="optional-badge">optional</span></td>
+            <td>Score 0.0–1.0. Default: 0.5</td>
+          </tr>
+          <tr>
+            <td class="param-name">namespace</td>
+            <td class="param-type">string</td>
+            <td><span class="optional-badge">optional</span></td>
+            <td>Partition key. Default: <code>default</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Memory Types</h3>
+      <table class="param-table">
+        <thead><tr><th>Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="param-name">semantic</td><td>Facts, knowledge, preferences (default)</td></tr>
+          <tr><td class="param-name">episodic</td><td>Events, experiences, past interactions</td></tr>
+          <tr><td class="param-name">procedural</td><td>How-to instructions, decision rules</td></tr>
+          <tr><td class="param-name">working</td><td>Short-term context, current task state</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- AGENTS API -->
+    <div class="doc-section" id="agents-section">
+      <span class="anchor" id="agents"></span>
+      <h2>Agents</h2>
+      <p>Named autonomous agents that own memories and participate in deliberation rooms.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="method GET">GET</span></td>
+            <td class="ep-path">/api/agents</td>
+            <td>List all agents</td>
+          </tr>
+          <tr>
+            <td><span class="method POST">POST</span></td>
+            <td class="ep-path">/api/agents</td>
+            <td>Create a new agent</td>
+          </tr>
+          <tr>
+            <td><span class="method PATCH">PATCH</span></td>
+            <td class="ep-path">/api/agents/:id/toggle</td>
+            <td>Toggle agent enabled/disabled or set status</td>
+          </tr>
+          <tr>
+            <td><span class="method DELETE">DELETE</span></td>
+            <td class="ep-path">/api/agents/:id</td>
+            <td>Delete an agent</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">Create Agent — cURL</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre>curl <span class="t-blue">-X POST</span> https://usekioku.com/api/agents \
+  -H <span class="t-str">"X-API-Key: kk_&lt;your_key&gt;"</span> \
+  -H <span class="t-str">"Content-Type: application/json"</span> \
+  -d <span class="t-str">'{
+    "name": "ResearchAgent",
+    "description": "Gathers and synthesizes information",
+    "color": "#60a5fa"
+  }'</span></pre>
+      </div>
+    </div>
+
+    <!-- ROOMS API -->
+    <div class="doc-section" id="rooms-section">
+      <span class="anchor" id="rooms"></span>
+      <h2>Deliberation Rooms</h2>
+      <p>Multi-agent rooms for structured decision-making. Agents participate in threaded deliberation. Decisions are automatically persisted to memory with <code>importance: 0.95</code>.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="method GET">GET</span></td>
+            <td class="ep-path">/api/rooms</td>
+            <td>List all rooms</td>
+          </tr>
+          <tr>
+            <td><span class="method POST">POST</span></td>
+            <td class="ep-path">/api/rooms</td>
+            <td>Create a deliberation room</td>
+          </tr>
+          <tr>
+            <td><span class="method GET">GET</span></td>
+            <td class="ep-path">/api/rooms/:id/messages</td>
+            <td>Fetch room message history</td>
+          </tr>
+          <tr>
+            <td><span class="method POST">POST</span></td>
+            <td class="ep-path">/api/rooms/:id/messages</td>
+            <td>Post a message to the room</td>
+          </tr>
+          <tr>
+            <td><span class="method PATCH">PATCH</span></td>
+            <td class="ep-path">/api/rooms/:id</td>
+            <td>Update room metadata or status</td>
+          </tr>
+          <tr>
+            <td><span class="method DELETE">DELETE</span></td>
+            <td class="ep-path">/api/rooms/:id</td>
+            <td>Delete a room</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>WebSocket — Real-time Room Messages</h3>
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">JavaScript</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre><span class="t-blue">const</span> <span class="t-gold">ws</span> = <span class="t-blue">new</span> WebSocket(
+  <span class="t-str">`wss://usekioku.com/ws?roomId=<span class="t-gold">${roomId}</span>&apiKey=kk_&lt;your_key&gt;`</span>
+);
+
+ws.onmessage = (event) => {
+  <span class="t-blue">const</span> msg = JSON.parse(event.data);
+  console.log(msg.agentName, msg.content);
+};</pre>
+      </div>
+
+      <h3>Posting with isDecision flag</h3>
+      <p>When <code>isDecision: true</code>, the message is automatically stored as a <code>procedural</code> memory with high importance and broadcast to WebSocket subscribers.</p>
+
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">cURL</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre>curl <span class="t-blue">-X POST</span> https://usekioku.com/api/rooms/<span class="t-gold">1</span>/messages \
+  -H <span class="t-str">"X-API-Key: kk_&lt;your_key&gt;"</span> \
+  -H <span class="t-str">"Content-Type: application/json"</span> \
+  -d <span class="t-str">'{
+    "agentName": "AuditBot",
+    "content": "Approved: Deploy to production after passing all checks",
+    "isDecision": true
+  }'</span></pre>
+      </div>
+    </div>
+
+    <!-- FLOWS -->
+    <div class="doc-section" id="flows-section">
+      <span class="anchor" id="flows"></span>
+      <h2>Flows</h2>
+      <p>Visual agent pipelines. Define ordered sequences of agents with roles and positions for complex orchestration workflows.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method GET">GET</span></td><td class="ep-path">/api/flows</td><td>List all flows</td></tr>
+          <tr><td><span class="method POST">POST</span></td><td class="ep-path">/api/flows</td><td>Create a flow</td></tr>
+          <tr><td><span class="method PATCH">PATCH</span></td><td class="ep-path">/api/flows/:id</td><td>Update flow</td></tr>
+          <tr><td><span class="method DELETE">DELETE</span></td><td class="ep-path">/api/flows/:id</td><td>Delete flow</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- LOGS -->
+    <div class="doc-section" id="logs-section">
+      <span class="anchor" id="logs"></span>
+      <h2>Live Feed / Logs</h2>
+      <p>Auditable operation log for all memory and deliberation events. Every store, search, and decision is timestamped and traceable.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method GET">GET</span></td><td class="ep-path">/api/logs</td><td>Fetch operation log (latest 200)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Log Entry Schema</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">JSON</span></div>
+        <pre>{
+  <span class="t-gold">"id"</span><span class="t-muted">:</span> <span class="t-blue">71</span>,
+  <span class="t-gold">"agentName"</span><span class="t-muted">:</span> <span class="t-str">"AuditBot"</span>,
+  <span class="t-gold">"agentColor"</span><span class="t-muted">:</span> <span class="t-str">"#D4AF37"</span>,
+  <span class="t-gold">"operation"</span><span class="t-muted">:</span> <span class="t-str">"stored"</span>,  <span class="t-muted">// stored | retrieved | deliberation | decision</span>
+  <span class="t-gold">"detail"</span><span class="t-muted">:</span> <span class="t-str">"\"User prefers Python...\" stored in namespace: default"</span>,
+  <span class="t-gold">"latencyMs"</span><span class="t-muted">:</span> <span class="t-blue">42</span>,
+  <span class="t-gold">"createdAt"</span><span class="t-muted">:</span> <span class="t-blue">1775685618047</span>
+}</pre>
+      </div>
+    </div>
+
+    <!-- MCP -->
+    <div class="doc-section" id="mcp-section">
+      <span class="anchor" id="mcp"></span>
+      <h2>MCP Protocol</h2>
+      <p>KIOKU™ exposes a Model Context Protocol server at <code>/mcp</code>. Any MCP-compatible AI host (Claude, OpenAI, custom) can connect directly.</p>
+
+      <div class="callout info">
+        <strong>MCP Endpoint</strong>
+        <code>https://usekioku.com/mcp</code> — No auth header required for tool discovery. API key required for tool execution.
+      </div>
+
+      <h3>Available MCP Tools</h3>
+      <table class="endpoint-table">
+        <thead><tr><th>Tool Name</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="ep-path">store_memory</td><td>Store a new memory with type, importance, namespace</td></tr>
+          <tr><td class="ep-path">search_memories</td><td>Semantic similarity search across all memories</td></tr>
+          <tr><td class="ep-path">list_memories</td><td>List all memories (optionally filtered)</td></tr>
+          <tr><td class="ep-path">delete_memory</td><td>Delete a memory by ID</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Connect via Claude Desktop</h3>
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">claude_desktop_config.json</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre>{
+  <span class="t-gold">"mcpServers"</span><span class="t-muted">:</span> {
+    <span class="t-gold">"kioku"</span><span class="t-muted">:</span> {
+      <span class="t-gold">"url"</span><span class="t-muted">:</span> <span class="t-str">"https://usekioku.com/mcp"</span>,
+      <span class="t-gold">"headers"</span><span class="t-muted">:</span> {
+        <span class="t-gold">"X-API-Key"</span><span class="t-muted">:</span> <span class="t-str">"kk_&lt;your_key&gt;"</span>
+      }
+    }
+  }
+}</pre>
+      </div>
+
+      <h3>MCP Tool Discovery</h3>
+      <div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">cURL</span>
+          <button class="code-copy" onclick="copyCode(this)">Copy</button>
+        </div>
+        <pre>curl -s https://usekioku.com/mcp \
+  -H <span class="t-str">"Content-Type: application/json"</span> \
+  -d <span class="t-str">'{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}'</span></pre>
+      </div>
+    </div>
+
+    <!-- WEBHOOKS -->
+    <div class="doc-section" id="webhooks-section">
+      <span class="anchor" id="webhooks"></span>
+      <h2>Webhooks</h2>
+      <p>Stripe billing webhooks are handled at <code>POST /api/billing/webhook</code>. Custom event webhooks are on the roadmap for <strong>Growth</strong> and <strong>Enterprise</strong> plans.</p>
+
+      <div class="callout tip">
+        <strong>Coming in Beta</strong>
+        Memory event webhooks (on_memory_stored, on_decision_logged) will be available for Growth+ plans. Join the <a href="/#waitlist">waitlist</a> for early access.
+      </div>
+    </div>
+
+    <!-- PLANS & LIMITS -->
+    <div class="doc-section" id="plans-section">
+      <span class="anchor" id="plans"></span>
+      <h2>Plans &amp; Rate Limits</h2>
+
+      <table class="plan-table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Dev</th>
+            <th>Starter ($49/mo)</th>
+            <th>Growth ($149/mo)</th>
+            <th>Enterprise</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>API Requests / day</td>
+            <td>1,000</td>
+            <td>10,000</td>
+            <td>100,000</td>
+            <td>Unlimited</td>
+          </tr>
+          <tr>
+            <td>Memory records</td>
+            <td>500</td>
+            <td>10,000</td>
+            <td>Unlimited</td>
+            <td>Unlimited</td>
+          </tr>
+          <tr>
+            <td>Agents</td>
+            <td>3</td>
+            <td>10</td>
+            <td>Unlimited</td>
+            <td>Unlimited</td>
+          </tr>
+          <tr>
+            <td>Deliberation Rooms</td>
+            <td>1</td>
+            <td>5</td>
+            <td>Unlimited</td>
+            <td>Unlimited</td>
+          </tr>
+          <tr>
+            <td>Semantic search</td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>MCP Server</td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Custom namespaces</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Audit export</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>SSO / SAML</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout warn">
+        <strong>Rate limit headers</strong>
+        All responses include <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, and <code>X-RateLimit-Reset</code> headers. Exceeding limits returns <code>429 Too Many Requests</code>.
+      </div>
+    </div>
+
+    <!-- ERRORS -->
+    <div class="doc-section" id="errors-section">
+      <span class="anchor" id="errors"></span>
+      <h2>Error Codes</h2>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method GET" style="background:rgba(96,165,250,0.15);color:var(--blue)">200</span></td><td>Success</td></tr>
+          <tr><td><span class="method POST" style="background:rgba(74,222,128,0.12);color:var(--green)">201</span></td><td>Created</td></tr>
+          <tr><td><span class="method PATCH" style="background:rgba(251,146,60,0.12);color:var(--orange)">400</span></td><td>Bad Request — missing or invalid field</td></tr>
+          <tr><td><span class="method DELETE" style="background:rgba(248,113,113,0.12);color:var(--red)">401</span></td><td>Unauthorized — missing or invalid API key</td></tr>
+          <tr><td><span class="method DELETE" style="background:rgba(248,113,113,0.12);color:var(--red)">403</span></td><td>Forbidden — plan limit exceeded</td></tr>
+          <tr><td><span class="method DELETE" style="background:rgba(248,113,113,0.12);color:var(--red)">404</span></td><td>Resource not found</td></tr>
+          <tr><td><span class="method DELETE" style="background:rgba(248,113,113,0.12);color:var(--red)">429</span></td><td>Rate limit exceeded</td></tr>
+          <tr><td><span class="method DELETE" style="background:rgba(248,113,113,0.12);color:var(--red)">500</span></td><td>Internal server error</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Error Response Format</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">JSON</span></div>
+        <pre>{
+  <span class="t-gold">"error"</span><span class="t-muted">:</span> <span class="t-str">"Content required"</span>
+}</pre>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="doc-footer">
+      <p>© 2026 IKONBAI™ Inc. — KIOKU™ is a trademark of IKONBAI™ Inc. Patent Pending.</p>
+      <p style="margin-top:0.5rem">Questions? <a href="mailto:hello@usekioku.com">hello@usekioku.com</a> · <a href="/">Back to Home</a> · <a href="/app">Dashboard</a></p>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  // Copy code button
+  function copyCode(btn) {
+    const pre = btn.closest('.code-block').querySelector('pre');
+    const text = pre.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    });
+  }
+
+  // Sidebar active link on scroll
+  const sections = document.querySelectorAll('.anchor');
+  const links = document.querySelectorAll('.sidebar-link');
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        links.forEach(l => {
+          l.classList.toggle('active', l.getAttribute('href') === '#' + id);
+        });
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

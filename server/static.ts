@@ -25,6 +25,11 @@ export function serveStatic(app: Express) {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 
+  // /docs → developer docs page
+  app.get("/docs", (_req: Request, res: Response) => {
+    res.sendFile(path.resolve(distPath, "docs.html"));
+  });
+
   // Serve static assets (JS, CSS, images, fonts, etc.)
   app.use(express.static(distPath));
 
