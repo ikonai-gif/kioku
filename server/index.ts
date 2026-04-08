@@ -61,9 +61,14 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // Init DB schema and seed
-  await initDb();
-  await initDemoUser();
+  // Init DB — non-fatal: server starts even if DB is unreachable
+  try {
+    await initDb();
+    await initDemoUser();
+    console.log("[db] initialized");
+  } catch (err) {
+    console.error("[db] init failed (will retry on first request):", err);
+  }
 
   await registerRoutes(httpServer, app);
 
