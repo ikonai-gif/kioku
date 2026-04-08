@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { Brain, Bot, Activity, Zap, TrendingUp, Clock } from "lucide-react";
+import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Link } from "wouter";
 
 function StatCard({ icon: Icon, label, value, sub, color }: {
   icon: any; label: string; value: string | number; sub?: string; color: string;
@@ -39,6 +40,56 @@ export default function DashboardPage() {
     retrieved: "retrieved",
     deliberation: "deliberation",
   };
+
+  const isEmpty = (agents as any[]).length === 0;
+
+  if (isEmpty) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full px-6 py-16 text-center max-w-lg mx-auto">
+        {/* Logo mark */}
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6"
+          style={{ background: "hsl(43 74% 52% / 0.12)", border: "1px solid hsl(43 74% 52% / 0.25)" }}>
+          <Brain className="w-8 h-8" style={{ color: "hsl(43 74% 52%)" }} />
+        </div>
+
+        <h1 className="text-xl font-bold text-foreground mb-2">Welcome to KIOKU™</h1>
+        <p className="text-sm text-muted-foreground mb-8 leading-relaxed">
+          Your AI memory layer is ready. Start by creating your first agent — give it a name, role, and task.
+        </p>
+
+        {/* Steps */}
+        <div className="w-full space-y-3 mb-8">
+          {[
+            { n: 1, icon: Bot,           label: "Create an Agent",      desc: "Name, color, description",    href: "/agents" },
+            { n: 2, icon: GitBranch,     label: "Build a Flow",         desc: "Connect agents into pipelines", href: "/flows" },
+            { n: 3, icon: MessageSquare, label: "Open a Room",          desc: "Start deliberating",          href: "/rooms" },
+          ].map(({ n, icon: Icon, label, desc, href }) => (
+            <Link key={n} href={href}>
+              <a className="flex items-center gap-4 p-4 rounded-xl border border-border hover:border-primary/40 hover:bg-muted/20 transition-all group">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
+                  style={{ background: "hsl(43 74% 52% / 0.15)", color: "hsl(43 74% 52%)" }}>{n}</div>
+                <Icon className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                <div className="flex-1 text-left">
+                  <div className="text-sm font-medium text-foreground">{label}</div>
+                  <div className="text-[11px] text-muted-foreground">{desc}</div>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40 group-hover:text-primary transition-colors" />
+              </a>
+            </Link>
+          ))}
+        </div>
+
+        <Link href="/agents">
+          <a>
+            <button className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+              style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}>
+              <Plus className="w-4 h-4" /> Create First Agent
+            </button>
+          </a>
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="p-5 max-w-6xl mx-auto space-y-4">

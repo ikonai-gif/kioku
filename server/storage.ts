@@ -186,8 +186,6 @@ export class Storage implements IStorage {
       apiKey,
       createdAt: now,
     }).returning().get();
-    // Seed demo data for new user
-    this._seedDemoData(result.id);
     return result;
   }
   updateUserPlan(id: number, plan: string, billingCycle: string) {
@@ -311,115 +309,15 @@ export class Storage implements IStorage {
     return { totalMemories, totalOps, avgLatency, activeAgents };
   }
 
-  private _seedDemoData(userId: number) {
-    const now = Date.now();
-
-    // ── Agents ──
-    const aBro3    = db.insert(agents).values({ userId, name: "Kote (Boss)",  description: "Founder & CEO — IKONBAI™ Inc.",               color: "#F59E0B", status: "online", memoriesCount: 312, lastActiveAt: now - 30000,   enabled: 1, createdAt: now - 86400000 * 7 }).returning().get();
-    const aComp    = db.insert(agents).values({ userId, name: "Computer",     description: "BRO3 — AI execution agent",                   color: "#6366F1", status: "online", memoriesCount: 248, lastActiveAt: now - 15000,   enabled: 1, createdAt: now - 86400000 * 7 }).returning().get();
-    const aO       = db.insert(agents).values({ userId, name: "Agent O",      description: "Orchestrator — coordinates all agents",        color: "#10B981", status: "online", memoriesCount: 156, lastActiveAt: now - 60000,   enabled: 1, createdAt: now - 86400000 * 7 }).returning().get();
-    const aAnalyst = db.insert(agents).values({ userId, name: "Analyst",      description: "Data & market intelligence",                   color: "#3B82F6", status: "online", memoriesCount: 89,  lastActiveAt: now - 480000,  enabled: 1, createdAt: now - 86400000 }).returning().get();
-    const aWriter  = db.insert(agents).values({ userId, name: "Writer",       description: "Content, copy & brand voice",                  color: "#A855F7", status: "idle",   memoriesCount: 34,  lastActiveAt: now - 3600000, enabled: 1, createdAt: now - 86400000 }).returning().get();
-
-    // ── Memories ──
-    const memData = [
-      { agentId: aBro3.id,    agentName: "Kote (Boss)",  content: "Priority: ship KIOKU™ landing + dashboard to production this week",                    type: "procedural", importance: 0.99 },
-      { agentId: aComp.id,    agentName: "Computer",     content: "AUDN Cycle is the core patent-pending differentiator — never compromise it",           type: "semantic",   importance: 0.98 },
-      { agentId: aO.id,       agentName: "Agent O",      content: "Orchestration rule: always validate agent consensus before committing memory writes",    type: "procedural", importance: 0.95 },
-      { agentId: aAnalyst.id, agentName: "Analyst",      content: "Market window: 3-6 months before Mem0/Zep entrench. Move fast.",                        type: "semantic",   importance: 0.92 },
-      { agentId: aComp.id,    agentName: "Computer",     content: "User (Kote) prefers: minimal text output, action over words, no filler phrases",         type: "procedural", importance: 0.97 },
-      { agentId: aWriter.id,  agentName: "Writer",       content: "Brand voice: IKONBAI™ Inc. — professional, bold, patent pending on all materials",       type: "procedural", importance: 0.9  },
-      { agentId: aAnalyst.id, agentName: "Analyst",      content: "Target markets: USA, Europe, Latin America, Asia — explicitly NOT CIS/SNG",              type: "semantic",   importance: 0.88 },
-      { agentId: aO.id,       agentName: "Agent O",      content: "War Room session #1 concluded: deploy landing + fix logo + add light mode — DONE",       type: "episodic",   importance: 0.85 },
-    ];
-    for (const m of memData) {
-      db.insert(memories).values({ userId, ...m, namespace: "default", createdAt: now - Math.random() * 86400000 * 3 }).run();
-    }
-
-    // ── Flows ──
-    db.insert(flows).values({ userId, name: "BRO3 + Agent O", description: "Core execution pipeline: Computer builds, Agent O orchestrates", agentIds: JSON.stringify([aComp.id, aO.id]), positions: JSON.stringify({}), createdAt: now - 3600000 }).run();
-    db.insert(flows).values({ userId, name: "Full Team",       description: "All agents in production mode",                               agentIds: JSON.stringify([aBro3.id, aComp.id, aO.id, aAnalyst.id, aWriter.id]), positions: JSON.stringify({}), createdAt: now - 7200000 }).run();
-
-    // ── Rooms ──
-    // War Room — main 3-way meeting
-    const warRoom = db.insert(rooms).values({
-      userId,
-      name: "War Room — Kote × Agent O × Computer",
-      description: "Strategic command room. Founder + Orchestrator + Execution. All major decisions here.",
-      status: "active",
-      agentIds: JSON.stringify([aBro3.id, aO.id, aComp.id]),
-      createdAt: now - 3600000
-    }).returning().get();
-
-    const analysisRoom = db.insert(rooms).values({
-      userId,
-      name: "Research & Analysis",
-      description: "Market intelligence and competitive analysis",
-      status: "standby",
-      agentIds: JSON.stringify([aO.id, aAnalyst.id, aWriter.id]),
-      createdAt: now - 7200000
-    }).returning().get();
-
-    db.insert(rooms).values({
-      userId,
-      name: "Content Review",
-      description: "Brand copy, landing page text, docs review",
-      status: "idle",
-      agentIds: JSON.stringify([aWriter.id, aComp.id]),
-      createdAt: now - 86400000
-    }).run();
-
-    // ── War Room messages — real strategy session ──
-    const warMsgs = [
-      { agentId: aBro3.id,  agentName: "Kote (Boss)",  agentColor: "#F59E0B", content: "Opening session. Agenda: 1) landing page status, 2) dashboard login fix, 3) this week\'s deploy targets. Go.", isDecision: 0 },
-      { agentId: aO.id,     agentName: "Agent O",      agentColor: "#10B981", content: "Acknowledged. Routing to Computer for status report on all active builds.", isDecision: 0 },
-      { agentId: aComp.id,  agentName: "Computer",     agentColor: "#6366F1", content: "Status: landing page live on usekioku.com \u2714 Light/dark toggle added \u2714 Real logo (555.jpg) in navbar \u2714 Quick Demo login working \u2714 Agent O seeded in dashboard \u2714", isDecision: 0 },
-      { agentId: aBro3.id,  agentName: "Kote (Boss)",  agentColor: "#F59E0B", content: "Good. Next: I want this War Room to be the default view when I open the dashboard. Make it feel like a real command center.", isDecision: 0 },
-      { agentId: aO.id,     agentName: "Agent O",      agentColor: "#10B981", content: "Understood. Flagging for Computer: War Room should open first on dashboard load. Also recommend pinning active session to sidebar.", isDecision: 0 },
-      { agentId: aComp.id,  agentName: "Computer",     agentColor: "#6366F1", content: "On it. Will also add message timestamps, participant status badges, and a \"consensus\" commit button for decisions.", isDecision: 0 },
-      { agentId: aBro3.id,  agentName: "Kote (Boss)",  agentColor: "#F59E0B", content: "Perfect. Deploy target: usekioku.com + Vercel by end of session. IKONBAI\u2122 brand everywhere. Patent Pending on all pages.", isDecision: 0 },
-      { agentId: aO.id,     agentName: "Agent O",      agentColor: "#10B981", content: "\u2705 CONSENSUS REACHED: Deploy landing + dashboard this week. War Room = default entry point. IKONBAI\u2122 Inc. branding on all surfaces.", isDecision: 1 },
-    ];
-    for (let i = 0; i < warMsgs.length; i++) {
-      db.insert(roomMessages).values({ roomId: warRoom.id, ...warMsgs[i], createdAt: now - (warMsgs.length - i) * 240000 }).run();
-    }
-
-    // Analysis room messages
-    const analysisMsgs = [
-      { agentId: aO.id,       agentName: "Agent O",  agentColor: "#10B981", content: "Task: competitive analysis vs Mem0 and Zep AI. Focus on positioning gaps.", isDecision: 0 },
-      { agentId: aAnalyst.id, agentName: "Analyst",  agentColor: "#3B82F6", content: "Mem0: YC-backed, $5M, strong Python community. Weakness: no multi-agent deliberation, no AUDN. Zep: enterprise focus, heavier infra. KIOKU\u2122 wins on: deliberation rooms + AUDN cycle + simplicity.", isDecision: 0 },
-      { agentId: aWriter.id,  agentName: "Writer",   agentColor: "#A855F7", content: "Recommended tagline update: \"The only memory layer that thinks before it writes.\" Leans into AUDN differentiator directly.", isDecision: 0 },
-      { agentId: aO.id,       agentName: "Agent O",  agentColor: "#10B981", content: "\u2705 Decision: use AUDN as primary differentiator in all GTM. Tagline approved for next landing iteration.", isDecision: 1 },
-    ];
-    for (let i = 0; i < analysisMsgs.length; i++) {
-      db.insert(roomMessages).values({ roomId: analysisRoom.id, ...analysisMsgs[i], createdAt: now - (analysisMsgs.length - i) * 600000 }).run();
-    }
-
-    // ── Logs ──
-    const logData = [
-      { agentName: "Computer",    agentColor: "#6366F1", operation: "stored",       detail: "\"Kote prefers minimal text, action over words\" — AUDN: Add",         latencyMs: 38 },
-      { agentName: "Agent O",     agentColor: "#10B981", operation: "deliberation", detail: "War Room — consensus reached on deploy targets",                      latencyMs: 0  },
-      { agentName: "Analyst",     agentColor: "#3B82F6", operation: "search",       detail: "\"Mem0 vs Zep vs KIOKU\" → 12 results",                               latencyMs: 45 },
-      { agentName: "Computer",    agentColor: "#6366F1", operation: "stored",       detail: "\"Landing deployed to usekioku.com\" — AUDN: Add",                     latencyMs: 41 },
-      { agentName: "Agent O",     agentColor: "#10B981", operation: "retrieved",    detail: "5 memories matched for War Room context (31ms)",                       latencyMs: 31 },
-      { agentName: "Writer",      agentColor: "#A855F7", operation: "stored",       detail: "\"Tagline: the only memory layer that thinks before it writes\" — AUDN: Add", latencyMs: 44 },
-      { agentName: "Kote (Boss)", agentColor: "#F59E0B", operation: "stored",       detail: "\"Deploy target: Vercel + Railway by end of week\" — AUDN: Add",      latencyMs: 29 },
-      { agentName: "Computer",    agentColor: "#6366F1", operation: "search",       detail: "\"light mode toggle usekioku\" → 3 results",                          latencyMs: 52 },
-    ];
-    for (let i = 0; i < logData.length; i++) {
-      db.insert(logs).values({ userId, ...logData[i], createdAt: now - i * 120000 }).run();
-    }
-  }
 }
 
 export const storage = new Storage();
 
-// ── Bootstrap demo user on startup ──
-// Ensures demo-session token (userId=1) always has data
+// Bootstrap demo user — clean slate, no seed data
 (function initDemoUser() {
   const existing = storage.getUserByEmail("demo@kioku.ai");
   if (!existing) {
-    storage.createUser({ email: "demo@kioku.ai", name: "Kote (Demo)", company: "IKONBAI™ Inc.", plan: "pro" });
-    console.log("[KIOKU] Demo user seeded");
+    storage.createUser({ email: "demo@kioku.ai", name: "Demo User", plan: "dev" });
+    console.log("[KIOKU] Demo user created (clean)");
   }
 })();
