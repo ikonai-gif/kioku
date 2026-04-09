@@ -78,6 +78,27 @@ function createSessionToken(userId: number): string {
   return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "30d" });
 }
 
+// API key auth — for external agents (Boss Agent, IKONBAI™ v2, etc.)
+// Accepts: Authorization: Bearer kk_<key>
+async function getApiKeyUser(req: any): Promise<number | null> {
+  const auth = (req.headers["authorization"] as string) || "";
+  if (!auth.startsWith("Bearer kk_")) return null;
+  const key = auth.replace("Bearer ", "").trim();
+  try {
+    const user = await storage.getUserByApiKey(key);
+    return user ? user.id : null;
+  } catch {
+    return null;
+  }
+}
+
+// Unified auth — session token OR API key
+async function getUser(req: any): Promise<number | null> {
+  const sessionUser = getSessionUser(req);
+  if (sessionUser !== null) return sessionUser;
+  return getApiKeyUser(req);
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
   // ── WebSocket ─────────────────────────────────────────────────
@@ -144,7 +165,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/auth/me", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
@@ -157,7 +178,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Stats ─────────────────────────────────────────────────────
   app.get("/api/stats", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getStats(userId));
   });
@@ -168,13 +189,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Agents ────────────────────────────────────────────────────
   app.get("/api/agents", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getAgents(userId));
   });
 
   app.post("/api/agents", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, color } = req.body;
     if (!name) return res.status(400).json({ error: "Name required" });
@@ -192,7 +213,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.patch("/api/agents/:id/toggle", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
     const { enabled, status } = req.body;
@@ -206,7 +227,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/agents/:id", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     await storage.deleteAgent(Number(req.params.id));
     res.json({ ok: true });
@@ -214,7 +235,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Memories ──────────────────────────────────────────────────
   app.get("/api/memories", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const q = req.query.q as string;
     let results;
@@ -228,7 +249,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/memories", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentId, agentName, content, type, importance, namespace } = req.body;
     if (!content) return res.status(400).json({ error: "Content required" });
@@ -257,7 +278,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/memories/:id", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     await storage.deleteMemory(Number(req.params.id));
     res.json({ ok: true });
@@ -265,13 +286,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Flows ─────────────────────────────────────────────────────
   app.get("/api/flows", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getFlows(userId));
   });
 
   app.post("/api/flows", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds, positions } = req.body;
     if (!name) return res.status(400).json({ error: "Name required" });
@@ -286,7 +307,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.patch("/api/flows/:id", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds, positions, agentRoles } = req.body;
     const updated = await storage.updateFlow(Number(req.params.id), {
@@ -300,7 +321,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/flows/:id", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     await storage.deleteFlow(Number(req.params.id));
     res.json({ ok: true });
@@ -308,13 +329,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Rooms ─────────────────────────────────────────────────────
   app.get("/api/rooms", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getRooms(userId));
   });
 
   app.post("/api/rooms", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds } = req.body;
     if (!name) return res.status(400).json({ error: "Name required" });
@@ -329,7 +350,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.patch("/api/rooms/:id", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, status, agentIds } = req.body;
     const updated = await storage.updateRoom(Number(req.params.id), {
@@ -342,7 +363,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/rooms/:id", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     await storage.deleteRoom(Number(req.params.id));
     res.json({ ok: true });
@@ -350,13 +371,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Room Messages ─────────────────────────────────────────────
   app.get("/api/rooms/:id/messages", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getRoomMessages(Number(req.params.id)));
   });
 
   app.post("/api/rooms/:id/messages", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentId, agentName, agentColor, content, isDecision } = req.body;
     if (!content || !agentName) return res.status(400).json({ error: "agentName and content required" });
@@ -411,14 +432,71 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Logs / Live Feed ──────────────────────────────────────────
   app.get("/api/logs", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getLogs(userId));
   });
 
+  // ── War Room — Agent Write API ──────────────────────────────────────────
+  // POST /api/warroom/message — Boss Agent or external agents write to War Room
+  // Finds or creates a "War Room" room, posts message, broadcasts via WebSocket
+  app.post("/api/warroom/message", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { agentName, content, agentColor, isDecision, roomName } = req.body;
+    if (!content || !agentName) return res.status(400).json({ error: "agentName and content required" });
+
+    // Find or create the target room
+    const targetRoomName = roomName || "War Room";
+    let allRooms = await storage.getRooms(userId);
+    let room = allRooms.find((r: any) => r.name === targetRoomName);
+    if (!room) {
+      room = await storage.createRoom({
+        userId,
+        name: targetRoomName,
+        description: "Shared agent coordination room",
+        status: "active",
+        agentIds: "[]",
+      });
+    }
+
+    const msg = await storage.addRoomMessage({
+      roomId: room.id,
+      agentId: null,
+      agentName,
+      agentColor: agentColor ?? "#D4AF37",
+      content,
+      isDecision: !!isDecision,
+    });
+
+    if (isDecision) {
+      await storage.createMemory({
+        userId,
+        agentId: null,
+        agentName,
+        content: `[Decision] ${content}`,
+        type: "procedural",
+        importance: 0.95,
+        namespace: "decisions",
+      });
+    }
+
+    await storage.addLog({
+      userId,
+      agentName,
+      agentColor: agentColor ?? "#D4AF37",
+      operation: "warroom",
+      detail: `${agentName} posted to ${targetRoomName}: "${content.slice(0, 60)}…"`,
+      latencyMs: null,
+    });
+
+    broadcastToRoom(room.id, msg);
+    res.json({ ok: true, roomId: room.id, message: msg });
+  });
+
   // ── API Key Rotation ──────────────────────────────────────────
   app.post("/api/auth/rotate-key", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (userId === 1) return res.status(403).json({ error: "Demo account key cannot be rotated" });
     const user = await storage.rotateApiKey(userId);
@@ -462,7 +540,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Billing / Plan ────────────────────────────────────────────
   app.patch("/api/billing/plan", async (req, res) => {
-    const userId = getSessionUser(req);
+    const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { plan, billingCycle } = req.body;
     if (!plan || !billingCycle) return res.status(400).json({ error: "plan and billingCycle required" });
