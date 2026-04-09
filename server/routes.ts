@@ -2,7 +2,6 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
-import { Resend } from "resend";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
@@ -10,31 +9,48 @@ import { registerMcp } from "./mcp";
 import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null;
+const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
+
+async function sendBrevoEmail(to: string, subject: string, html: string): Promise<void> {
+  if (!BREVO_API_KEY) return;
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": BREVO_API_KEY,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
+    body: JSON.stringify({
+      sender: { name: "KIOKU™", email: "noreply@usekioku.com" },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`[Brevo] ${res.status}: ${err}`);
+  }
+}
 
 async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   const baseUrl = process.env.APP_URL || "https://usekioku.com";
   const link = `${baseUrl}/verify?token=${token}`;
-  if (!resend) {
+  if (!BREVO_API_KEY) {
     console.log(`[MAGIC LINK] ${email} → ${link}`);
     return;
   }
-  await resend.emails.send({
-    from: "KIOKU™ <noreply@usekioku.com>",
-    to: email,
-    subject: "Your KIOKU™ login link",
-    html: `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#070D1A;color:#EAE6DC;border-radius:12px;border:1px solid rgba(212,175,55,0.2)">
-        <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
-        <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Control Center by IKONBAI™</p>
-        <p style="margin:0 0 24px">Click the button below to sign in. This link expires in 15 minutes.</p>
-        <a href="${link}" style="display:inline-block;padding:12px 28px;background:#D4AF37;color:#070D1A;text-decoration:none;border-radius:8px;font-weight:600">Sign in to KIOKU™</a>
-        <p style="margin:24px 0 0;font-size:12px;color:#7A8FAD">If you didn't request this, ignore this email.</p>
-      </div>
-    `,
-  });
+  await sendBrevoEmail(
+    email,
+    "Your KIOKU™ login link",
+    `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#070D1A;color:#EAE6DC;border-radius:12px;border:1px solid rgba(212,175,55,0.2)">
+      <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
+      <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Control Center by IKONBAI™</p>
+      <p style="margin:0 0 24px">Click the button below to sign in. This link expires in 15 minutes.</p>
+      <a href="${link}" style="display:inline-block;padding:12px 28px;background:#D4AF37;color:#070D1A;text-decoration:none;border-radius:8px;font-weight:600">Sign in to KIOKU™</a>
+      <p style="margin:24px 0 0;font-size:12px;color:#7A8FAD">If you didn't request this, ignore this email.</p>
+    </div>`
+  );
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
@@ -79,7 +95,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
     await sendMagicLinkEmail(email, token);
-    const isDev = !process.env.RESEND_API_KEY;
+    const isDev = !process.env.BREVO_API_KEY;
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   });
 
@@ -106,7 +122,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
     await sendMagicLinkEmail(email, token);
-    const isDev = !process.env.RESEND_API_KEY;
+    const isDev = !process.env.BREVO_API_KEY;
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   });
 
@@ -416,22 +432,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         company: company || null,
       });
     }
-    // Send confirmation email if Resend is configured
-    if (resend) {
+    // Send confirmation email via Brevo
+    if (BREVO_API_KEY) {
       try {
-        await resend.emails.send({
-          from: "KIOKU™ <noreply@usekioku.com>",
-          to: email,
-          subject: "You're on the KIOKU™ waitlist",
-          html: `
-            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#070D1A;color:#EAE6DC;border-radius:12px;border:1px solid rgba(212,175,55,0.2)">
-              <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
-              <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Memory &amp; Deliberation Platform by IKONBAI™</p>
-              <p style="margin:0 0 16px">You're on the list${name ? `, ${name}` : ""}. We'll reach out when early access opens.</p>
-              <p style="font-size:13px;color:#7A8FAD;margin:0">— The KIOKU™ team</p>
-            </div>
-          `,
-        });
+        await sendBrevoEmail(
+          email,
+          "You're on the KIOKU™ waitlist",
+          `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#070D1A;color:#EAE6DC;border-radius:12px;border:1px solid rgba(212,175,55,0.2)">
+            <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
+            <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Memory &amp; Deliberation Platform by IKONBAI™</p>
+            <p style="margin:0 0 16px">You're on the list${name ? `, ${name}` : ""}. We'll reach out when early access opens.</p>
+            <p style="font-size:13px;color:#7A8FAD;margin:0">— The KIOKU™ team</p>
+          </div>`
+        );
       } catch (e) {
         console.error("[waitlist] email error:", e);
       }
