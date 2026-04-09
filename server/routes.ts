@@ -11,7 +11,13 @@ import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
-async function sendBrevoEmail(to: string, subject: string, html: string): Promise<void> {
+const SENDERS = {
+  support: { name: "KIOKU™ Support",  email: "support@usekioku.com" },
+  kote:    { name: "Kote — KIOKU™",   email: "kote@usekioku.com" },
+  legal:   { name: "KIOKU™ Legal",    email: "legal@usekioku.com" },
+};
+
+async function sendBrevoEmail(to: string, subject: string, html: string, sender: keyof typeof SENDERS = "support"): Promise<void> {
   if (!BREVO_API_KEY) return;
   const res = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
@@ -21,7 +27,7 @@ async function sendBrevoEmail(to: string, subject: string, html: string): Promis
       "Accept": "application/json",
     },
     body: JSON.stringify({
-      sender: { name: "KIOKU™", email: "noreply@usekioku.com" },
+      sender: SENDERS[sender],
       to: [{ email: to }],
       subject,
       htmlContent: html,
@@ -442,8 +448,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             <h1 style="color:#D4AF37;margin:0 0 8px">KIOKU™</h1>
             <p style="color:#7A8FAD;margin:0 0 24px;font-size:13px">Agent Memory &amp; Deliberation Platform by IKONBAI™</p>
             <p style="margin:0 0 16px">You're on the list${name ? `, ${name}` : ""}. We'll reach out when early access opens.</p>
-            <p style="font-size:13px;color:#7A8FAD;margin:0">— The KIOKU™ team</p>
-          </div>`
+            <p style="font-size:13px;color:#7A8FAD;margin:0">— Kote, KIOKU™</p>
+          </div>`,
+          "kote"
         );
       } catch (e) {
         console.error("[waitlist] email error:", e);
