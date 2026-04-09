@@ -15,7 +15,7 @@ import {
 import { randomBytes } from "crypto";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
-const pool = new Pool({
+export const pool = new Pool({
   connectionString: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku",
   max: 10,
   idleTimeoutMillis: 30000,

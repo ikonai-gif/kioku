@@ -4,6 +4,9 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { initDb, initDemoUser } from "./storage";
 import { rateLimitMiddleware } from "./ratelimit";
+import { applySecurityMiddleware } from "./security";
+import { registerHealthRoutes } from "./health";
+import { startMonitor, getMonitorSummary } from "./monitor";
 
 const app = express();
 const httpServer = createServer(app);
@@ -14,15 +17,19 @@ declare module "http" {
   }
 }
 
+// ── Security first (helmet, CORS, brute-force) ───────────────────────────────
+applySecurityMiddleware(app);
+
 app.use(
   express.json({
+    limit: "512kb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "128kb" }));
 
 // Prevent CDN caching of API routes
 app.use(["/api", "/v1", "/mcp", "/health"], (_req, res, next) => {
@@ -81,6 +88,19 @@ app.use((req, res, next) => {
     console.error("[db] init failed (will retry on first request):", err);
   }
 
+  // Health routes (registered before main routes so /health is never rate-limited)
+  registerHealthRoutes(app);
+
+  // Monitor status endpoint — master key protected
+  app.get("/health/monitor", (req: Request, res: Response) => {
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (masterKey) {
+      const auth = req.headers["x-master-key"] || req.headers["authorization"]?.replace("Bearer ", "");
+      if (auth !== masterKey) return res.status(401).json({ error: "Unauthorized" });
+    }
+    res.json(getMonitorSummary());
+  });
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
@@ -105,6 +125,9 @@ app.use((req, res, next) => {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
+
+  // Start internal watchdog monitor
+  startMonitor();
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.

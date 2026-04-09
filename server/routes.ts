@@ -8,6 +8,7 @@ import { setupWebSocket, broadcastToRoom } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
 import { registerMcp } from "./mcp";
 import { registerBilling } from "./billing";
+import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -83,13 +84,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/auth/verify", async (req, res) => {
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "Token required" });
     const email = await storage.verifyMagicToken(token);
-    if (!email) return res.status(401).json({ error: "Invalid or expired token" });
+    if (!email) {
+      recordAuthFailure(ip);
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: email.split("@")[0] });
     const sessionToken = createSessionToken(user.id);
+    recordAuthSuccess(ip);
     res.json({ ok: true, sessionToken, user });
   });
 
