@@ -147,7 +147,7 @@ export function securityAuditHeader(_req: Request, res: Response, next: NextFunc
 export function applySecurityMiddleware(app: Express): void {
   app.use(helmetMiddleware);
   app.use(corsMiddleware);
-  app.options("*", corsMiddleware); // preflight
+  app.options("/{*path}", corsMiddleware); // preflight
   app.use(bruteForceMiddleware);
   app.use("/api", securityAuditHeader);
 }
