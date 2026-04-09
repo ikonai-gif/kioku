@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KIOKU™ Developer Docs — Agent Memory API</title>
   <meta name="description" content="KIOKU™ API reference: memory storage, semantic search, deliberation rooms, MCP integration, SDK quickstart." />
-  <meta name="robots" content="noindex, nofollow" />
+  <meta name="robots" content="index, follow" />
   <link rel="icon" type="image/png" href="/favicon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -1011,5 +1011,9 @@ ws.onmessage = (event) => {
 
   sections.forEach(s => observer.observe(s));
 </script>
+
+<!-- GDPR Cookie Consent Banner -->
+<div id="cookie-banner" style="display:none; position:fixed; bottom:0; left:0; right:0; z-index:9999; background:rgba(10,15,30,0.97); border-top:1px solid rgba(212,175,55,0.2); backdrop-filter:blur(12px); padding:1rem 2rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;" role="dialog" aria-label="Cookie consent"><p style="margin:0; font-size:0.85rem; color:#94a3b8; flex:1; min-width:260px;">We use essential cookies for authentication. No tracking or advertising cookies. See our <a href="/privacy" style="color:#D4AF37;">Privacy Policy</a>.</p><div style="display:flex; gap:0.75rem; flex-shrink:0;"><a href="/privacy" style="padding:0.4rem 1rem; border-radius:6px; font-size:0.8rem; font-weight:600; color:#7a8499; border:1px solid rgba(255,255,255,0.1); text-decoration:none;">Learn More</a><button onclick="kiokuAcceptCookies()" style="padding:0.4rem 1.25rem; border-radius:6px; font-size:0.8rem; font-weight:600; background:rgba(212,175,55,0.15); color:#D4AF37; border:1px solid rgba(212,175,55,0.3); cursor:pointer;">Accept</button></div></div>
+<script>(function(){var h=document.cookie.split(";").some(function(c){return c.trim().startsWith("kioku_consent=");});if(!h){var b=document.getElementById("cookie-banner");if(b)b.style.display="flex";}})();function kiokuAcceptCookies(){var e=new Date();e.setFullYear(e.getFullYear()+1);document.cookie="kioku_consent=1; expires="+e.toUTCString()+"; path=/; SameSite=Lax";var b=document.getElementById("cookie-banner");if(b)b.style.display="none";}</script>
 </body>
 </html>

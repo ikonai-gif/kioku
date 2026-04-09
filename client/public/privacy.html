@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — KIOKU™ by IKONBAI™</title>
+  <meta name="description" content="KIOKU™ Privacy Policy — how we collect, use, and protect your data." />
+  <meta name="robots" content="index, follow" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy:    #0a0f1e;
+      --navy2:   #0d1529;
+      --navy3:   #111c36;
+      --gold:    #D4AF37;
+      --gold-dim: rgba(212,175,55,0.15);
+      --gold-glow: rgba(212,175,55,0.08);
+      --text:    #e8eaf0;
+      --muted:   #7a8499;
+      --border:  rgba(212,175,55,0.12);
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: linear-gradient(160deg, var(--navy) 0%, var(--navy2) 50%, #0b1220 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    /* NAV */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem; height: 64px;
+      background: rgba(10,15,30,0.9);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 1.1rem; font-weight: 700; letter-spacing: 0.04em;
+      color: var(--text); text-decoration: none;
+    }
+    .nav-logo svg { width: 28px; height: 28px; }
+    .nav-links { display: flex; gap: 1.5rem; align-items: center; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--gold); }
+    .btn-nav {
+      padding: 0.4rem 1rem; border-radius: 6px;
+      background: var(--gold-dim); color: var(--gold);
+      border: 1px solid rgba(212,175,55,0.3);
+      font-size: 0.85rem; font-weight: 600; text-decoration: none;
+      transition: background 0.2s;
+    }
+    .btn-nav:hover { background: rgba(212,175,55,0.25); }
+    /* CONTENT */
+    main {
+      max-width: 760px; margin: 0 auto;
+      padding: 100px 2rem 4rem;
+    }
+    .page-header {
+      margin-bottom: 2.5rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .page-label {
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.15em;
+      color: var(--gold); text-transform: uppercase; margin-bottom: 0.75rem;
+    }
+    h1 { font-size: 2rem; font-weight: 700; color: var(--text); margin-bottom: 0.5rem; }
+    .meta { font-size: 0.85rem; color: var(--muted); }
+    h2 {
+      font-size: 1.1rem; font-weight: 600; color: var(--gold);
+      margin: 2rem 0 0.75rem;
+    }
+    p { font-size: 0.95rem; line-height: 1.7; color: #c8ccd6; margin-bottom: 1rem; }
+    ul { padding-left: 1.5rem; margin-bottom: 1rem; }
+    ul li { font-size: 0.95rem; line-height: 1.7; color: #c8ccd6; margin-bottom: 0.35rem; }
+    a { color: var(--gold); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card {
+      background: rgba(13,21,41,0.6);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 0.75rem;
+      position: relative;
+    }
+    .card::before {
+      content: '';
+      position: absolute; inset: 0; border-radius: 10px;
+      background: var(--gold-glow); pointer-events: none;
+    }
+    /* GOLD CORNERS */
+    .corner-tl, .corner-tr, .corner-bl, .corner-br {
+      position: fixed; width: 20px; height: 20px; pointer-events: none; z-index: 0;
+    }
+    .corner-tl { top: 72px; left: 12px; border-top: 1.5px solid var(--gold); border-left: 1.5px solid var(--gold); }
+    .corner-tr { top: 72px; right: 12px; border-top: 1.5px solid var(--gold); border-right: 1.5px solid var(--gold); }
+    .corner-bl { bottom: 12px; left: 12px; border-bottom: 1.5px solid var(--gold); border-left: 1.5px solid var(--gold); }
+    .corner-br { bottom: 12px; right: 12px; border-bottom: 1.5px solid var(--gold); border-right: 1.5px solid var(--gold); }
+    /* FOOTER */
+    footer {
+      text-align: center; padding: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted); font-size: 0.8rem;
+    }
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--gold); }
+  </style>
+</head>
+<body>
+
+<div class="corner-tl"></div>
+<div class="corner-tr"></div>
+<div class="corner-bl"></div>
+<div class="corner-br"></div>
+
+<nav>
+  <a href="/" class="nav-logo">
+    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="32" height="32" rx="8" fill="#D4AF37" fill-opacity="0.15"/>
+      <path d="M8 8h4v16H8V8zm5 8l7-8h4.5L17 16l8 8h-4.5L13 16z" fill="#D4AF37"/>
+    </svg>
+    KIOKU™
+  </a>
+  <div class="nav-links">
+    <a href="/">Home</a>
+    <a href="/docs">Docs</a>
+    <a href="/terms">Terms</a>
+    <a href="/app" class="btn-nav">Dashboard →</a>
+  </div>
+</nav>
+
+<main>
+  <div class="page-header">
+    <div class="page-label">Legal</div>
+    <h1>Privacy Policy</h1>
+    <p class="meta">Effective Date: April 8, 2026 &nbsp;·&nbsp; Last Updated: April 8, 2026 &nbsp;·&nbsp; IKONBAI Inc.</p>
+  </div>
+
+  <p>IKONBAI Inc. ("IKONBAI™", "we", "us", or "our") operates the KIOKU™ platform at <a href="https://usekioku.com">usekioku.com</a>. This Privacy Policy explains how we collect, use, disclose, and protect information when you use our services.</p>
+
+  <h2>1. Information We Collect</h2>
+  <div class="card">
+    <p><strong>Account Information:</strong> Email address, name, and company name provided during sign-up or magic-link authentication.</p>
+    <p><strong>Usage Data:</strong> API call counts, memory operations, agent activity, latency metrics, and plan consumption — collected automatically to power your dashboard.</p>
+    <p><strong>Technical Data:</strong> IP address, browser type, operating system, and referring URLs collected via standard server logs.</p>
+    <p style="margin-bottom:0"><strong>Payment Data:</strong> Billing is processed by Stripe Inc. We store only your Stripe customer ID — we never store full card numbers or CVVs.</p>
+  </div>
+
+  <h2>2. How We Use Your Information</h2>
+  <ul>
+    <li>Provide, operate, and maintain the KIOKU™ platform</li>
+    <li>Send transactional emails (magic link login, billing receipts)</li>
+    <li>Monitor service health, detect abuse, and enforce rate limits</li>
+    <li>Improve and develop new features based on aggregate usage patterns</li>
+    <li>Comply with legal obligations</li>
+  </ul>
+  <p>We do <strong>not</strong> sell your personal data to third parties. We do <strong>not</strong> use your data for advertising purposes.</p>
+
+  <h2>3. Data Storage & Security</h2>
+  <p>Your data is stored in a PostgreSQL database hosted on Railway infrastructure within the United States. We use industry-standard encryption in transit (TLS 1.2+) and at rest. API keys are stored as SHA-256 hashes — your plain-text key is shown only once at creation.</p>
+
+  <h2>4. Data Retention</h2>
+  <p>We retain account and usage data for as long as your account is active. If you close your account, we delete your personal data within 30 days, except where retention is required by law. Memory objects you create via the API are deleted immediately upon your request or account closure.</p>
+
+  <h2>5. Third-Party Services</h2>
+  <ul>
+    <li><strong>Stripe</strong> — payment processing (<a href="https://stripe.com/privacy" target="_blank">stripe.com/privacy</a>)</li>
+    <li><strong>Resend</strong> — transactional email delivery (<a href="https://resend.com/privacy" target="_blank">resend.com/privacy</a>)</li>
+    <li><strong>Railway</strong> — infrastructure hosting (<a href="https://railway.app/legal/privacy" target="_blank">railway.app/legal/privacy</a>)</li>
+    <li><strong>OpenAI</strong> — AI inference for memory search (<a href="https://openai.com/policies/privacy-policy" target="_blank">openai.com/policies/privacy-policy</a>)</li>
+  </ul>
+
+  <h2>6. Cookies</h2>
+  <p>We use only essential session cookies required for authentication. We do not use tracking cookies, analytics cookies, or advertising cookies. A consent banner is displayed on first visit.</p>
+
+  <h2>7. Your Rights (GDPR / CCPA)</h2>
+  <p>Depending on your jurisdiction, you may have the right to:</p>
+  <ul>
+    <li>Access the personal data we hold about you</li>
+    <li>Request correction of inaccurate data</li>
+    <li>Request deletion of your data ("right to be forgotten")</li>
+    <li>Object to or restrict processing</li>
+    <li>Data portability — receive your data in a machine-readable format</li>
+    <li>Withdraw consent at any time</li>
+  </ul>
+  <p>To exercise any of these rights, email us at <a href="mailto:privacy@usekioku.com">privacy@usekioku.com</a>.</p>
+
+  <h2>8. Children's Privacy</h2>
+  <p>KIOKU™ is not directed to individuals under 16 years of age. We do not knowingly collect personal data from children. If you believe a child has provided us with personal data, contact us immediately.</p>
+
+  <h2>9. International Transfers</h2>
+  <p>IKONBAI Inc. is incorporated in the United States. If you access KIOKU™ from the European Economic Area (EEA), United Kingdom, or other regions with data protection laws, note that your data may be transferred to and processed in the United States. We rely on Standard Contractual Clauses where required by applicable law.</p>
+
+  <h2>10. Changes to This Policy</h2>
+  <p>We may update this Privacy Policy from time to time. We will notify registered users of material changes via email. Continued use of the platform after the effective date constitutes acceptance of the updated policy.</p>
+
+  <h2>11. Contact</h2>
+  <p>For privacy-related questions or requests:</p>
+  <div class="card">
+    <p><strong>IKONBAI Inc.</strong><br/>
+    Email: <a href="mailto:privacy@usekioku.com">privacy@usekioku.com</a><br/>
+    Website: <a href="https://usekioku.com">usekioku.com</a></p>
+  </div>
+</main>
+
+<footer>
+  <p>© 2026 IKONBAI Inc. All rights reserved. KIOKU™ and IKONBAI™ are registered trademarks of IKONBAI Inc.</p>
+  <p style="margin-top:0.5rem;">
+    <a href="/">Home</a> &nbsp;·&nbsp;
+    <a href="/terms">Terms of Service</a> &nbsp;·&nbsp;
+    <a href="/docs">Docs</a>
+  </p>
+</footer>
+
+
+<!-- GDPR Cookie Consent Banner -->
+<div id="cookie-banner" style="display:none; position:fixed; bottom:0; left:0; right:0; z-index:9999; background:rgba(10,15,30,0.97); border-top:1px solid rgba(212,175,55,0.2); backdrop-filter:blur(12px); padding:1rem 2rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;" role="dialog" aria-label="Cookie consent"><p style="margin:0; font-size:0.85rem; color:#94a3b8; flex:1; min-width:260px;">We use essential cookies for authentication. No tracking or advertising cookies. See our <a href="/privacy" style="color:#D4AF37;">Privacy Policy</a>.</p><div style="display:flex; gap:0.75rem; flex-shrink:0;"><a href="/privacy" style="padding:0.4rem 1rem; border-radius:6px; font-size:0.8rem; font-weight:600; color:#7a8499; border:1px solid rgba(255,255,255,0.1); text-decoration:none;">Learn More</a><button onclick="kiokuAcceptCookies()" style="padding:0.4rem 1.25rem; border-radius:6px; font-size:0.8rem; font-weight:600; background:rgba(212,175,55,0.15); color:#D4AF37; border:1px solid rgba(212,175,55,0.3); cursor:pointer;">Accept</button></div></div>
+<script>(function(){var h=document.cookie.split(";").some(function(c){return c.trim().startsWith("kioku_consent=");});if(!h){var b=document.getElementById("cookie-banner");if(b)b.style.display="flex";}})();function kiokuAcceptCookies(){var e=new Date();e.setFullYear(e.getFullYear()+1);document.cookie="kioku_consent=1; expires="+e.toUTCString()+"; path=/; SameSite=Lax";var b=document.getElementById("cookie-banner");if(b)b.style.display="none";}</script>
+</body>
+</html>

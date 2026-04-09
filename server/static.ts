@@ -30,6 +30,16 @@ export function serveStatic(app: Express) {
     res.sendFile(path.resolve(distPath, "docs.html"));
   });
 
+  // /privacy → standalone crawlable page
+  app.get("/privacy", (_req: Request, res: Response) => {
+    res.sendFile(path.resolve(distPath, "privacy.html"));
+  });
+
+  // /terms → standalone crawlable page (includes refund policy)
+  app.get("/terms", (_req: Request, res: Response) => {
+    res.sendFile(path.resolve(distPath, "terms.html"));
+  });
+
   // Serve static assets (JS, CSS, images, fonts, etc.)
   app.use(express.static(distPath));
 
