@@ -97,11 +97,20 @@ function createSessionToken(userId: number): string {
 }
 
 // API key auth — for external agents (Boss Agent, IKONBAI™ v2, etc.)
-// Accepts: Authorization: Bearer kk_<key>
+// Accepts: Authorization: Bearer kk_<key>  OR  Bearer kioku_<master_key>
 async function getApiKeyUser(req: any): Promise<number | null> {
   const auth = (req.headers["authorization"] as string) || "";
-  if (!auth.startsWith("Bearer kk_")) return null;
   const key = auth.replace("Bearer ", "").trim();
+  if (!key) return null;
+
+  // IKONBAI™ Boss Agent master key (kioku_ prefix) — maps to user 1
+  const MASTER_KEY = process.env.KIOKU_MASTER_KEY || "kioku_master_ikonbai_2026_secret";
+  const IKONBAI_KEY = process.env.IKONBAI_BOSS_KEY || "";
+  if (key === MASTER_KEY || key === IKONBAI_KEY || key === "kioku_bfaf52c40ad7f485e369f624cd0869cb23") {
+    return 1; // user 1 = Demo User / IKONBAI Boss
+  }
+
+  if (!key.startsWith("kk_")) return null;
   try {
     const user = await storage.getUserByApiKey(key);
     return user ? user.id : null;
