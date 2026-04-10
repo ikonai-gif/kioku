@@ -103,6 +103,7 @@ export default function App() {
   const [dark, setDark] = useState(true); // default dark
   const [user, setUser] = useState<any | null>(null);
   const [sessionToken, setToken] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(true); // true while checking cookie session
 
   // Apply dark class
   useEffect(() => {
@@ -118,19 +119,33 @@ export default function App() {
     });
   }, []);
 
+  // Auto-restore session from httpOnly cookie on page load/refresh
+  useEffect(() => {
+    fetch("/api/auth/me", { credentials: "include" })
+      .then(res => res.ok ? res.json() : null)
+      .then(userData => {
+        if (userData && userData.id) {
+          setUser(userData);
+          // Cookie handles auth — no header token needed
+        }
+      })
+      .catch(() => {})
+      .finally(() => setRestoring(false));
+  }, []);
+
   const login = (token: string, userData: any) => {
     setToken(token);
     setUser(userData);
     setSessionToken(token);
+    setRestoring(false);
   };
 
   const logout = async () => {
-    if (sessionToken) {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        headers: { "x-session-token": sessionToken },
-      }).catch(() => {});
-    }
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: sessionToken ? { "x-session-token": sessionToken } : {},
+    }).catch(() => {});
     setToken(null);
     setUser(null);
     setSessionToken(null);
@@ -143,7 +158,15 @@ export default function App() {
         <AuthContext.Provider value={{ user, sessionToken, login, logout }}>
           <Router hook={useHashLocation}>
             <TitleManager />
-            {!user ? (
+            {restoring ? (
+              // Session restore in progress — show spinner to avoid flash of login page
+              <div className="flex h-screen items-center justify-center bg-background">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                  <span className="text-xs text-muted-foreground">Loading…</span>
+                </div>
+              </div>
+            ) : !user ? (
               <Switch>
                 <Route path="/verify" component={VerifyPage} />
                 <Route path="/privacy" component={PrivacyPage} />

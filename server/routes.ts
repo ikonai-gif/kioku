@@ -62,12 +62,30 @@ async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
 const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
 const DEMO_USER_ID = 1;
 
+const COOKIE_NAME = "kioku_session";
+const COOKIE_OPTS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  path: "/",
+};
+
 function getSessionUser(req: any): number | null {
-  const auth = req.headers["x-session-token"] as string;
-  if (!auth) return null;
-  if (auth === "demo-session") return DEMO_USER_ID;
+  // 1. x-session-token header (legacy + API clients)
+  const headerAuth = req.headers["x-session-token"] as string;
+  if (headerAuth) {
+    if (headerAuth === "demo-session") return DEMO_USER_ID;
+    try {
+      const payload = jwt.verify(headerAuth, JWT_SECRET) as { userId: number };
+      return payload.userId ?? null;
+    } catch { /* fall through to cookie */ }
+  }
+  // 2. httpOnly cookie (browser sessions — survives page refresh)
+  const cookieToken = req.cookies?.[COOKIE_NAME] as string | undefined;
+  if (!cookieToken) return null;
   try {
-    const payload = jwt.verify(auth, JWT_SECRET) as { userId: number };
+    const payload = jwt.verify(cookieToken, JWT_SECRET) as { userId: number };
     return payload.userId ?? null;
   } catch {
     return null;
@@ -161,6 +179,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: email.split("@")[0] });
     const sessionToken = createSessionToken(user.id);
+    // Set httpOnly cookie so session survives page refresh
+    res.cookie(COOKIE_NAME, sessionToken, COOKIE_OPTS);
     res.json({ ok: true, sessionToken, user });
   });
 
@@ -173,7 +193,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/auth/logout", async (req, res) => {
-    res.json({ ok: true }); // JWT is stateless — client discards token
+    res.clearCookie(COOKIE_NAME, { path: "/" });
+    res.json({ ok: true });
   });
 
   // ── Stats ─────────────────────────────────────────────────────

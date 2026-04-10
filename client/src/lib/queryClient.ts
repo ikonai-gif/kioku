@@ -22,6 +22,7 @@ export async function apiRequest(
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
+    credentials: "include", // send httpOnly cookie automatically
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 

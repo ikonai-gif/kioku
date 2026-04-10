@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -30,6 +31,7 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false, limit: "128kb" }));
+app.use(cookieParser());
 
 // Prevent CDN caching of API routes
 app.use(["/api", "/v1", "/mcp", "/health"], (_req, res, next) => {
