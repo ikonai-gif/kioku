@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, ZoomIn, ZoomOut, Maximize2, X, Info, Save } from "lucide-react";
 import { AgentAvatar } from "@/lib/agent-icon";
-import { cn } from "@/lib/utils";
+import { cn, safeParseIds } from "@/lib/utils";
 
 // ─── Flow palette — each flow gets one of these colors ───────────────────────
 const FLOW_COLORS = [
@@ -148,7 +148,7 @@ export default function FlowsPage() {
     if (!flow) return;
     try {
       const saved = JSON.parse(flow.agentRoles || "{}");
-      const ids: number[] = JSON.parse(flow.agentIds || "[]");
+      const ids: number[] = safeParseIds(flow.agentIds);
       const init: Record<number, { role: string; task: string }> = {};
       ids.forEach(id => { init[id] = saved[id] ?? { role: "", task: "" }; });
       setRolesEdit(init);
@@ -160,7 +160,7 @@ export default function FlowsPage() {
     if (!flows.length) return;
     const newEdges: any[] = [];
     (flows as any[]).forEach((f: any, i: number) => {
-      const ids: number[] = JSON.parse(f.agentIds || "[]");
+      const ids: number[] = safeParseIds(f.agentIds);
       const color = FLOW_COLORS[i % FLOW_COLORS.length];
       // connect consecutive pairs
       for (let j = 0; j < ids.length - 1; j++) {
@@ -326,7 +326,7 @@ export default function FlowsPage() {
           <div className="space-y-1.5">
             {(flows as any[]).map((f: any, i: number) => {
               const color = FLOW_COLORS[i % FLOW_COLORS.length];
-              const ids: number[] = JSON.parse(f.agentIds || "[]");
+              const ids: number[] = safeParseIds(f.agentIds);
               return (
                 <div key={f.id} className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
@@ -462,7 +462,7 @@ export default function FlowsPage() {
         const fa = agentById(selectedEdgeData.fromId);
         const ta = agentById(selectedEdgeData.toId);
         const flow = (flows as any[]).find((f: any) => f.id === selectedEdgeData.flowId);
-        const agentIds: number[] = flow ? JSON.parse(flow.agentIds || "[]") : [];
+        const agentIds: number[] = flow ? safeParseIds(flow.agentIds) : [];
         return (
           <div className="w-64 border-l border-border bg-card flex flex-col flex-shrink-0">
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">

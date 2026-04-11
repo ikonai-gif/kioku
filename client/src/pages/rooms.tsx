@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, MessageSquare, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
-import { cn } from "@/lib/utils";
+import { cn, safeParseIds } from "@/lib/utils";
 
 const FLOW_COLORS = [
   "#D4AF37", "#3B82F6", "#A855F7", "#10B981",
@@ -62,7 +62,7 @@ export default function RoomsPage() {
   // Get flow color for a set of agents
   const flowColorForAgents = (agentIds: number[]) => {
     const idx = (flows as any[]).findIndex((f: any) => {
-      const fIds: number[] = JSON.parse(f.agentIds || "[]");
+      const fIds: number[] = safeParseIds(f.agentIds);
       return agentIds.some(id => fIds.includes(id));
     });
     return idx >= 0 ? FLOW_COLORS[idx % FLOW_COLORS.length] : "#D4AF37";
@@ -74,7 +74,7 @@ export default function RoomsPage() {
 
   // Add entire flow's agents at once
   const addFlow = (f: any) => {
-    const ids: number[] = JSON.parse(f.agentIds || "[]");
+    const ids: number[] = safeParseIds(f.agentIds);
     setSelectedAgents(prev => Array.from(new Set([...prev, ...ids])));
   };
 
@@ -115,7 +115,7 @@ export default function RoomsPage() {
 
       <div className="space-y-3">
         {(rooms as any[]).map((room: any) => {
-          const roomAgentIds: number[] = JSON.parse(room.agentIds || "[]");
+          const roomAgentIds: number[] = safeParseIds(room.agentIds);
           const roomColor = flowColorForAgents(roomAgentIds);
 
           return (

@@ -6,7 +6,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff } from "lucide-react";
 import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
-import { cn } from "@/lib/utils";
+import { cn, safeParseIds } from "@/lib/utils";
 
 const FLOW_COLORS = [
   "#D4AF37", "#3B82F6", "#A855F7", "#10B981",
@@ -99,7 +99,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
     };
   }, [roomId]);
 
-  const roomAgentIds: number[] = room ? JSON.parse(room.agentIds || "[]") : [];
+  const roomAgentIds: number[] = room ? safeParseIds(room.agentIds) : [];
   const roomAgents = (agents as any[]).filter((a: any) => roomAgentIds.includes(a.id));
 
   // Auto-select first agent
@@ -136,7 +136,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const getFlowInfo = () => {
     const result: Array<{ flow: any; color: string; agentIds: number[] }> = [];
     (flows as any[]).forEach((f: any, i: number) => {
-      const fIds: number[] = JSON.parse(f.agentIds || "[]");
+      const fIds: number[] = safeParseIds(f.agentIds);
       if (roomAgentIds.some(id => fIds.includes(id))) {
         result.push({ flow: f, color: FLOW_COLORS[i % FLOW_COLORS.length], agentIds: fIds });
       }
