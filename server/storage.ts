@@ -112,6 +112,23 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
   `);
+  // Phase A: request logging table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kioku_request_logs (
+      id          SERIAL PRIMARY KEY,
+      timestamp   BIGINT NOT NULL,
+      method      TEXT NOT NULL,
+      path        TEXT NOT NULL,
+      api_key_id  TEXT,
+      status_code INTEGER,
+      latency_ms  INTEGER,
+      error_message TEXT,
+      ip          TEXT,
+      user_agent  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON kioku_request_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_request_logs_api_key ON kioku_request_logs(api_key_id);
+  `);
 }
 
 function generateApiKey(): string {
@@ -364,6 +381,47 @@ export class Storage implements IStorage {
   async addLog(data: InsertLog): Promise<Log> {
     const [result] = await db.insert(logs).values({ ...data, createdAt: Date.now() }).returning();
     return result;
+  }
+
+  // ── Request Logs ───────────────────────────────────────────────────────────
+  async logRequest(data: {
+    method: string; path: string; apiKeyId?: string; statusCode?: number;
+    latencyMs?: number; errorMessage?: string; ip?: string; userAgent?: string;
+  }) {
+    await pool.query(
+      `INSERT INTO kioku_request_logs (timestamp, method, path, api_key_id, status_code, latency_ms, error_message, ip, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [Date.now(), data.method, data.path, data.apiKeyId || null, data.statusCode || null,
+       data.latencyMs || null, data.errorMessage || null, data.ip || null, data.userAgent || null]
+    );
+  }
+
+  async getRequestLogs(opts: {
+    limit?: number; offset?: number; startDate?: number; endDate?: number;
+    apiKeyId?: string; statusCode?: number;
+  }) {
+    const conditions: string[] = [];
+    const params: any[] = [];
+    let idx = 1;
+
+    if (opts.startDate) { conditions.push(`timestamp >= $${idx++}`); params.push(opts.startDate); }
+    if (opts.endDate) { conditions.push(`timestamp <= $${idx++}`); params.push(opts.endDate); }
+    if (opts.apiKeyId) { conditions.push(`api_key_id = $${idx++}`); params.push(opts.apiKeyId); }
+    if (opts.statusCode) { conditions.push(`status_code = $${idx++}`); params.push(opts.statusCode); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = opts.limit || 100;
+    const offset = opts.offset || 0;
+
+    const result = await pool.query(
+      `SELECT * FROM kioku_request_logs ${where} ORDER BY timestamp DESC LIMIT $${idx++} OFFSET $${idx++}`,
+      [...params, limit, offset]
+    );
+    const countResult = await pool.query(
+      `SELECT COUNT(*) as total FROM kioku_request_logs ${where}`,
+      params
+    );
+    return { logs: result.rows, total: parseInt(countResult.rows[0]?.total ?? "0"), limit, offset };
   }
 
   // ── Stats ──────────────────────────────────────────────────────────────────

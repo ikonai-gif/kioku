@@ -2,22 +2,30 @@
  * KIOKU™ Rate Limiting Middleware
  * Sliding window in-memory rate limiter per plan
  *
- * Plans:
- *   dev       — 1,000 req/day
- *   starter   — 10,000 req/day
- *   growth    — 100,000 req/day
- *   enterprise — unlimited
+ * Plans (per-minute):
+ *   free (dev)    — 60 req/min
+ *   starter       — 300 req/min
+ *   pro (growth)  — 1,000 req/min
+ *   team (enterprise) — 5,000 req/min
+ *
+ * Unauthenticated (per IP): 100 req/min
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 
 const PLANS: Record<string, { daily: number; perMin: number }> = {
-  dev:        { daily:      1_000, perMin: 30 },
-  starter:    { daily:     10_000, perMin: 60 },
-  growth:     { daily:    100_000, perMin: 300 },
+  dev:        { daily:     5_000, perMin: 60 },
+  free:       { daily:     5_000, perMin: 60 },
+  starter:    { daily:    50_000, perMin: 300 },
+  growth:     { daily:   200_000, perMin: 1_000 },
+  pro:        { daily:   200_000, perMin: 1_000 },
+  team:       { daily: 1_000_000, perMin: 5_000 },
+  business:   { daily: 1_000_000, perMin: 5_000 },
   enterprise: { daily: 99_999_999, perMin: 9_999 },
 };
+
+const UNAUTHENTICATED_PER_MIN = 100;
 
 // In-memory store: key → { count, windowStart }
 const minuteWindows = new Map<string, { count: number; windowStart: number }>();
@@ -87,11 +95,26 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
   // Resolve identity key (API key or session token)
   const apiKey = req.headers["x-api-key"] as string | undefined;
   const sessionToken = req.headers["x-session-token"] as string | undefined;
+  const clientIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
 
-  // Demo session — dev plan limits apply but be generous
-  const isDemoSession = sessionToken === "demo-session";
+  const isAuthenticated = !!(apiKey || sessionToken);
+  const identityKey = apiKey || sessionToken || clientIp;
 
-  const identityKey = apiKey || sessionToken || req.ip || "anonymous";
+  // Global IP-based rate limit for unauthenticated requests
+  if (!isAuthenticated) {
+    const ipKey = `ip:${clientIp}`;
+    const ipResult = incrementWindow(minuteWindows, ipKey, 60_000);
+    if (ipResult.count > UNAUTHENTICATED_PER_MIN) {
+      const retryAfter = Math.max(1, 60 - Math.floor((Date.now() - minuteWindows.get(ipKey)!.windowStart) / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        error: "Rate limit exceeded",
+        code: "RATE_LIMITED",
+        status: 429,
+        detail: `Unauthenticated limit: ${UNAUTHENTICATED_PER_MIN} requests/min. Retry after ${retryAfter}s`,
+      });
+    }
+  }
 
   // Async plan resolution — we optimistically use resolved plan
   resolveUserPlan(apiKey, sessionToken).then((plan) => {
@@ -110,17 +133,20 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     dayResult.remaining = Math.max(0, limits.daily - dayResult.count);
 
     // Set rate limit headers
-    res.setHeader("X-RateLimit-Limit", limits.daily);
-    res.setHeader("X-RateLimit-Remaining", dayResult.remaining);
-    res.setHeader("X-RateLimit-Reset", dayResult.resetAt);
+    res.setHeader("X-RateLimit-Limit", limits.perMin);
+    res.setHeader("X-RateLimit-Remaining", minResult.remaining);
+    res.setHeader("X-RateLimit-Reset", minResult.resetAt);
     res.setHeader("X-RateLimit-Plan", plan);
 
     // Check per-minute limit first
     if (minResult.count > limits.perMin) {
-      res.setHeader("Retry-After", "60");
+      const retryAfter = Math.max(1, 60 - Math.floor((Date.now() - minuteWindows.get(minKey)!.windowStart) / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
       return res.status(429).json({
         error: "Rate limit exceeded",
-        detail: `Plan '${plan}' allows ${limits.perMin} requests/min. Retry after ${60 - Math.floor((Date.now() - minuteWindows.get(minKey)!.windowStart) / 1000)}s`,
+        code: "RATE_LIMITED",
+        status: 429,
+        detail: `Plan '${plan}' allows ${limits.perMin} requests/min. Retry after ${retryAfter}s`,
         plan,
         upgradeUrl: "https://usekioku.com/#pricing",
       });
@@ -129,9 +155,12 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     // Check daily limit
     if (dayResult.count > limits.daily) {
       const resetAt = dayResult.resetAt;
-      res.setHeader("Retry-After", String(resetAt - Math.floor(Date.now() / 1000)));
+      const retryAfter = Math.max(1, resetAt - Math.floor(Date.now() / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
       return res.status(429).json({
         error: "Daily rate limit exceeded",
+        code: "DAILY_RATE_LIMITED",
+        status: 429,
         detail: `Plan '${plan}' allows ${limits.daily.toLocaleString()} requests/day. Resets at ${new Date(resetAt * 1000).toISOString()}`,
         plan,
         upgradeUrl: "https://usekioku.com/#pricing",
@@ -144,6 +173,29 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     next();
   });
 }
+
+// Registration rate limiter: 3 per hour per IP
+const registrationWindows = new Map<string, { count: number; windowStart: number }>();
+
+export function checkRegistrationLimit(ip: string): { allowed: boolean; retryAfter: number } {
+  const key = `reg:${ip}`;
+  const hourMs = 3_600_000;
+  const win = getWindow(registrationWindows, key, hourMs);
+  win.count += 1;
+  if (win.count > 3) {
+    const retryAfter = Math.max(1, Math.ceil((win.windowStart + hourMs - Date.now()) / 1000));
+    return { allowed: false, retryAfter };
+  }
+  return { allowed: true, retryAfter: 0 };
+}
+
+// Clean up registration windows too
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of registrationWindows) {
+    if (now - v.windowStart > 7_200_000) registrationWindows.delete(k);
+  }
+}, 300_000);
 
 async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<string> {
   if (sessionToken === "demo-session") return "dev";

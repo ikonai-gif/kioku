@@ -8,6 +8,7 @@ import { triggerAgentResponses } from "./deliberation";
 import { registerMcp } from "./mcp";
 import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
+import { checkRegistrationLimit } from "./ratelimit";
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
@@ -557,6 +558,121 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     console.log(`[waitlist] ${email}${company ? ` (${company})` : ""}${useCase ? ` use: ${useCase}` : ""}`);
     res.json({ ok: true, message: "You're on the waitlist. We'll be in touch." });
+  });
+
+  // ── Tenant Self-Registration ──────────────────────────────────
+  // POST /api/register — create new tenant + generate API key
+  // (accessible via /api/v1/register thanks to versioning middleware)
+  app.post("/api/register", async (req, res) => {
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
+
+    // Rate limit: 3 registrations per hour per IP
+    const { allowed, retryAfter } = checkRegistrationLimit(ip);
+    if (!allowed) {
+      res.setHeader("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        error: "Registration rate limit exceeded. Try again later.",
+        code: "REGISTRATION_RATE_LIMITED",
+        status: 429,
+      });
+    }
+
+    const { email, name, plan } = req.body;
+    if (!email) return res.status(400).json({ error: "Email required", code: "BAD_REQUEST", status: 400 });
+
+    // Check if user already exists
+    const existing = await storage.getUserByEmail(email);
+    if (existing) {
+      return res.status(409).json({
+        error: "An account with this email already exists",
+        code: "CONFLICT",
+        status: 409,
+      });
+    }
+
+    const user = await storage.createUser({
+      email,
+      name: name || email.split("@")[0],
+      plan: "dev", // free tier maps to "dev" plan internally
+    });
+
+    res.status(201).json({
+      api_key: user.apiKey,
+      tenant_id: user.id,
+      email: user.email,
+      plan: "free",
+      message: "Registration successful. Use the api_key in the x-api-key header for API access.",
+    });
+  });
+
+  // ── Usage Dashboard ──────────────────────────────────────────
+  // GET /api/usage — returns usage stats for authenticated API key
+  // (accessible via /api/v1/usage thanks to versioning middleware)
+  app.get("/api/usage", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", status: 401 });
+
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found", code: "NOT_FOUND", status: 404 });
+
+    const [memoriesCount, agentsList, roomsList, stats] = await Promise.all([
+      storage.getMemoriesCount(userId),
+      storage.getAgents(userId),
+      storage.getRooms(userId),
+      storage.getStats(userId),
+    ]);
+
+    // Get request counts from kioku_request_logs
+    const { pool } = await import("./storage");
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const apiKeyPrefix = user.apiKey.slice(0, 12) + "…";
+
+    const [todayResult, monthResult] = await Promise.all([
+      pool.query(
+        "SELECT COUNT(*) as cnt FROM kioku_request_logs WHERE api_key_id = $1 AND timestamp >= $2",
+        [apiKeyPrefix, todayStart.getTime()]
+      ),
+      pool.query(
+        "SELECT COUNT(*) as cnt FROM kioku_request_logs WHERE api_key_id = $1 AND timestamp >= $2",
+        [apiKeyPrefix, monthStart.getTime()]
+      ),
+    ]);
+
+    const PLAN_LIMITS: Record<string, { perMin: number; daily: number }> = {
+      dev:        { perMin: 60, daily: 5_000 },
+      free:       { perMin: 60, daily: 5_000 },
+      starter:    { perMin: 300, daily: 50_000 },
+      growth:     { perMin: 1_000, daily: 200_000 },
+      pro:        { perMin: 1_000, daily: 200_000 },
+      team:       { perMin: 5_000, daily: 1_000_000 },
+      business:   { perMin: 5_000, daily: 1_000_000 },
+      enterprise: { perMin: 9_999, daily: 99_999_999 },
+    };
+
+    const limits = PLAN_LIMITS[user.plan] || PLAN_LIMITS["dev"];
+
+    res.json({
+      memories_count: memoriesCount,
+      rooms_count: roomsList.length,
+      agents_count: agentsList.length,
+      requests_today: parseInt(todayResult.rows[0]?.cnt ?? "0"),
+      requests_this_month: parseInt(monthResult.rows[0]?.cnt ?? "0"),
+      plan: user.plan,
+      limits: {
+        requests_per_minute: limits.perMin,
+        requests_per_day: limits.daily,
+      },
+      stats: {
+        total_operations: stats.totalOps,
+        avg_latency_ms: stats.avgLatency,
+        active_agents: stats.activeAgents,
+      },
+    });
   });
 
   // ── Billing / Plan ────────────────────────────────────────────
