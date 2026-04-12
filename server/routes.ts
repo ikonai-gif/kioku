@@ -745,7 +745,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/rooms/:id/deliberations/:sessionId", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const session = getSession(req.params.sessionId);
+    const session = await getSession(req.params.sessionId);
     if (!session || session.roomId !== Number(req.params.id)) {
       return res.status(404).json({ error: "Session not found" });
     }
@@ -756,7 +756,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/rooms/:id/deliberations", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const sessions = getSessionsByRoom(Number(req.params.id));
+    const sessions = await getSessionsByRoom(Number(req.params.id));
     res.json(sessions);
   });
 
@@ -764,7 +764,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/rooms/:id/consensus", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const consensus = getLatestConsensus(Number(req.params.id));
+    const consensus = await getLatestConsensus(Number(req.params.id));
     if (!consensus) return res.status(404).json({ error: "No consensus found" });
     res.json(consensus);
   });

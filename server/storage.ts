@@ -133,6 +133,24 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON kioku_request_logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_request_logs_api_key ON kioku_request_logs(api_key_id);
   `);
+  // Phase B-2: deliberation sessions persistence
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kioku_deliberation_sessions (
+      id          TEXT PRIMARY KEY,
+      room_id     INTEGER NOT NULL,
+      user_id     INTEGER NOT NULL,
+      topic       TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'running',
+      model       TEXT NOT NULL,
+      models_used TEXT NOT NULL DEFAULT '[]',
+      rounds      TEXT NOT NULL DEFAULT '[]',
+      consensus   TEXT,
+      started_at  BIGINT NOT NULL,
+      completed_at BIGINT
+    );
+    CREATE INDEX IF NOT EXISTS idx_delib_sessions_room ON kioku_deliberation_sessions(room_id);
+    CREATE INDEX IF NOT EXISTS idx_delib_sessions_user ON kioku_deliberation_sessions(user_id);
+  `);
 }
 
 function generateApiKey(): string {
@@ -446,6 +464,73 @@ export class Storage implements IStorage {
       : 0;
     const activeAgents = userAgents.filter(a => a.status === "online" && a.enabled).length;
     return { totalMemories, totalOps, avgLatency, activeAgents };
+  }
+
+  // ── Deliberation Sessions (raw SQL — no Drizzle schema) ─────────────────────
+  async saveDeliberationSession(session: {
+    id: string; roomId: number; userId: number; topic: string;
+    status: string; model: string; modelsUsed: string[];
+    rounds: any[]; consensus: any | null;
+    startedAt: number; completedAt: number | null;
+  }) {
+    await pool.query(
+      `INSERT INTO kioku_deliberation_sessions (id, room_id, user_id, topic, status, model, models_used, rounds, consensus, started_at, completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         models_used = EXCLUDED.models_used,
+         rounds = EXCLUDED.rounds,
+         consensus = EXCLUDED.consensus,
+         completed_at = EXCLUDED.completed_at`,
+      [
+        session.id, session.roomId, session.userId, session.topic,
+        session.status, session.model,
+        JSON.stringify(session.modelsUsed),
+        JSON.stringify(session.rounds),
+        session.consensus ? JSON.stringify(session.consensus) : null,
+        session.startedAt, session.completedAt,
+      ]
+    );
+  }
+
+  async getDeliberationSession(sessionId: string) {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions WHERE id = $1`, [sessionId]
+    );
+    return rows[0] ? this.mapDelibRow(rows[0]) : undefined;
+  }
+
+  async getDeliberationsByRoom(roomId: number) {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions WHERE room_id = $1 ORDER BY started_at DESC`, [roomId]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  async getLatestConsensus(roomId: number) {
+    const { rows } = await pool.query(
+      `SELECT consensus FROM kioku_deliberation_sessions
+       WHERE room_id = $1 AND status = 'completed' AND consensus IS NOT NULL
+       ORDER BY completed_at DESC LIMIT 1`, [roomId]
+    );
+    if (!rows[0]) return null;
+    return JSON.parse(rows[0].consensus);
+  }
+
+  private mapDelibRow(row: any) {
+    return {
+      sessionId: row.id,
+      roomId: row.room_id,
+      userId: row.user_id,
+      topic: row.topic,
+      status: row.status,
+      model: row.model,
+      modelsUsed: JSON.parse(row.models_used || '[]'),
+      rounds: JSON.parse(row.rounds || '[]'),
+      consensus: row.consensus ? JSON.parse(row.consensus) : null,
+      startedAt: Number(row.started_at),
+      completedAt: row.completed_at ? Number(row.completed_at) : null,
+    };
   }
 }
 

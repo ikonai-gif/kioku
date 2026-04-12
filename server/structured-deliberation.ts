@@ -128,8 +128,7 @@ export interface ConsensusResult {
   dissent: string[];
 }
 
-// In-memory session store (persisted to DB via audit log)
-const sessions = new Map<string, DeliberationSession>();
+// Sessions now persisted to kioku_deliberation_sessions table (storage.ts CRUD)
 
 // ── Main Entry Point ──────────────────────────────────────────────
 
@@ -159,7 +158,8 @@ export async function runDeliberation(
     model: fallbackModel,
     modelsUsed: [],
   };
-  sessions.set(sessionId, session);
+  // Persist initial session to DB
+  await persistSession(session, userId);
 
   try {
     // Get agents in the room
@@ -182,6 +182,7 @@ export async function runDeliberation(
       roomId, userId, agents, topic, "position", 1, fallbackModel, []
     );
     session.rounds.push(initialPositions);
+    await persistSession(session, userId);
 
     // ── Phase 2: Debate Rounds ──
     let previousPositions = initialPositions.positions;
@@ -191,6 +192,7 @@ export async function runDeliberation(
       );
       session.rounds.push(debateResult);
       previousPositions = debateResult.positions;
+      await persistSession(session, userId);
     }
 
     // ── Phase 3: Final Positions ──
@@ -199,6 +201,7 @@ export async function runDeliberation(
       roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions
     );
     session.rounds.push(finalPositions);
+    await persistSession(session, userId);
 
     // ── Phase 4: Consensus ──
     const consensus = buildConsensus(
@@ -242,6 +245,7 @@ export async function runDeliberation(
     session.modelsUsed = Array.from(new Set(agents.map((a) => a.model || fallbackModel)));
     session.status = "completed";
     session.completedAt = Date.now();
+    await persistSession(session, userId);
 
     // Log to audit
     await storage.addLog({
@@ -257,6 +261,7 @@ export async function runDeliberation(
   } catch (err) {
     session.status = "failed";
     session.completedAt = Date.now();
+    await persistSession(session, userId).catch(() => {});
     await postSystemMessage(roomId, `❌ Deliberation failed: ${(err as Error).message}`);
     throw err;
   } finally {
@@ -496,19 +501,34 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ── Public API ────────────────────────────────────────────────────
+// ── DB Persistence Helper ────────────────────────────────────────
 
-export function getSession(sessionId: string): DeliberationSession | undefined {
-  return sessions.get(sessionId);
+async function persistSession(session: DeliberationSession, userId: number) {
+  await storage.saveDeliberationSession({
+    id: session.sessionId,
+    roomId: session.roomId,
+    userId,
+    topic: session.topic,
+    status: session.status,
+    model: session.model,
+    modelsUsed: session.modelsUsed,
+    rounds: session.rounds,
+    consensus: session.consensus,
+    startedAt: session.startedAt,
+    completedAt: session.completedAt,
+  });
 }
 
-export function getSessionsByRoom(roomId: number): DeliberationSession[] {
-  return Array.from(sessions.values()).filter((s) => s.roomId === roomId);
+// ── Public API (reads from DB) ───────────────────────────────────
+
+export async function getSession(sessionId: string): Promise<DeliberationSession | undefined> {
+  return storage.getDeliberationSession(sessionId) as Promise<DeliberationSession | undefined>;
 }
 
-export function getLatestConsensus(roomId: number): ConsensusResult | null {
-  const roomSessions = getSessionsByRoom(roomId)
-    .filter((s) => s.status === "completed" && s.consensus)
-    .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
-  return roomSessions[0]?.consensus || null;
+export async function getSessionsByRoom(roomId: number): Promise<DeliberationSession[]> {
+  return storage.getDeliberationsByRoom(roomId) as Promise<DeliberationSession[]>;
+}
+
+export async function getLatestConsensus(roomId: number): Promise<ConsensusResult | null> {
+  return storage.getLatestConsensus(roomId);
 }
