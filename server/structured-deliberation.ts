@@ -25,9 +25,9 @@ const openai = process.env.OPENAI_API_KEY
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || null;
 
 // Supported models
-const OPENAI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
-const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"];
-const DEFAULT_MODEL = "gpt-4.1-mini";
+const OPENAI_MODELS = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.4-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"];
+const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.1-pro"];
+const DEFAULT_MODEL = "gpt-5.4-mini";
 
 function isGeminiModel(model: string): boolean {
   return GEMINI_MODELS.includes(model) || model.startsWith("gemini-");
