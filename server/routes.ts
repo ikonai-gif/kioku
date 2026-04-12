@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
+import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
 import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
@@ -699,6 +700,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!plan || !billingCycle) return res.status(400).json({ error: "plan and billingCycle required" });
     const updated = await storage.updateUserPlan(userId, plan, billingCycle);
     res.json(updated);
+  });
+
+  // ── Structured Deliberation (Phase B-1) ───────────────────────
+
+  // Start a structured deliberation session
+  app.post("/api/v1/rooms/:id/deliberate", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    const { topic, model, debateRounds } = req.body;
+    if (!topic) return res.status(400).json({ error: "topic is required" });
+    try {
+      const session = await runDeliberation(roomId, userId, topic, {
+        model: model || undefined,
+        debateRounds: debateRounds ?? 2,
+      });
+      res.json(session);
+    } catch (err) {
+      const message = (err as Error).message;
+      const status = message.includes("already running") ? 409 : 500;
+      res.status(status).json({ error: message });
+    }
+  });
+
+  // Get deliberation session by ID
+  app.get("/api/v1/rooms/:id/deliberations/:sessionId", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const session = getSession(req.params.sessionId);
+    if (!session || session.roomId !== Number(req.params.id)) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    res.json(session);
+  });
+
+  // List all deliberation sessions for a room
+  app.get("/api/v1/rooms/:id/deliberations", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const sessions = getSessionsByRoom(Number(req.params.id));
+    res.json(sessions);
+  });
+
+  // Get latest consensus for a room
+  app.get("/api/v1/rooms/:id/consensus", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const consensus = getLatestConsensus(Number(req.params.id));
+    if (!consensus) return res.status(404).json({ error: "No consensus found" });
+    res.json(consensus);
   });
 
   return httpServer;
