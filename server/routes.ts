@@ -705,7 +705,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Structured Deliberation (Phase B-1) ───────────────────────
 
   // Start a structured deliberation session
-  app.post("/api/v1/rooms/:id/deliberate", async (req, res) => {
+  app.post("/api/rooms/:id/deliberate", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.params.id);
@@ -725,7 +725,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Get deliberation session by ID
-  app.get("/api/v1/rooms/:id/deliberations/:sessionId", async (req, res) => {
+  app.get("/api/rooms/:id/deliberations/:sessionId", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const session = getSession(req.params.sessionId);
@@ -736,7 +736,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // List all deliberation sessions for a room
-  app.get("/api/v1/rooms/:id/deliberations", async (req, res) => {
+  app.get("/api/rooms/:id/deliberations", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const sessions = getSessionsByRoom(Number(req.params.id));
@@ -744,7 +744,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Get latest consensus for a room
-  app.get("/api/v1/rooms/:id/consensus", async (req, res) => {
+  app.get("/api/rooms/:id/consensus", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const consensus = getLatestConsensus(Number(req.params.id));
