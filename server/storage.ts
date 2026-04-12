@@ -137,6 +137,24 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON kioku_request_logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_request_logs_api_key ON kioku_request_logs(api_key_id);
   `);
+  // Phase B-5: agent tokens for external agent auth
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kioku_agent_tokens (
+      id          SERIAL PRIMARY KEY,
+      agent_id    INTEGER NOT NULL,
+      user_id     INTEGER NOT NULL,
+      token       TEXT NOT NULL UNIQUE,
+      name        TEXT NOT NULL DEFAULT 'default',
+      scopes      TEXT NOT NULL DEFAULT '["deliberation.respond","memory.read"]',
+      rate_limit  INTEGER NOT NULL DEFAULT 60,
+      expires_at  BIGINT,
+      revoked     BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at  BIGINT NOT NULL,
+      last_used   BIGINT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_tokens_token ON kioku_agent_tokens(token);
+    CREATE INDEX IF NOT EXISTS idx_agent_tokens_agent ON kioku_agent_tokens(agent_id);
+  `);
   // Phase B-4: webhook registration for external agents
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kioku_webhooks (
@@ -533,6 +551,65 @@ export class Storage implements IStorage {
     );
     if (!rows[0]) return null;
     return JSON.parse(rows[0].consensus);
+  }
+
+  // ── Agent Tokens (external agent auth) ──────────────────────────────
+  async createAgentToken(data: { agentId: number; userId: number; name?: string; scopes?: string[]; expiresInDays?: number }) {
+    const token = "kat_" + randomBytes(32).toString("hex");
+    const scopes = JSON.stringify(data.scopes || ["deliberation.respond", "memory.read"]);
+    const expiresAt = data.expiresInDays ? Date.now() + data.expiresInDays * 86400000 : null;
+    await pool.query(
+      `INSERT INTO kioku_agent_tokens (agent_id, user_id, token, name, scopes, expires_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [data.agentId, data.userId, token, data.name || "default", scopes, expiresAt, Date.now()]
+    );
+    return { token, agentId: data.agentId, name: data.name || "default", scopes: data.scopes || ["deliberation.respond", "memory.read"], expiresAt };
+  }
+
+  async validateAgentToken(token: string) {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_agent_tokens WHERE token = $1 AND revoked = FALSE`, [token]
+    );
+    if (!rows[0]) return null;
+    const row = rows[0];
+    // Check expiration
+    if (row.expires_at && Date.now() > Number(row.expires_at)) return null;
+    // Update last_used
+    await pool.query(`UPDATE kioku_agent_tokens SET last_used = $1 WHERE id = $2`, [Date.now(), row.id]);
+    return {
+      id: row.id,
+      agentId: row.agent_id as number,
+      userId: row.user_id as number,
+      name: row.name as string,
+      scopes: JSON.parse(row.scopes || '[]') as string[],
+    };
+  }
+
+  async getAgentTokens(agentId: number) {
+    const { rows } = await pool.query(
+      `SELECT id, agent_id, user_id, name, scopes, rate_limit, expires_at, revoked, created_at, last_used
+       FROM kioku_agent_tokens WHERE agent_id = $1 ORDER BY created_at DESC`, [agentId]
+    );
+    return rows.map((r: any) => ({
+      id: r.id,
+      agentId: r.agent_id,
+      userId: r.user_id,
+      name: r.name,
+      scopes: JSON.parse(r.scopes || '[]'),
+      rateLimit: r.rate_limit,
+      expiresAt: r.expires_at ? Number(r.expires_at) : null,
+      revoked: r.revoked,
+      createdAt: Number(r.created_at),
+      lastUsed: r.last_used ? Number(r.last_used) : null,
+    }));
+  }
+
+  async revokeAgentToken(tokenId: number) {
+    await pool.query(`UPDATE kioku_agent_tokens SET revoked = TRUE WHERE id = $1`, [tokenId]);
+  }
+
+  async revokeAllAgentTokens(agentId: number) {
+    await pool.query(`UPDATE kioku_agent_tokens SET revoked = TRUE WHERE agent_id = $1`, [agentId]);
   }
 
   // ── Webhooks (external agents) ────────────────────────────────────────

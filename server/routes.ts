@@ -136,6 +136,13 @@ async function getUser(req: any): Promise<number | null> {
   return getApiKeyUser(req);
 }
 
+// Agent token auth — for external agents (kat_* tokens)
+async function getAgentAuth(req: any): Promise<{ agentId: number; userId: number; scopes: string[] } | null> {
+  const token = (req.headers["x-agent-token"] as string) || "";
+  if (!token.startsWith("kat_")) return null;
+  return storage.validateAgentToken(token);
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
 
   // ── WebSocket ─────────────────────────────────────────────────
@@ -324,6 +331,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const webhooks = await storage.getWebhooksByUser(userId);
     res.json(webhooks);
+  });
+
+  // ── Agent Tokens (external agent auth) ─────────────────────────
+  app.post("/api/agents/:id/token", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = Number(req.params.id);
+    const { name, scopes, expiresInDays } = req.body || {};
+    const result = await storage.createAgentToken({ agentId, userId, name, scopes, expiresInDays });
+    res.json({ ok: true, ...result, note: "Save this token — it cannot be retrieved later" });
+  });
+
+  app.get("/api/agents/:id/tokens", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const tokens = await storage.getAgentTokens(Number(req.params.id));
+    res.json(tokens);
+  });
+
+  app.delete("/api/agents/:id/tokens/:tokenId", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    await storage.revokeAgentToken(Number(req.params.tokenId));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/agents/:id/tokens", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    await storage.revokeAllAgentTokens(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── Agent Callback (external agents authenticate with kat_* token) ──
+  app.post("/api/agent-callback", async (req, res) => {
+    const auth = await getAgentAuth(req);
+    if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
+    if (!auth.scopes.includes("deliberation.respond")) {
+      return res.status(403).json({ error: "Token lacks deliberation.respond scope" });
+    }
+    const { sessionId, position, confidence, reasoning } = req.body;
+    if (!sessionId || !position) {
+      return res.status(400).json({ error: "sessionId and position are required" });
+    }
+    // Log the callback
+    await storage.addLog({
+      userId: auth.userId,
+      agentName: `External Agent #${auth.agentId}`,
+      agentColor: "#9B59B6",
+      operation: "agent_callback",
+      detail: `Session ${sessionId}: position received (confidence=${confidence || 0.5})`,
+      latencyMs: null,
+    });
+    res.json({ ok: true, received: { agentId: auth.agentId, sessionId, position, confidence: confidence || 0.5 } });
+  });
+
+  // Agent token validation endpoint (for external agents to verify their token)
+  app.get("/api/agent-auth/verify", async (req, res) => {
+    const auth = await getAgentAuth(req);
+    if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
+    res.json({ ok: true, agentId: auth.agentId, userId: auth.userId, scopes: auth.scopes });
   });
   // ── Memories ──────────────────────────────────────────────────
   app.get("/api/memories", async (req, res) => {
