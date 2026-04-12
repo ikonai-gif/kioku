@@ -7,6 +7,7 @@ import { setupWebSocket, broadcastToRoom } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
+import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { checkRegistrationLimit } from "./ratelimit";
@@ -290,6 +291,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+
+  // ── Webhooks (external agents) ─────────────────────────────────
+  app.post("/api/agents/:id/webhook", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = Number(req.params.id);
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: "url is required" });
+    const secret = "whk_" + randomBytes(24).toString("hex");
+    await storage.registerWebhook({ agentId, userId, url, secret });
+    res.json({ ok: true, agentId, url, secret, note: "Save this secret — it signs X-Kioku-Signature headers" });
+  });
+
+  app.get("/api/agents/:id/webhook", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const wh = await storage.getWebhook(Number(req.params.id));
+    if (!wh) return res.status(404).json({ error: "No webhook registered" });
+    res.json(wh);
+  });
+
+  app.delete("/api/agents/:id/webhook", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    await storage.deleteWebhook(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.get("/api/webhooks", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const webhooks = await storage.getWebhooksByUser(userId);
+    res.json(webhooks);
+  });
   // ── Memories ──────────────────────────────────────────────────
   app.get("/api/memories", async (req, res) => {
     const userId = await getUser(req);

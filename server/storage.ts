@@ -137,6 +137,20 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON kioku_request_logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_request_logs_api_key ON kioku_request_logs(api_key_id);
   `);
+  // Phase B-4: webhook registration for external agents
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kioku_webhooks (
+      id          SERIAL PRIMARY KEY,
+      agent_id    INTEGER NOT NULL UNIQUE,
+      user_id     INTEGER NOT NULL,
+      url         TEXT NOT NULL,
+      secret      TEXT NOT NULL,
+      events      TEXT NOT NULL DEFAULT '["deliberation"]',
+      active      BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at  BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhooks_agent ON kioku_webhooks(agent_id);
+  `);
   // Phase B-2: deliberation sessions persistence
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kioku_deliberation_sessions (
@@ -519,6 +533,55 @@ export class Storage implements IStorage {
     );
     if (!rows[0]) return null;
     return JSON.parse(rows[0].consensus);
+  }
+
+  // ── Webhooks (external agents) ────────────────────────────────────────
+  async registerWebhook(data: { agentId: number; userId: number; url: string; secret: string; events?: string[] }) {
+    const events = JSON.stringify(data.events || ["deliberation"]);
+    await pool.query(
+      `INSERT INTO kioku_webhooks (agent_id, user_id, url, secret, events, active, created_at)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+       ON CONFLICT (agent_id) DO UPDATE SET
+         url = EXCLUDED.url, secret = EXCLUDED.secret, events = EXCLUDED.events, active = TRUE`,
+      [data.agentId, data.userId, data.url, data.secret, events, Date.now()]
+    );
+  }
+
+  async getWebhook(agentId: number) {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_webhooks WHERE agent_id = $1 AND active = TRUE`, [agentId]
+    );
+    if (!rows[0]) return undefined;
+    return {
+      id: rows[0].id,
+      agentId: rows[0].agent_id,
+      userId: rows[0].user_id,
+      url: rows[0].url,
+      secret: rows[0].secret,
+      events: JSON.parse(rows[0].events || '[]') as string[],
+      active: rows[0].active,
+      createdAt: Number(rows[0].created_at),
+    };
+  }
+
+  async getWebhooksByUser(userId: number) {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_webhooks WHERE user_id = $1 ORDER BY created_at DESC`, [userId]
+    );
+    return rows.map((r: any) => ({
+      id: r.id,
+      agentId: r.agent_id,
+      userId: r.user_id,
+      url: r.url,
+      secret: r.secret,
+      events: JSON.parse(r.events || '[]') as string[],
+      active: r.active,
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  async deleteWebhook(agentId: number) {
+    await pool.query(`DELETE FROM kioku_webhooks WHERE agent_id = $1`, [agentId]);
   }
 
   private mapDelibRow(row: any) {

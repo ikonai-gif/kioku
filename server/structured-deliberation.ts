@@ -13,6 +13,7 @@
  */
 
 import OpenAI from "openai";
+import { createHmac } from "crypto";
 import { storage } from "./storage";
 import { broadcastToRoom } from "./ws";
 
@@ -79,6 +80,62 @@ async function callLLM(
     ],
   });
   return completion.choices[0]?.message?.content?.trim() || "";
+}
+
+// ── Webhook Dispatcher ─────────────────────────────────────────────
+
+const WEBHOOK_TIMEOUT_MS = 15000; // 15s timeout for external agents
+
+async function callWebhook(
+  webhookUrl: string,
+  secret: string,
+  payload: {
+    event: string;
+    sessionId: string;
+    roomId: number;
+    agentId: number;
+    agentName: string;
+    topic: string;
+    phase: string;
+    round: number;
+    priorPositions: AgentPosition[];
+  }
+): Promise<{ position: string; confidence: number; reasoning: string }> {
+  const body = JSON.stringify(payload);
+  const signature = createHmac("sha256", secret).update(body).digest("hex");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+
+  try {
+    const resp = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Kioku-Signature": signature,
+        "X-Kioku-Event": payload.event,
+      },
+      body,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      throw new Error(`Webhook ${resp.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const data = await resp.json() as any;
+    return {
+      position: data.position || "[no position]",
+      confidence: Math.max(0, Math.min(1, parseFloat(data.confidence ?? "0.5"))),
+      reasoning: data.reasoning || "External agent response",
+    };
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") throw new Error("Webhook timeout (15s)");
+    throw err;
+  }
 }
 
 // Active sessions — prevent double-run on same room
@@ -179,7 +236,7 @@ export async function runDeliberation(
 
     // ── Phase 1: Initial Positions ──
     const initialPositions = await collectPositions(
-      roomId, userId, agents, topic, "position", 1, fallbackModel, []
+      roomId, userId, agents, topic, "position", 1, fallbackModel, [], sessionId
     );
     session.rounds.push(initialPositions);
     await persistSession(session, userId);
@@ -188,7 +245,7 @@ export async function runDeliberation(
     let previousPositions = initialPositions.positions;
     for (let r = 1; r <= debateRounds; r++) {
       const debateResult = await collectPositions(
-        roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions
+        roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions, sessionId
       );
       session.rounds.push(debateResult);
       previousPositions = debateResult.positions;
@@ -198,7 +255,7 @@ export async function runDeliberation(
     // ── Phase 3: Final Positions ──
     const allPriorPositions = session.rounds.flatMap((r) => r.positions);
     const finalPositions = await collectPositions(
-      roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions
+      roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions, sessionId
     );
     session.rounds.push(finalPositions);
     await persistSession(session, userId);
@@ -279,7 +336,8 @@ async function collectPositions(
   phase: "position" | "debate" | "final",
   round: number,
   fallbackModel: string,
-  priorPositions: AgentPosition[]
+  priorPositions: AgentPosition[],
+  sessionId: string
 ): Promise<DeliberationRound> {
   const phaseLabel =
     phase === "position" ? "📍 Phase 1 — Initial Positions" :
@@ -315,13 +373,33 @@ async function collectPositions(
     const agentModel = agent.model || fallbackModel;
 
     try {
-      const raw = await callLLM(
-        agentModel,
-        systemPrompt,
-        `Topic for deliberation: "${topic}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
-        { maxTokens: 400, temperature: phase === "debate" ? 0.8 : 0.6 }
-      );
-      const parsed = parseAgentResponse(raw, agent.name);
+      // Check if agent has an external webhook registered
+      const webhook = await storage.getWebhook(agent.id);
+      let parsed: { position: string; confidence: number; reasoning: string };
+
+      if (webhook) {
+        // External agent — dispatch via webhook
+        parsed = await callWebhook(webhook.url, webhook.secret, {
+          event: "deliberation.round",
+          sessionId,
+          roomId,
+          agentId: agent.id,
+          agentName: agent.name,
+          topic,
+          phase,
+          round,
+          priorPositions,
+        });
+      } else {
+        // Internal agent — call LLM directly
+        const raw = await callLLM(
+          agentModel,
+          systemPrompt,
+          `Topic for deliberation: "${topic}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
+          { maxTokens: 400, temperature: phase === "debate" ? 0.8 : 0.6 }
+        );
+        parsed = parseAgentResponse(raw, agent.name);
+      }
 
       positions.push({
         agentId: agent.id,
@@ -334,7 +412,7 @@ async function collectPositions(
       await sleep(600 + i * 400);
 
       // Post to room as regular message so WS clients see it
-      const modelTag = agentModel !== DEFAULT_MODEL ? ` [${agentModel}]` : "";
+      const modelTag = webhook ? " [webhook]" : (agentModel !== DEFAULT_MODEL ? ` [${agentModel}]` : "");
       const displayContent = `[${phaseLabel}]${modelTag} ${parsed.position} (confidence: ${(parsed.confidence * 100).toFixed(0)}%)`;
       const msg = await storage.addRoomMessage({
         roomId,
@@ -352,7 +430,7 @@ async function collectPositions(
         agentName: agent.name,
         agentColor: agent.color,
         operation: "deliberation_round",
-        detail: `${phase} r${round}: model=${agentModel} confidence=${parsed.confidence}`,
+        detail: `${phase} r${round}: ${webhook ? "webhook" : `model=${agentModel}`} confidence=${parsed.confidence}`,
         latencyMs: null,
       });
     } catch (err) {
