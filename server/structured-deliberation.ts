@@ -274,7 +274,7 @@ export async function runDeliberation(
 async function collectPositions(
   roomId: number,
   userId: number,
-  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null }>,
+  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null }>,
   topic: string,
   phase: "position" | "debate" | "final",
   round: number,
@@ -307,7 +307,8 @@ async function collectPositions(
       agentMemories,
       phase,
       topic,
-      priorPositions
+      priorPositions,
+      agent.role
     );
 
     // Use agent's assigned model, or fallback
@@ -372,15 +373,59 @@ async function collectPositions(
 
 // ── Prompt Builder ────────────────────────────────────────────────
 
+// Role-specific behavioral instructions
+const ROLE_INSTRUCTIONS: Record<string, string> = {
+  devils_advocate: `YOUR ROLE: Devil's Advocate.
+You MUST argue AGAINST the majority position, even if you personally agree.
+Find weaknesses, edge cases, and hidden risks in every proposal.
+If everyone agrees, you MUST dissent and explain why the consensus could be wrong.
+Never be agreeable — your job is to stress-test ideas.`,
+
+  contrarian: `YOUR ROLE: Contrarian.
+You naturally see things differently from the crowd.
+Propose unconventional or counterintuitive perspectives.
+Challenge assumptions that others take for granted.
+Your value comes from thinking orthogonally to the group.`,
+
+  mediator: `YOUR ROLE: Mediator.
+Your job is to find common ground between disagreeing agents.
+Identify areas of agreement first, then bridge the gaps.
+Propose compromise positions that integrate the strongest arguments from each side.
+Never take an extreme position — synthesize.`,
+
+  analyst: `YOUR ROLE: Analyst.
+Focus on data, evidence, and logical rigor.
+Demand specifics — reject vague claims.
+Break down the problem into measurable components.
+If someone makes a claim, ask what evidence supports it.`,
+
+  optimist: `YOUR ROLE: Optimist.
+Focus on opportunities, upside potential, and best-case scenarios.
+Highlight what could go RIGHT with each proposal.
+Counter risk-heavy arguments with possibility thinking.
+Be enthusiastic but grounded in reasoning.`,
+
+  pessimist: `YOUR ROLE: Pessimist.
+Focus on risks, downsides, and worst-case scenarios.
+Highlight what could go WRONG with each proposal.
+Demand contingency plans and fallback options.
+Be cautious and thorough in identifying failure modes.`,
+};
+
 function buildDeliberationPrompt(
   name: string,
   description: string,
   memories: string,
   phase: "position" | "debate" | "final",
   topic: string,
-  priorPositions: AgentPosition[]
+  priorPositions: AgentPosition[],
+  role: string | null
 ): string {
   const memBlock = memories ? `\n\nYour relevant memories:\n${memories}` : "";
+
+  const roleBlock = role && ROLE_INSTRUCTIONS[role]
+    ? `\n\n${ROLE_INSTRUCTIONS[role]}`
+    : "";
 
   const priorBlock =
     priorPositions.length > 0
@@ -401,7 +446,7 @@ function buildDeliberationPrompt(
 
   return `You are ${name}, participating in a structured deliberation inside KIOKU™ War Room.
 
-${description ? `About you: ${description}` : ""}${memBlock}
+${description ? `About you: ${description}` : ""}${roleBlock}${memBlock}
 
 DELIBERATION TOPIC: "${topic}"
 
@@ -414,7 +459,8 @@ RULES:
 - Confidence must be a number between 0.0 (no confidence) and 1.0 (absolute certainty)
 - In debate phase: you MUST reference at least one other agent's argument by name
 - Never reveal you are an AI model
-- Keep each field concise (1-3 sentences max)`;
+- Keep each field concise (1-3 sentences max)
+${role ? `- IMPORTANT: Stay true to your assigned role (${role.replace(/_/g, " ")}) throughout the entire deliberation` : ""}`;
 }
 
 // ── Response Parser ───────────────────────────────────────────────
