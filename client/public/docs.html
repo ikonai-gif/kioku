@@ -392,7 +392,10 @@
     <div class="sidebar-section">
       <div class="sidebar-label">Integrations</div>
       <a href="#mcp" class="sidebar-link">MCP Protocol</a>
+      <a href="#deliberation" class="sidebar-link">Structured Deliberation</a>
       <a href="#webhooks" class="sidebar-link">Webhooks</a>
+      <a href="#agent-tokens" class="sidebar-link">Agent Tokens</a>
+      <a href="#external-agents" class="sidebar-link">External Agents</a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-label">Platform</div>
@@ -846,15 +849,236 @@ ws.onmessage = (event) => {
       </div>
     </div>
 
+    <!-- STRUCTURED DELIBERATION -->
+    <div class="doc-section" id="deliberation-section">
+      <span class="anchor" id="deliberation"></span>
+      <h2>Structured Deliberation</h2>
+      <p>Multi-round deliberation with phases, agent roles, multi-model support, and persistent sessions. Agents debate a topic through 4 phases: Position → Debate → Final → Consensus.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method POST">POST</span></td><td><code>/rooms/:id/deliberate</code></td><td>Start a structured deliberation session</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/rooms/:id/deliberations</code></td><td>List all deliberation sessions for a room</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/rooms/:id/deliberations/:sessionId</code></td><td>Get full session with audit trail</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/rooms/:id/consensus</code></td><td>Latest consensus for a room</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Start Deliberation</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">curl</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+        <pre>curl -X POST https://usekioku.com/api/v1/rooms/2/deliberate \
+  -H "Authorization: Bearer kk_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "Should we charge per-agent or flat fee?",
+    "model": "gpt-4o",
+    "debateRounds": 2
+  }'</pre>
+      </div>
+
+      <h3>Agent Roles</h3>
+      <p>Assign roles via <code>PATCH /agents/:id</code> with <code>{"role": "..."}</code>. Available roles:</p>
+      <table class="endpoint-table">
+        <thead><tr><th>Role</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><code>devils_advocate</code></td><td>Argues against the majority, finds weaknesses and hidden risks</td></tr>
+          <tr><td><code>contrarian</code></td><td>Proposes unconventional perspectives, challenges assumptions</td></tr>
+          <tr><td><code>mediator</code></td><td>Finds common ground, proposes compromise positions</td></tr>
+          <tr><td><code>analyst</code></td><td>Demands data and evidence, breaks down measurable components</td></tr>
+          <tr><td><code>optimist</code></td><td>Focuses on upside potential and opportunities</td></tr>
+          <tr><td><code>pessimist</code></td><td>Focuses on risks, downsides, and failure modes</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Multi-Model Support</h3>
+      <p>Each agent can use a different LLM. Set via <code>PATCH /agents/:id</code> with <code>{"model": "gpt-4o"}</code>.</p>
+      <p>Supported: <code>gpt-4o</code>, <code>gpt-4.1-mini</code>, <code>gpt-5.4-mini</code>, <code>gemini-2.5-flash</code>, <code>gemini-2.5-pro</code></p>
+
+      <div class="callout tip">
+        <strong>Sessions are persistent.</strong> All deliberation sessions are stored in the database and survive server restarts. Query historical sessions and consensus decisions at any time.
+      </div>
+    </div>
+
     <!-- WEBHOOKS -->
     <div class="doc-section" id="webhooks-section">
       <span class="anchor" id="webhooks"></span>
       <h2>Webhooks</h2>
-      <p>Stripe billing webhooks are handled at <code>POST /api/billing/webhook</code>. Custom event webhooks are on the roadmap for <strong>Growth</strong> and <strong>Enterprise</strong> plans.</p>
+      <p>Register a webhook URL for any agent. During deliberation, KIOKU™ sends an HTTP POST to the webhook instead of calling an LLM — enabling external agents to participate.</p>
 
-      <div class="callout tip">
-        <strong>Coming in Beta</strong>
-        Memory event webhooks (on_memory_stored, on_decision_logged) will be available for Growth+ plans. Join the <a href="/#waitlist">waitlist</a> for early access.
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method POST">POST</span></td><td><code>/agents/:id/webhook</code></td><td>Register webhook (auto-generates HMAC secret)</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/agents/:id/webhook</code></td><td>Get webhook config</td></tr>
+          <tr><td><span class="method DELETE">DELETE</span></td><td><code>/agents/:id/webhook</code></td><td>Remove webhook</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/webhooks</code></td><td>List all webhooks</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Register</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">curl</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+        <pre>curl -X POST https://usekioku.com/api/v1/agents/6/webhook \
+  -H "Authorization: Bearer kk_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://your-agent.example.com/kioku-hook"}'</pre>
+      </div>
+
+      <h3>Webhook Payload (sent to your URL)</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">JSON</span></div>
+        <pre>{
+  <span class="t-gold">"event"</span>: <span class="t-str">"deliberation.round"</span>,
+  <span class="t-gold">"sessionId"</span>: <span class="t-str">"dlb_2_1776033041425"</span>,
+  <span class="t-gold">"roomId"</span>: 2,
+  <span class="t-gold">"agentId"</span>: 6,
+  <span class="t-gold">"agentName"</span>: <span class="t-str">"SynthesisBot"</span>,
+  <span class="t-gold">"topic"</span>: <span class="t-str">"Should we open-source the SDK?"</span>,
+  <span class="t-gold">"phase"</span>: <span class="t-str">"debate"</span>,
+  <span class="t-gold">"round"</span>: 1,
+  <span class="t-gold">"priorPositions"</span>: [...]
+}</pre>
+      </div>
+
+      <h3>Expected Response</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">JSON</span></div>
+        <pre>{
+  <span class="t-gold">"position"</span>: <span class="t-str">"We should proceed cautiously with a limited open-source release."</span>,
+  <span class="t-gold">"confidence"</span>: 0.82,
+  <span class="t-gold">"reasoning"</span>: <span class="t-str">"Open-sourcing builds trust but risks competitive advantage."</span>
+}</pre>
+      </div>
+
+      <h3>Signature Verification</h3>
+      <p>Each request includes an <code>X-Kioku-Signature</code> header — HMAC-SHA256 of the request body using the webhook secret (<code>whk_*</code>).</p>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Node.js</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+        <pre>import { createHmac } from 'crypto';
+
+function verify(body, signature, secret) {
+  const expected = createHmac('sha256', secret)
+    .update(JSON.stringify(body))
+    .digest('hex');
+  return signature === expected;
+}</pre>
+      </div>
+    </div>
+
+    <!-- AGENT TOKENS -->
+    <div class="doc-section" id="agent-tokens-section">
+      <span class="anchor" id="agent-tokens"></span>
+      <h2>Agent Tokens</h2>
+      <p>Issue scoped tokens (<code>kat_*</code>) for external agents to authenticate with KIOKU™ directly — without using your main API key.</p>
+
+      <table class="endpoint-table">
+        <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><span class="method POST">POST</span></td><td><code>/agents/:id/token</code></td><td>Create token (shown once)</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/agents/:id/tokens</code></td><td>List tokens (no secrets)</td></tr>
+          <tr><td><span class="method DELETE">DELETE</span></td><td><code>/agents/:id/tokens/:tokenId</code></td><td>Revoke single token</td></tr>
+          <tr><td><span class="method DELETE">DELETE</span></td><td><code>/agents/:id/tokens</code></td><td>Revoke all tokens</td></tr>
+          <tr><td><span class="method GET">GET</span></td><td><code>/agent-auth/verify</code></td><td>Verify a token (X-Agent-Token header)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Create Token</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">curl</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+        <pre>curl -X POST https://usekioku.com/api/v1/agents/3/token \
+  -H "Authorization: Bearer kk_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "prod-agent", "expiresInDays": 90}'</pre>
+      </div>
+
+      <h3>Scopes</h3>
+      <table class="endpoint-table">
+        <thead><tr><th>Scope</th><th>Permission</th></tr></thead>
+        <tbody>
+          <tr><td><code>deliberation.respond</code></td><td>Send positions via agent-callback endpoint</td></tr>
+          <tr><td><code>memory.read</code></td><td>Read agent memories</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- EXTERNAL AGENTS -->
+    <div class="doc-section" id="external-agents-section">
+      <span class="anchor" id="external-agents"></span>
+      <h2>External Agent Integration</h2>
+      <p>Connect any external agent (your own GPT, Claude, custom LLM, or even a human-in-the-loop) to participate in KIOKU™ deliberations.</p>
+
+      <h3>Integration Flow</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Sequence</span></div>
+        <pre>1. Register webhook → POST /agents/:id/webhook {url}
+2. Create agent token → POST /agents/:id/token
+3. Start deliberation → POST /rooms/:id/deliberate {topic}
+4. KIOKU sends POST to your webhook URL with phase data
+5. Your agent responds with {position, confidence, reasoning}
+6. (Optional) Agent can also push via POST /agent-callback</pre>
+      </div>
+
+      <h3>Python Example</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Python</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+        <pre>from flask import Flask, request, jsonify
+import hmac, hashlib
+
+app = Flask(__name__)
+WEBHOOK_SECRET = "whk_your_secret_here"
+
+@app.route("/kioku-hook", methods=["POST"])
+def handle_deliberation():
+    # Verify signature
+    sig = request.headers.get("X-Kioku-Signature", "")
+    expected = hmac.new(
+        WEBHOOK_SECRET.encode(), request.data, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return jsonify({"error": "Bad signature"}), 401
+
+    data = request.json
+    topic = data["topic"]
+    phase = data["phase"]
+    prior = data.get("priorPositions", [])
+
+    # Your agent logic here
+    position = f"Based on analysis of {topic}..."
+    return jsonify({
+        "position": position,
+        "confidence": 0.85,
+        "reasoning": "Detailed reasoning here"
+    })</pre>
+      </div>
+
+      <h3>Node.js Example</h3>
+      <div class="code-block">
+        <div class="code-header"><span class="code-lang">Node.js</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+        <pre>import express from 'express';
+import { createHmac } from 'crypto';
+
+const app = express();
+app.use(express.json());
+
+const SECRET = 'whk_your_secret_here';
+
+app.post('/kioku-hook', (req, res) => {
+  const sig = req.headers['x-kioku-signature'];
+  const expected = createHmac('sha256', SECRET)
+    .update(JSON.stringify(req.body)).digest('hex');
+  if (sig !== expected) return res.status(401).json({error: 'Bad sig'});
+
+  const { topic, phase, priorPositions } = req.body;
+  res.json({
+    position: `My analysis of "${topic}"...`,
+    confidence: 0.78,
+    reasoning: 'Based on prior positions and data'
+  });
+});
+
+app.listen(3001);</pre>
       </div>
     </div>
 
