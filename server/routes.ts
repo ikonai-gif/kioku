@@ -251,6 +251,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(agent);
   });
 
+  // Update agent fields (name, description, color, model)
+  app.patch("/api/agents/:id", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = Number(req.params.id);
+    const { name, description, color, model } = req.body;
+    const updates: Record<string, any> = {};
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (color !== undefined) updates.color = color;
+    if (model !== undefined) updates.model = model;
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: "No fields to update" });
+    await storage.updateAgent(agentId, updates);
+    const agent = await storage.getAgent(agentId);
+    res.json(agent);
+  });
+
   app.patch("/api/agents/:id/toggle", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });

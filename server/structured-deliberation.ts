@@ -16,9 +16,69 @@ import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToRoom } from "./ws";
 
+// ── Multi-Model Clients ───────────────────────────────────────────
+
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
+
+// Supported models
+const OPENAI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
+const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"];
+const DEFAULT_MODEL = "gpt-4.1-mini";
+
+function isGeminiModel(model: string): boolean {
+  return GEMINI_MODELS.includes(model) || model.startsWith("gemini-");
+}
+
+/**
+ * Call appropriate LLM based on model name.
+ * Returns the text response.
+ */
+async function callLLM(
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  options?: { maxTokens?: number; temperature?: number }
+): Promise<string> {
+  const maxTokens = options?.maxTokens ?? 400;
+  const temperature = options?.temperature ?? 0.7;
+
+  if (isGeminiModel(model)) {
+    if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        generationConfig: { maxOutputTokens: maxTokens, temperature },
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`Gemini ${model} error ${resp.status}: ${err.slice(0, 200)}`);
+    }
+    const data = await resp.json() as any;
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+  }
+
+  // OpenAI models
+  if (!openai) throw new Error("OPENAI_API_KEY not configured");
+  const completion = await openai.chat.completions.create({
+    model,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+  });
+  return completion.choices[0]?.message?.content?.trim() || "";
+}
 
 // Active sessions — prevent double-run on same room
 const activeSessions = new Set<number>();
@@ -50,7 +110,8 @@ export interface DeliberationSession {
   consensus: ConsensusResult | null;
   startedAt: number;
   completedAt: number | null;
-  model: string;
+  model: string; // fallback model
+  modelsUsed: string[]; // actual models used by agents
 }
 
 export interface ConsensusResult {
@@ -82,7 +143,7 @@ export async function runDeliberation(
 
   activeSessions.add(roomId);
   const sessionId = `dlb_${roomId}_${Date.now()}`;
-  const model = options?.model || "gpt-4o-mini";
+  const fallbackModel = options?.model || DEFAULT_MODEL;
   const debateRounds = options?.debateRounds ?? 2;
 
   const session: DeliberationSession = {
@@ -94,7 +155,8 @@ export async function runDeliberation(
     consensus: null,
     startedAt: Date.now(),
     completedAt: null,
-    model,
+    model: fallbackModel,
+    modelsUsed: [],
   };
   sessions.set(sessionId, session);
 
@@ -116,7 +178,7 @@ export async function runDeliberation(
 
     // ── Phase 1: Initial Positions ──
     const initialPositions = await collectPositions(
-      roomId, userId, agents, topic, "position", 1, model, []
+      roomId, userId, agents, topic, "position", 1, fallbackModel, []
     );
     session.rounds.push(initialPositions);
 
@@ -124,7 +186,7 @@ export async function runDeliberation(
     let previousPositions = initialPositions.positions;
     for (let r = 1; r <= debateRounds; r++) {
       const debateResult = await collectPositions(
-        roomId, userId, agents, topic, "debate", r, model, previousPositions
+        roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions
       );
       session.rounds.push(debateResult);
       previousPositions = debateResult.positions;
@@ -133,7 +195,7 @@ export async function runDeliberation(
     // ── Phase 3: Final Positions ──
     const allPriorPositions = session.rounds.flatMap((r) => r.positions);
     const finalPositions = await collectPositions(
-      roomId, userId, agents, topic, "final", 1, model, allPriorPositions
+      roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions
     );
     session.rounds.push(finalPositions);
 
@@ -175,6 +237,8 @@ export async function runDeliberation(
 
     await postSystemMessage(roomId, `✅ Deliberation complete. Consensus confidence: ${(consensus.confidence * 100).toFixed(0)}%`);
 
+    // Collect unique models used
+    session.modelsUsed = Array.from(new Set(agents.map((a) => a.model || fallbackModel)));
     session.status = "completed";
     session.completedAt = Date.now();
 
@@ -204,11 +268,11 @@ export async function runDeliberation(
 async function collectPositions(
   roomId: number,
   userId: number,
-  agents: Array<{ id: number; name: string; description: string | null; color: string }>,
+  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null }>,
   topic: string,
   phase: "position" | "debate" | "final",
   round: number,
-  model: string,
+  fallbackModel: string,
   priorPositions: AgentPosition[]
 ): Promise<DeliberationRound> {
   const phaseLabel =
@@ -240,21 +304,16 @@ async function collectPositions(
       priorPositions
     );
 
-    try {
-      const completion = await openai!.chat.completions.create({
-        model,
-        max_tokens: 400,
-        temperature: phase === "debate" ? 0.8 : 0.6,
-        messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: `Topic for deliberation: "${topic}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
-          },
-        ],
-      });
+    // Use agent's assigned model, or fallback
+    const agentModel = agent.model || fallbackModel;
 
-      const raw = completion.choices[0]?.message?.content?.trim() || "";
+    try {
+      const raw = await callLLM(
+        agentModel,
+        systemPrompt,
+        `Topic for deliberation: "${topic}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
+        { maxTokens: 400, temperature: phase === "debate" ? 0.8 : 0.6 }
+      );
       const parsed = parseAgentResponse(raw, agent.name);
 
       positions.push({
@@ -268,7 +327,8 @@ async function collectPositions(
       await sleep(600 + i * 400);
 
       // Post to room as regular message so WS clients see it
-      const displayContent = `[${phaseLabel}] ${parsed.position} (confidence: ${(parsed.confidence * 100).toFixed(0)}%)`;
+      const modelTag = agentModel !== DEFAULT_MODEL ? ` [${agentModel}]` : "";
+      const displayContent = `[${phaseLabel}]${modelTag} ${parsed.position} (confidence: ${(parsed.confidence * 100).toFixed(0)}%)`;
       const msg = await storage.addRoomMessage({
         roomId,
         agentId: agent.id,
@@ -285,7 +345,7 @@ async function collectPositions(
         agentName: agent.name,
         agentColor: agent.color,
         operation: "deliberation_round",
-        detail: `${phase} r${round}: confidence=${parsed.confidence}`,
+        detail: `${phase} r${round}: model=${agentModel} confidence=${parsed.confidence}`,
         latencyMs: null,
       });
     } catch (err) {

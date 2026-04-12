@@ -39,6 +39,7 @@ export const agents = pgTable("agents", {
   name:          text("name").notNull(),
   description:   text("description"),
   color:         text("color").notNull().default("#D4AF37"),
+  model:         text("model"),                                // gpt-4.1-mini | gpt-4o | gemini-2.0-flash | null=default
   status:        text("status").notNull().default("idle"),   // online | idle | offline
   memoriesCount: integer("memories_count").notNull().default(0),
   lastActiveAt:  bigint("last_active_at", { mode: "number" }),

@@ -112,6 +112,10 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
   `);
+  // Phase B-1: add model column to agents (multi-model deliberation)
+  await pool.query(`
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS model TEXT;
+  `);
   // Phase A: request logging table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kioku_request_logs (
@@ -163,6 +167,7 @@ export interface IStorage {
   getAgents(userId: number): Promise<Agent[]>;
   getAgent(id: number): Promise<Agent | undefined>;
   createAgent(data: InsertAgent): Promise<Agent>;
+  updateAgent(id: number, data: Partial<{ name: string; description: string; color: string; model: string }>): Promise<void>;
   updateAgentStatus(id: number, status: string): Promise<void>;
   toggleAgent(id: number, enabled: boolean): Promise<void>;
   deleteAgent(id: number): Promise<void>;
@@ -259,6 +264,9 @@ export class Storage implements IStorage {
   async createAgent(data: InsertAgent): Promise<Agent> {
     const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
     return result;
+  }
+  async updateAgent(id: number, data: Partial<{ name: string; description: string; color: string; model: string }>) {
+    await db.update(agents).set(data).where(eq(agents.id, id));
   }
   async updateAgentStatus(id: number, status: string) {
     await db.update(agents).set({ status, lastActiveAt: Date.now() }).where(eq(agents.id, id));
