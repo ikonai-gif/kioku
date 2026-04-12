@@ -98,8 +98,17 @@ function createSessionToken(userId: number): string {
 }
 
 // API key auth — for external agents (Boss Agent, IKONBAI™ v2, etc.)
-// Accepts: Authorization: Bearer kk_<key>
+// Accepts: Authorization: Bearer kk_<key> OR x-api-key: kk_<key>
 async function getApiKeyUser(req: any): Promise<number | null> {
+  // Try x-api-key header first (primary for external clients)
+  const xApiKey = (req.headers["x-api-key"] as string) || "";
+  if (xApiKey.startsWith("kk_")) {
+    try {
+      const user = await storage.getUserByApiKey(xApiKey);
+      return user ? user.id : null;
+    } catch { return null; }
+  }
+  // Fallback: Authorization: Bearer kk_<key>
   const auth = (req.headers["authorization"] as string) || "";
   if (!auth.startsWith("Bearer kk_")) return null;
   const key = auth.replace("Bearer ", "").trim();
@@ -111,10 +120,17 @@ async function getApiKeyUser(req: any): Promise<number | null> {
   }
 }
 
-// Unified auth — session token OR API key
+// Unified auth — session token OR API key OR master key
 async function getUser(req: any): Promise<number | null> {
   const sessionUser = getSessionUser(req);
   if (sessionUser !== null) return sessionUser;
+  // Master key grants admin access (user 1)
+  const masterKey = process.env.KIOKU_MASTER_KEY;
+  if (masterKey) {
+    const xApiKey = (req.headers["x-api-key"] as string) || "";
+    const xMasterKey = (req.headers["x-master-key"] as string) || "";
+    if (xApiKey === masterKey || xMasterKey === masterKey) return 1;
+  }
   return getApiKeyUser(req);
 }
 
