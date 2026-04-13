@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare, ArrowUpRight, CreditCard } from "lucide-react";
+import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare, ArrowUpRight, CreditCard, Activity, Webhook, Coins, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── KIOKU™ backend (Railway) — real Stripe ─────────────────────────────────
@@ -244,27 +244,85 @@ function UsageBar({ label, used, limit, icon: Icon }: { label: string; used: num
 }
 
 function UsageCard({ plan }: { plan: string }) {
-  const { data: stats } = useQuery<any>({ queryKey: ["/api/stats"] });
-  const { data: agents = [] } = useQuery<any[]>({ queryKey: ["/api/agents"] });
-  const { data: rooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
+  const { data: usage } = useQuery<any>({ queryKey: ["/api/usage"] });
   const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS["dev"];
 
+  const metered = usage?.metered;
+  const resources = usage?.resource_limits;
+
+  // Collect items approaching limit (>80%)
+  const warnings: string[] = [];
+  if (metered) {
+    if (metered.deliberations.limit > 0 && metered.deliberations.used / metered.deliberations.limit > 0.8) {
+      warnings.push(`Deliberations: ${metered.deliberations.used}/${metered.deliberations.limit}`);
+    }
+    if (metered.api_calls.limit > 0 && metered.api_calls.used / metered.api_calls.limit > 0.8) {
+      warnings.push(`API Calls: ${metered.api_calls.used}/${metered.api_calls.limit}`);
+    }
+    if (metered.tokens_used.limit > 0 && metered.tokens_used.used / metered.tokens_used.limit > 0.8) {
+      warnings.push(`Tokens: ${metered.tokens_used.used.toLocaleString()}/${metered.tokens_used.limit.toLocaleString()}`);
+    }
+  }
+  if (resources) {
+    if (resources.agents.limit < 99_999 && resources.agents.used / resources.agents.limit > 0.8) {
+      warnings.push(`Agents: ${resources.agents.used}/${resources.agents.limit}`);
+    }
+    if (resources.memories.limit < 99_999 && resources.memories.used / resources.memories.limit > 0.8) {
+      warnings.push(`Memories: ${resources.memories.used.toLocaleString()}/${resources.memories.limit.toLocaleString()}`);
+    }
+  }
+
   return (
-    <div className="bg-card border border-card-border rounded-xl p-5">
-      <div className="mb-4">
-        <h2 className="text-sm font-semibold text-foreground">Usage This Month</h2>
-        <p className="text-xs text-muted-foreground mt-0.5 capitalize">{plan === "dev" ? "Free" : plan} plan limits</p>
-      </div>
-      <div className="space-y-4">
-        <UsageBar label="Agents" used={(agents as any[]).length} limit={limits.agents} icon={Bot} />
-        <UsageBar label="Memories" used={(stats as any)?.totalMemories ?? 0} limit={limits.memories} icon={Brain} />
-        <UsageBar label="Deliberation Rooms" used={(rooms as any[]).length} limit={limits.rooms} icon={MessageSquare} />
-        <UsageBar label="Deliberations / mo" used={(stats as any)?.totalDeliberations ?? 0} limit={limits.deliberations} icon={Zap} />
-        <div className="pt-1 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between">
-          <span>API requests / day</span>
-          <span className="font-mono text-foreground">
-            {limits.daily >= 99_999 ? "Unlimited" : limits.daily.toLocaleString()}
-          </span>
+    <div className="space-y-4">
+      {warnings.length > 0 && (
+        <div className="bg-yellow-400/10 border border-yellow-400/30 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 flex-shrink-0" />
+          <div>
+            <div className="text-sm font-medium text-yellow-400">Approaching plan limits</div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {warnings.join(" · ")}. Consider upgrading your plan.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <div className="mb-4">
+          <h2 className="text-sm font-semibold text-foreground">Current Usage</h2>
+          <p className="text-xs text-muted-foreground mt-0.5 capitalize">
+            {plan} plan · {usage?.period ? new Date(usage.period.start).toLocaleDateString("en-US", { month: "short", year: "numeric" }) : "this month"}
+          </p>
+        </div>
+        <div className="space-y-4">
+          {/* Resource limits */}
+          <UsageBar label="Memories" used={resources?.memories?.used ?? usage?.memories_count ?? 0} limit={resources?.memories?.limit ?? limits.memories} icon={Brain} />
+          <UsageBar label="Agents" used={resources?.agents?.used ?? usage?.agents_count ?? 0} limit={resources?.agents?.limit ?? limits.agents} icon={Bot} />
+          <UsageBar label="Rooms" used={resources?.rooms?.used ?? usage?.rooms_count ?? 0} limit={resources?.rooms?.limit ?? limits.rooms} icon={MessageSquare} />
+
+          {/* Metered usage this month */}
+          {metered && (
+            <>
+              <div className="pt-2 border-t border-border" />
+              <div className="text-[10px] font-semibold text-muted-foreground tracking-wider uppercase">Monthly Metered Usage</div>
+              <UsageBar label="Deliberations" used={metered.deliberations.used} limit={metered.deliberations.limit} icon={Activity} />
+              <UsageBar label="API Calls" used={metered.api_calls.used} limit={metered.api_calls.limit} icon={Zap} />
+              <UsageBar label="Webhook Calls" used={metered.webhook_calls.used} limit={metered.webhook_calls.limit} icon={Webhook} />
+              <UsageBar label="Tokens Used" used={metered.tokens_used.used} limit={metered.tokens_used.limit} icon={Coins} />
+              {metered.rounds && (
+                <div className="pt-1 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between">
+                  <span>Deliberation rounds</span>
+                  <span className="font-mono text-foreground">{metered.rounds.used.toLocaleString()}</span>
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="pt-1 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between">
+            <span>API requests / day</span>
+            <span className="font-mono text-foreground">
+              {limits.daily >= 99_999_999 ? "Unlimited" : limits.daily.toLocaleString()}
+            </span>
+          </div>
         </div>
       </div>
     </div>

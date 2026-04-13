@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, serial, bigint, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, bigint, boolean, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -190,3 +190,21 @@ export const logs = pgTable("logs", {
 export const insertLogSchema = createInsertSchema(logs).omit({ id: true, createdAt: true });
 export type InsertLog = z.infer<typeof insertLogSchema>;
 export type Log = typeof logs.$inferSelect;
+
+// Usage Tracking — per-user per-month metering
+export const usageTracking = pgTable("usage_tracking", {
+  id:                    serial("id").primaryKey(),
+  userId:                integer("user_id").notNull(),
+  periodStart:           bigint("period_start", { mode: "number" }).notNull(), // first of month UTC
+  periodEnd:             bigint("period_end", { mode: "number" }).notNull(),   // first of next month UTC
+  deliberations:         integer("deliberations").notNull().default(0),
+  rounds:                integer("rounds").notNull().default(0),
+  apiCalls:              integer("api_calls").notNull().default(0),
+  webhookCalls:          integer("webhook_calls").notNull().default(0),
+  tokensUsed:            integer("tokens_used").notNull().default(0),
+  updatedAt:             bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+export const insertUsageTrackingSchema = createInsertSchema(usageTracking).omit({ id: true });
+export type InsertUsageTracking = z.infer<typeof insertUsageTrackingSchema>;
+export type UsageTracking = typeof usageTracking.$inferSelect;

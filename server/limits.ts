@@ -26,3 +26,23 @@ export const AI_QUOTAS: Record<string, { dailyCalls: number; monthlyTokens: numb
   business:     { dailyCalls: 2000,  monthlyTokens: 10000000 },
   enterprise:   { dailyCalls: 99999, monthlyTokens: 999999999 },
 };
+
+/** Monthly usage limits per plan for metered resources */
+export const USAGE_LIMITS: Record<string, {
+  deliberations: number;
+  apiCalls: number;
+  webhookCalls: number;
+  tokensUsed: number;
+}> = {
+  dev:          { deliberations: 25,     apiCalls: 5_000,     webhookCalls: 100,     tokensUsed: 100_000 },
+  free:         { deliberations: 25,     apiCalls: 5_000,     webhookCalls: 100,     tokensUsed: 100_000 },
+  starter:      { deliberations: 200,    apiCalls: 50_000,    webhookCalls: 1_000,   tokensUsed: 1_000_000 },
+  professional: { deliberations: 2_000,  apiCalls: 500_000,   webhookCalls: 10_000,  tokensUsed: 10_000_000 },
+  team:         { deliberations: 2_000,  apiCalls: 500_000,   webhookCalls: 10_000,  tokensUsed: 10_000_000 },
+  business:     { deliberations: 10_000, apiCalls: 2_000_000, webhookCalls: 50_000,  tokensUsed: 50_000_000 },
+  enterprise:   { deliberations: 999_999, apiCalls: 99_999_999, webhookCalls: 999_999, tokensUsed: 999_999_999 },
+};
+
+export function getUsageLimits(plan: string) {
+  return USAGE_LIMITS[plan] || USAGE_LIMITS.free;
+}

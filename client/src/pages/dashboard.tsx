@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch } from "lucide-react";
+import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -133,6 +133,9 @@ export default function DashboardPage() {
         />
       </div>
 
+      {/* Usage Summary */}
+      <UsageSummaryWidget />
+
       {/* Agents + Feed */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {/* Agent status */}
@@ -212,6 +215,55 @@ export default function DashboardPage() {
 
       {/* API Key */}
       <APIKeyCard />
+    </div>
+  );
+}
+
+function UsageSummaryWidget() {
+  const { data: usage } = useQuery<any>({ queryKey: ["/api/usage"] });
+  const metered = usage?.metered;
+  if (!metered) return null;
+
+  const items = [
+    { label: "Deliberations", used: metered.deliberations?.used ?? 0, limit: metered.deliberations?.limit ?? 0 },
+    { label: "API Calls", used: metered.api_calls?.used ?? 0, limit: metered.api_calls?.limit ?? 0 },
+    { label: "Tokens", used: metered.tokens_used?.used ?? 0, limit: metered.tokens_used?.limit ?? 0 },
+  ];
+
+  const warnings = items.filter(i => i.limit > 0 && i.used / i.limit > 0.8);
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-foreground">Monthly Usage</h2>
+        <a href="/#/billing" className="text-[10px] text-primary hover:text-primary/80">View details →</a>
+      </div>
+      {warnings.length > 0 && (
+        <div className="flex items-center gap-2 mb-3 text-xs text-yellow-400">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          <span>Approaching limits: {warnings.map(w => w.label).join(", ")}</span>
+        </div>
+      )}
+      <div className="grid grid-cols-3 gap-4">
+        {items.map(({ label, used, limit }) => {
+          const pct = limit > 0 && limit < 999_999 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+          const unlimited = limit >= 999_999;
+          const color = pct > 90 ? "bg-red-400" : pct > 70 ? "bg-yellow-400" : "bg-green-400";
+          return (
+            <div key={label} className="space-y-1">
+              <div className="text-[10px] text-muted-foreground">{label}</div>
+              <div className="text-sm font-bold text-foreground tabular-nums">
+                {used.toLocaleString()} {unlimited ? "" : `/ ${limit.toLocaleString()}`}
+              </div>
+              {!unlimited && (
+                <div className="h-1 bg-muted rounded-full overflow-hidden">
+                  <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

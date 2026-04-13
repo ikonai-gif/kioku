@@ -569,6 +569,8 @@ async function collectPositions(
         priorPositions,
       });
       isExternal = true;
+      // Meter webhook call
+      storage.incrementUsage(userId, 'webhook_calls').catch(() => {});
     } else if (effectiveType === "webhook") {
       // Fallback: check legacy kioku_webhooks table
       const webhook = await storage.getWebhook(agent.id);
@@ -585,6 +587,8 @@ async function collectPositions(
           priorPositions,
         });
         isExternal = true;
+        // Meter webhook call
+        storage.incrementUsage(userId, 'webhook_calls').catch(() => {});
       } else {
         throw new Error(`Webhook agent ${agent.name} has no webhook URL configured`);
       }
@@ -622,10 +626,11 @@ async function collectPositions(
       isExternal = true;
     } else {
       // Internal mode — call LLM
+      const userMsg = `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`;
       const raw = await callLLM(
         agentModel,
         systemPrompt,
-        `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
+        userMsg,
         {
           maxTokens: 400,
           temperature: phase === "debate" ? 0.8 : 0.6,
@@ -633,6 +638,9 @@ async function collectPositions(
         }
       );
       parsed = parseAgentResponse(raw, agent.name);
+      // Meter approximate token usage (input + output ≈ words/0.75)
+      const estimatedTokens = Math.ceil((systemPrompt.length + userMsg.length + raw.length) / 4);
+      storage.incrementUsage(userId, 'tokens_used', estimatedTokens).catch(() => {});
     }
 
     return { agent, parsed, agentModel, isExternal };

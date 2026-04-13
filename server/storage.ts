@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, ilike, or, sql } from "drizzle-orm";
 import {
-  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens,
+  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking,
   type User, type InsertUser,
   type Agent, type InsertAgent,
   type Memory, type InsertMemory,
@@ -12,6 +12,7 @@ import {
   type RoomMessage, type InsertRoomMessage,
   type Log, type InsertLog,
   type MagicToken, type InsertMagicToken,
+  type UsageTracking,
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
@@ -268,6 +269,23 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_agent_turns_agent_status ON agent_turns(agent_id, status);
     CREATE INDEX IF NOT EXISTS idx_agent_turns_session ON agent_turns(session_id);
     CREATE INDEX IF NOT EXISTS idx_agent_turns_expires ON agent_turns(expires_at);
+  `);
+  // Phase 3: Usage metering — per-user per-month tracking
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_tracking (
+      id            SERIAL PRIMARY KEY,
+      user_id       INTEGER NOT NULL,
+      period_start  BIGINT NOT NULL,
+      period_end    BIGINT NOT NULL,
+      deliberations INTEGER NOT NULL DEFAULT 0,
+      rounds        INTEGER NOT NULL DEFAULT 0,
+      api_calls     INTEGER NOT NULL DEFAULT 0,
+      webhook_calls INTEGER NOT NULL DEFAULT 0,
+      tokens_used   INTEGER NOT NULL DEFAULT 0,
+      updated_at    BIGINT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_tracking_user_period ON usage_tracking(user_id, period_start);
+    CREATE INDEX IF NOT EXISTS idx_usage_tracking_user ON usage_tracking(user_id);
   `);
 }
 
@@ -1112,6 +1130,64 @@ export class Storage implements IStorage {
     );
     const used = result.rows[0]?.count || 0;
     return { allowed: used < dailyCalls, used, limit: dailyCalls };
+  }
+
+  // ── Usage metering ─────────────────────────────────────────────────────────
+  private getCurrentPeriod(): { start: number; end: number } {
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    return { start: start.getTime(), end: end.getTime() };
+  }
+
+  async getOrCreateUsagePeriod(userId: number): Promise<UsageTracking> {
+    const { start, end } = this.getCurrentPeriod();
+    // Upsert: create if not exists, return existing otherwise
+    const { rows } = await pool.query(
+      `INSERT INTO usage_tracking (user_id, period_start, period_end, deliberations, rounds, api_calls, webhook_calls, tokens_used, updated_at)
+       VALUES ($1, $2, $3, 0, 0, 0, 0, 0, $4)
+       ON CONFLICT (user_id, period_start) DO UPDATE SET updated_at = usage_tracking.updated_at
+       RETURNING *`,
+      [userId, start, end, Date.now()]
+    );
+    return this.mapUsageRow(rows[0]);
+  }
+
+  async incrementUsage(userId: number, field: 'deliberations' | 'rounds' | 'api_calls' | 'webhook_calls' | 'tokens_used', amount: number = 1): Promise<void> {
+    const { start, end } = this.getCurrentPeriod();
+    await pool.query(
+      `INSERT INTO usage_tracking (user_id, period_start, period_end, ${field}, updated_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id, period_start) DO UPDATE SET ${field} = usage_tracking.${field} + $4, updated_at = $5`,
+      [userId, start, end, amount, Date.now()]
+    );
+  }
+
+  async getCurrentUsage(userId: number): Promise<UsageTracking> {
+    return this.getOrCreateUsagePeriod(userId);
+  }
+
+  async getUsageHistory(userId: number, months: number = 6): Promise<UsageTracking[]> {
+    const { rows } = await pool.query(
+      `SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT $2`,
+      [userId, months]
+    );
+    return rows.map((r: any) => this.mapUsageRow(r));
+  }
+
+  private mapUsageRow(row: any): UsageTracking {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      periodStart: Number(row.period_start),
+      periodEnd: Number(row.period_end),
+      deliberations: row.deliberations,
+      rounds: row.rounds,
+      apiCalls: row.api_calls,
+      webhookCalls: row.webhook_calls,
+      tokensUsed: row.tokens_used,
+      updatedAt: Number(row.updated_at),
+    };
   }
 
   // ── Agent Turns (polling mode queue) ─────────────────────────────────

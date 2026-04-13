@@ -12,7 +12,7 @@ import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
 import { checkRegistrationLimit, checkAuthRateLimit } from "./ratelimit";
-import { getLimits, AI_QUOTAS } from "./limits";
+import { getLimits, AI_QUOTAS, getUsageLimits } from "./limits";
 import { consolidateMemories } from "./memory-consolidation";
 import { pruneDecayedMemories } from "./memory-gc";
 import {
@@ -1145,11 +1145,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found", code: "NOT_FOUND", status: 404 });
 
-    const [memoriesCount, agentsList, roomsList, stats] = await Promise.all([
+    const [memoriesCount, agentsList, roomsList, stats, currentUsage, resourceCounts] = await Promise.all([
       storage.getMemoriesCount(userId),
       storage.getAgents(userId),
       storage.getRooms(userId),
       storage.getStats(userId),
+      storage.getCurrentUsage(userId),
+      storage.getUserResourceCounts(userId),
     ]);
 
     // Get request counts from kioku_request_logs
@@ -1185,6 +1187,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     };
 
     const limits = PLAN_LIMITS[user.plan] || PLAN_LIMITS["dev"];
+    const usageLimits = getUsageLimits(user.plan);
+    const resourceLimits = getLimits(user.plan);
 
     res.json({
       memories_count: memoriesCount,
@@ -1202,7 +1206,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         avg_latency_ms: stats.avgLatency,
         active_agents: stats.activeAgents,
       },
+      // Metered usage this month
+      metered: {
+        deliberations: { used: currentUsage.deliberations, limit: usageLimits.deliberations },
+        rounds: { used: currentUsage.rounds },
+        api_calls: { used: currentUsage.apiCalls, limit: usageLimits.apiCalls },
+        webhook_calls: { used: currentUsage.webhookCalls, limit: usageLimits.webhookCalls },
+        tokens_used: { used: currentUsage.tokensUsed, limit: usageLimits.tokensUsed },
+      },
+      resource_limits: {
+        agents: { used: resourceCounts.agents, limit: resourceLimits.agents },
+        memories: { used: resourceCounts.memories, limit: resourceLimits.memories },
+        rooms: { used: resourceCounts.rooms, limit: resourceLimits.rooms },
+        flows: { used: resourceCounts.flows, limit: resourceLimits.flows },
+      },
+      period: {
+        start: currentUsage.periodStart,
+        end: currentUsage.periodEnd,
+      },
     });
+  }));
+
+  // ── Usage history (past months) ──────────────────────────────
+  app.get("/api/usage/history", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const months = Math.min(12, Math.max(1, Number(req.query.months) || 6));
+    const history = await storage.getUsageHistory(userId, months);
+    res.json({ history });
   }));
 
   // ── Billing / Plan ────────────────────────────────────────────
@@ -1238,6 +1269,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         error: `Daily AI quota exceeded: ${aiCheck.used}/${aiCheck.limit} calls (${deliberatePlan} plan)`
       });
     }
+    // Monthly deliberation limit check
+    const currentUsage = await storage.getCurrentUsage(userId);
+    const usageLimits = getUsageLimits(deliberatePlan);
+    if (currentUsage.deliberations >= usageLimits.deliberations) {
+      return res.status(429).json({
+        error: `Plan limit reached. ${currentUsage.deliberations}/${usageLimits.deliberations} deliberations this month (${deliberatePlan} plan). Upgrade to Professional for more.`,
+        code: "PLAN_LIMIT_REACHED",
+      });
+    }
     const { topic, model, debateRounds, includeHuman, humanName } = validateBody(deliberateSchema, req.body);
     try {
       const session = await runDeliberation(roomId, userId, topic, {
@@ -1246,6 +1286,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         includeHuman: includeHuman ?? false,
         humanName: humanName || undefined,
       });
+      // Meter deliberation usage (non-blocking)
+      const roundCount = (session as any).rounds?.length ?? (debateRounds ?? 2) + 2; // position + debate rounds + final
+      storage.incrementUsage(userId, 'deliberations').catch(() => {});
+      storage.incrementUsage(userId, 'rounds', roundCount).catch(() => {});
       res.json(session);
     } catch (err) {
       const message = (err as Error).message;

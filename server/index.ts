@@ -133,6 +133,20 @@ app.use((req, res, next) => {
         ip: (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip,
         userAgent: (req.headers["user-agent"] as string)?.slice(0, 200),
       }).catch(() => {}); // never fail the request
+
+      // Usage metering: increment API calls for authenticated users (non-blocking)
+      if (apiKey && apiKey.startsWith("kk_")) {
+        storage.getUserByApiKey(apiKey).then(user => {
+          if (user) storage.incrementUsage(user.id, 'api_calls').catch(() => {});
+        }).catch(() => {});
+      } else if (req.headers["x-session-token"]) {
+        // Resolve userId from session token for metering
+        import("jsonwebtoken").then(jwt => {
+          const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
+          const payload = jwt.default.verify(req.headers["x-session-token"] as string, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
+          if (payload.userId) storage.incrementUsage(payload.userId, 'api_calls').catch(() => {});
+        }).catch(() => {});
+      }
     }
   });
 
