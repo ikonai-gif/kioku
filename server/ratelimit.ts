@@ -168,9 +168,10 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     }
 
     next();
-  }).catch(() => {
-    // On error, allow through (fail open)
-    next();
+  }).catch((err) => {
+    // Fail closed — reject request on rate limit resolution error
+    console.error('Rate limit resolution error:', err);
+    res.status(429).json({ error: 'Rate limit error, please retry' });
   });
 }
 
