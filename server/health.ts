@@ -128,34 +128,38 @@ export function getLastHealthReport(): DeepHealthReport | null { return lastRepo
 // ── Route registration ────────────────────────────────────────────────────────
 export function registerHealthRoutes(app: Express): void {
 
-  // GET /health — enhanced liveness (Railway health check + DB ping + uptime)
+  // GET /health — public liveness (Railway health check)
   app.get("/health", async (_req: Request, res: Response) => {
     const t0 = Date.now();
     let dbStatus: "connected" | "disconnected" = "connected";
-    let dbLatency = 0;
     try {
       await pool.query("SELECT 1");
-      dbLatency = Date.now() - t0;
     } catch {
       dbStatus = "disconnected";
-      dbLatency = Date.now() - t0;
     }
+
+    const redisUrl = process.env.REDIS_URL;
+    const redisStatus: "connected" | "not_configured" = redisUrl ? "connected" : "not_configured";
+    const openaiStatus = process.env.OPENAI_API_KEY ? "configured" : "not_configured";
+    const stripeStatus = process.env.STRIPE_SECRET_KEY ? "configured" : "not_configured";
 
     const status = dbStatus === "connected" ? "ok" : "degraded";
     const httpStatus = status === "ok" ? 200 : 503;
 
     res.status(httpStatus).json({
       status,
-      ts: new Date().toISOString(),
-      db: dbStatus,
-      db_latency_ms: dbLatency,
       version: VERSION,
-      uptime_s: Math.floor((Date.now() - START_TIME) / 1000),
+      uptime: Math.floor((Date.now() - START_TIME) / 1000),
+      database: dbStatus,
+      redis: redisStatus,
+      openai: openaiStatus,
+      stripe: stripeStatus,
+      timestamp: new Date().toISOString(),
     });
   });
 
-  // GET /health/ready — readiness (DB must be up)
-  app.get("/health/ready", async (_req: Request, res: Response) => {
+  // GET /health/ready & GET /ready — readiness gate (DB must be up)
+  const readinessHandler = async (_req: Request, res: Response) => {
     const db = await checkDatabase();
     const ready = db.status === "ok";
     res.status(ready ? 200 : 503).json({
@@ -163,7 +167,9 @@ export function registerHealthRoutes(app: Express): void {
       database: db.status,
       latencyMs: db.latencyMs,
     });
-  });
+  };
+  app.get("/health/ready", readinessHandler);
+  app.get("/ready", readinessHandler);
 
   // GET /health/deep — full diagnostic (internal/partner use)
   app.get("/health/deep", async (req: Request, res: Response) => {

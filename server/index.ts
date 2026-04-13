@@ -49,7 +49,7 @@ app.use(express.urlencoded({ extended: false, limit: "128kb" }));
 app.use(cookieParser());
 
 // Prevent CDN caching of API routes
-app.use(["/api", "/api/v1", "/v1", "/mcp", "/health"], (_req, res, next) => {
+app.use(["/api", "/api/v1", "/v1", "/mcp", "/health", "/ready"], (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
   next();

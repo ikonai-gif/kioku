@@ -3,9 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
 import { embedText, embeddingsEnabled } from "./embeddings";
-import { setupWebSocket, broadcastToRoom } from "./ws";
+import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
-import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput } from "./structured-deliberation";
+import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
@@ -1472,6 +1472,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       template: req.params.templateId,
       agents: createdAgents.map(maskAgentApiKey),
       room,
+    });
+  }));
+
+  // ── Metrics (auth required) ───────────────────────────────────
+  app.get("/api/metrics", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { pool } = await import("./storage");
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Requests today
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const apiKeyPrefix = user.apiKey.slice(0, 12) + "…";
+
+    const [todayResult, avgLatencyResult, errorResult, memoriesResult] = await Promise.all([
+      pool.query(
+        "SELECT COUNT(*)::int as cnt FROM kioku_request_logs WHERE api_key_id = $1 AND timestamp >= $2",
+        [apiKeyPrefix, todayStart.getTime()]
+      ),
+      pool.query(
+        "SELECT ROUND(AVG(latency_ms))::int as avg_ms FROM kioku_request_logs WHERE api_key_id = $1 AND timestamp >= $2",
+        [apiKeyPrefix, todayStart.getTime()]
+      ),
+      pool.query(
+        "SELECT COUNT(*)::int as cnt FROM kioku_request_logs WHERE api_key_id = $1 AND timestamp >= $2 AND status_code >= 500",
+        [apiKeyPrefix, Date.now() - 3600_000]
+      ),
+      pool.query(
+        "SELECT COUNT(*)::int as cnt FROM memories WHERE user_id = $1",
+        [userId]
+      ),
+    ]);
+
+    const requestsToday = todayResult.rows[0]?.cnt ?? 0;
+    const errorsLastHour = errorResult.rows[0]?.cnt ?? 0;
+    const errorRate = requestsToday > 0
+      ? parseFloat(((errorsLastHour / requestsToday) * 100).toFixed(2))
+      : 0;
+
+    res.json({
+      active_ws_connections: getActiveWsConnectionCount(),
+      requests_today: requestsToday,
+      avg_response_time_ms: avgLatencyResult.rows[0]?.avg_ms ?? 0,
+      active_deliberations: getActiveDeliberationCount(),
+      memory_count: memoriesResult.rows[0]?.cnt ?? 0,
+      error_rate_pct: errorRate,
+      errors_last_hour: errorsLastHour,
+      timestamp: new Date().toISOString(),
     });
   }));
 

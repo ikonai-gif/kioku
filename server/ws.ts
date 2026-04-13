@@ -130,6 +130,17 @@ export function setupWebSocket(httpServer: Server) {
   return wss;
 }
 
+/** Get total active WebSocket connections across all rooms. */
+export function getActiveWsConnectionCount(): number {
+  let total = 0;
+  for (const clients of roomClients.values()) {
+    for (const ws of clients) {
+      if (ws.readyState === WebSocket.OPEN) total++;
+    }
+  }
+  return total;
+}
+
 /**
  * Broadcast a new message to all clients subscribed to a room.
  * Called from routes.ts when a message is POSTed.

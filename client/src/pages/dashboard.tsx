@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle } from "lucide-react";
+import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle, CheckCircle2, AlertCircle, XCircle, ChevronDown, ChevronUp, Database, Cpu, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -133,6 +133,9 @@ export default function DashboardPage() {
         />
       </div>
 
+      {/* System Status */}
+      <SystemStatusWidget />
+
       {/* Usage Summary */}
       <UsageSummaryWidget />
 
@@ -264,6 +267,100 @@ function UsageSummaryWidget() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function SystemStatusWidget() {
+  const [expanded, setExpanded] = useState(false);
+  const { data: health } = useQuery<any>({
+    queryKey: ["/health"],
+    refetchInterval: 30_000,
+  });
+
+  const isOk = health?.status === "ok";
+  const isDegraded = health?.status === "degraded";
+
+  const statusIcon = isOk ? CheckCircle2 : isDegraded ? AlertCircle : XCircle;
+  const statusColor = isOk ? "text-green-400" : isDegraded ? "text-yellow-400" : "text-red-400";
+  const statusBg = isOk ? "bg-green-400" : isDegraded ? "bg-yellow-400" : "bg-red-400";
+  const statusText = isOk ? "All Systems Operational" : isDegraded ? "Degraded Performance" : health ? "System Issues Detected" : "Checking...";
+
+  const services = health ? [
+    { label: "Database", key: "database", icon: Database, value: health.database },
+    { label: "AI Provider", key: "openai", icon: Cpu, value: health.openai },
+    { label: "Billing", key: "stripe", icon: CreditCard, value: health.stripe },
+  ] : [];
+
+  const Icon = statusIcon;
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-4">
+      <button
+        className="flex items-center justify-between w-full text-left"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <div className="flex items-center gap-2.5">
+          <span className={cn("w-2 h-2 rounded-full", statusBg, isOk && "pulse-online")} />
+          <Icon className={cn("w-4 h-4", statusColor)} />
+          <span className="text-sm font-medium text-foreground">{statusText}</span>
+          {health?.version && (
+            <span className="text-[10px] text-muted-foreground/60 ml-1">v{health.version}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {health?.uptime != null && (
+            <span className="text-[10px] text-muted-foreground">
+              uptime {Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m
+            </span>
+          )}
+          {expanded ? (
+            <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+
+      {expanded && services.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-border space-y-2">
+          {services.map(({ label, icon: SvcIcon, value }) => {
+            const ok = value === "connected" || value === "configured";
+            const notConfigured = value === "not_configured";
+            return (
+              <div key={label} className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <SvcIcon className="w-3.5 h-3.5" />
+                  <span>{label}</span>
+                </div>
+                <span className={cn(
+                  "px-2 py-0.5 rounded-full text-[10px] font-medium",
+                  ok ? "bg-green-400/10 text-green-400"
+                    : notConfigured ? "bg-muted text-muted-foreground"
+                    : "bg-red-400/10 text-red-400"
+                )}>
+                  {ok ? "Connected" : notConfigured ? "Not Configured" : value ?? "Unknown"}
+                </span>
+              </div>
+            );
+          })}
+          {health.redis && (
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Database className="w-3.5 h-3.5" />
+                <span>Redis</span>
+              </div>
+              <span className={cn(
+                "px-2 py-0.5 rounded-full text-[10px] font-medium",
+                health.redis === "connected" ? "bg-green-400/10 text-green-400"
+                  : "bg-muted text-muted-foreground"
+              )}>
+                {health.redis === "connected" ? "Connected" : "Not Configured"}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -242,6 +242,11 @@ async function callWebhook(
 // Active sessions — prevent double-run on same room
 const activeSessions = new Set<number>();
 
+/** Get current number of active deliberation sessions. */
+export function getActiveDeliberationCount(): number {
+  return activeSessions.size;
+}
+
 // ── Human Participant Pending Input ──────────────────────────────
 
 const HUMAN_TIMEOUT_MS = 60_000; // 60s for human to respond
