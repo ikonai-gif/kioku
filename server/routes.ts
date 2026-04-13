@@ -73,7 +73,7 @@ async function sendBrevoEmail(to: string, subject: string, html: string, sender:
 
 async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   const baseUrl = process.env.APP_URL || "https://usekioku.com";
-  const link = `${baseUrl}/#/verify?token=${token}`;
+  const link = `${baseUrl}/app#/verify?token=${token}`;
   if (!BREVO_API_KEY) {
     console.log(`[MAGIC LINK] ${email} → ${link}`);
     return;
@@ -188,7 +188,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // alias for frontend
   app.post("/api/auth/magic-link", asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
-    if (email && !checkAuthRateLimit(`magic:${email}`, 5, 3600000)) {
+    if (email && !checkAuthRateLimit(`magic:${email}`, 15, 3600000)) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
     }
     let user = await storage.getUserByEmail(email);
@@ -219,7 +219,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/auth/request-magic-link", asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
-    if (email && !checkAuthRateLimit(`magic:${email}`, 5, 3600000)) {
+    if (email && !checkAuthRateLimit(`magic:${email}`, 15, 3600000)) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
     }
     let user = await storage.getUserByEmail(email);
