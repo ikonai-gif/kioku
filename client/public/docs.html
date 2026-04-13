@@ -525,8 +525,8 @@ curl <span class="t-blue">-X POST</span> https://usekioku.com/api/memories \
   baseUrl<span class="t-muted">:</span> <span class="t-str">'https://usekioku.com'</span>,  <span class="t-muted">// optional</span>
 });
 
-<span class="t-muted">// Store memory</span>
-<span class="t-blue">const</span> <span class="t-gold">mem</span> = <span class="t-blue">await</span> kioku.memories.store({
+<span class="t-muted">// Create memory</span>
+<span class="t-blue">const</span> <span class="t-gold">mem</span> = <span class="t-blue">await</span> kioku.memories.create({
   content<span class="t-muted">:</span> <span class="t-str">'Decision made: go with microservices'</span>,
   agentName<span class="t-muted">:</span> <span class="t-str">'ArchAgent'</span>,
   type<span class="t-muted">:</span> <span class="t-str">'procedural'</span>,

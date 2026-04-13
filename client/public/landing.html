@@ -427,19 +427,19 @@
       <span class="terminal-title">kioku-sdk — agent memory</span>
     </div>
     <div class="terminal-body">
-      <div><span class="t-dim">// Store a decision with full context</span></div>
+      <div><span class="t-dim">// Create a decision with full context</span></div>
       <div><span class="t-blue">const</span> <span class="t-white">kioku</span> <span class="t-muted">=</span> <span class="t-green">new</span> <span class="t-white">KiokuClient</span><span class="t-muted">({</span></div>
       <div>&nbsp;&nbsp;<span class="t-gold">apiKey</span><span class="t-muted">:</span> <span class="t-green">"kk_••••••••••"</span><span class="t-muted">,</span></div>
       <div><span class="t-muted">});</span></div>
       <div>&nbsp;</div>
-      <div><span class="t-blue">await</span> <span class="t-white">kioku</span><span class="t-muted">.</span><span class="t-gold">memories</span><span class="t-muted">.</span><span class="t-white">store</span><span class="t-muted">({</span></div>
+      <div><span class="t-blue">await</span> <span class="t-white">kioku</span><span class="t-muted">.</span><span class="t-gold">memories</span><span class="t-muted">.</span><span class="t-white">create</span><span class="t-muted">({</span></div>
       <div>&nbsp;&nbsp;<span class="t-gold">content</span><span class="t-muted">:</span> <span class="t-green">"Approved $2M budget for Q3 infra"</span><span class="t-muted">,</span></div>
       <div>&nbsp;&nbsp;<span class="t-gold">agentName</span><span class="t-muted">:</span> <span class="t-green">"CFO-Agent"</span><span class="t-muted">,</span></div>
       <div>&nbsp;&nbsp;<span class="t-gold">type</span><span class="t-muted">:</span> <span class="t-green">"episodic"</span><span class="t-muted">,</span></div>
       <div>&nbsp;&nbsp;<span class="t-gold">importance</span><span class="t-muted">:</span> <span class="t-white">0.95</span></div>
       <div><span class="t-muted">});</span></div>
       <div>&nbsp;</div>
-      <div><span class="t-dim">// ✓ Stored with embedding · id: 4821 · namespace: finance</span></div>
+      <div><span class="t-dim">// ✓ Created with embedding · id: 4821 · namespace: finance</span></div>
       <div><span class="cursor"></span></div>
     </div>
   </div>
