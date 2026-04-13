@@ -35,6 +35,12 @@ function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => P
   };
 }
 
+function stripEmbedding(mem: any, include: boolean) {
+  if (include) return mem;
+  const { embedding, ...rest } = mem;
+  return rest;
+}
+
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
 const SENDERS = {
@@ -475,14 +481,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const q = req.query.q as string;
     const namespace = req.query.namespace as string | undefined;
-    let results;
+    const includeEmbedding = req.query.include_embedding === "true";
+
     if (q) {
       const queryEmbedding = await embedText(q);
-      results = await storage.searchMemories(userId, q, queryEmbedding ?? undefined, namespace);
+      const results = await storage.searchMemories(userId, q, queryEmbedding ?? undefined, namespace);
+      res.json(results.map((m: any) => stripEmbedding(m, includeEmbedding)));
     } else {
-      results = await storage.getMemories(userId);
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+      const offset = (page - 1) * limit;
+      const [results, total] = await Promise.all([
+        storage.getMemories(userId, limit, offset),
+        storage.getMemoriesCount(userId),
+      ]);
+      res.json({
+        data: results.map((m: any) => stripEmbedding(m, includeEmbedding)),
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      });
     }
-    res.json(results);
   }));
 
   app.post("/api/memories", asyncHandler(async (req, res) => {
@@ -518,7 +535,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       detail: `"${content.slice(0, 60)}${content.length > 60 ? "…" : ""}"`,
       latencyMs: Math.floor(Math.random() * 30) + 30,
     });
-    res.json(mem);
+    const includeEmbedding = req.query.include_embedding === "true";
+    res.json(stripEmbedding(mem, includeEmbedding));
 
     // Fire-and-forget: auto-link highly similar memories
     if (embedding) {

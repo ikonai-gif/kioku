@@ -383,9 +383,9 @@ export class Storage implements IStorage {
   }
 
   // ── Memories ───────────────────────────────────────────────────────────────
-  async getMemories(userId: number, limit = 100) {
+  async getMemories(userId: number, limit = 100, offset = 0) {
     return db.select().from(memories).where(eq(memories.userId, userId))
-      .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit);
+      .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit).offset(offset);
   }
   async searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string) {
     // Use pgvector for semantic search if embedding provided
