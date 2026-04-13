@@ -130,8 +130,11 @@ export function registerBilling(app: Express) {
 
       res.json({ checkout_url: session.url });
     } catch (err: any) {
-      console.error("[billing] checkout error:", err.message);
-      res.status(500).json({ error: err.message ?? "Stripe error" });
+      console.error("[billing] checkout error:", err);
+      const message = process.env.NODE_ENV === 'production'
+        ? 'Payment processing error. Please try again or contact support.'
+        : err.message ?? 'Stripe error';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -157,8 +160,11 @@ export function registerBilling(app: Express) {
       });
       res.json({ portal_url: portalSession.url });
     } catch (err: any) {
-      console.error("[billing] portal error:", err.message);
-      res.status(500).json({ error: err.message ?? "Stripe error" });
+      console.error("[billing] portal error:", err);
+      const message = process.env.NODE_ENV === 'production'
+        ? 'Payment processing error. Please try again or contact support.'
+        : err.message ?? 'Stripe error';
+      res.status(500).json({ error: message });
     }
   });
 
