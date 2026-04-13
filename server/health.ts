@@ -127,9 +127,30 @@ export function getLastHealthReport(): DeepHealthReport | null { return lastRepo
 // ── Route registration ────────────────────────────────────────────────────────
 export function registerHealthRoutes(app: Express): void {
 
-  // GET /health — fast liveness (Railway health check)
-  app.get("/health", (_req: Request, res: Response) => {
-    res.json({ status: "ok", ts: new Date().toISOString() });
+  // GET /health — enhanced liveness (Railway health check + DB ping + uptime)
+  app.get("/health", async (_req: Request, res: Response) => {
+    const t0 = Date.now();
+    let dbStatus: "connected" | "disconnected" = "connected";
+    let dbLatency = 0;
+    try {
+      await pool.query("SELECT 1");
+      dbLatency = Date.now() - t0;
+    } catch {
+      dbStatus = "disconnected";
+      dbLatency = Date.now() - t0;
+    }
+
+    const status = dbStatus === "connected" ? "ok" : "degraded";
+    const httpStatus = status === "ok" ? 200 : 503;
+
+    res.status(httpStatus).json({
+      status,
+      ts: new Date().toISOString(),
+      db: dbStatus,
+      db_latency_ms: dbLatency,
+      version: VERSION,
+      uptime_s: Math.floor((Date.now() - START_TIME) / 1000),
+    });
   });
 
   // GET /health/ready — readiness (DB must be up)
