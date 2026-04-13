@@ -12,7 +12,7 @@ import {
   type Log, type InsertLog,
   type MagicToken, type InsertMagicToken,
 } from "@shared/schema";
-import { randomBytes } from "crypto";
+import { randomBytes, createHash } from "crypto";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 export const pool = new Pool({
@@ -193,6 +193,10 @@ function generateApiKey(): string {
   return "kk_" + randomBytes(24).toString("hex");
 }
 
+function hashToken(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 // ── Cosine similarity for embedding search ────────────────────────────────────
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0, normA = 0, normB = 0;
@@ -260,7 +264,8 @@ export class Storage implements IStorage {
     return db.select().from(users).where(eq(users.email, email)).limit(1).then(r => r[0]);
   }
   async getUserByApiKey(apiKey: string) {
-    return db.select().from(users).where(eq(users.apiKey, apiKey)).limit(1).then(r => r[0]);
+    const hashed = hashToken(apiKey);
+    return db.select().from(users).where(eq(users.apiKey, hashed)).limit(1).then(r => r[0]);
   }
   async getUserById(id: number) {
     return db.select().from(users).where(eq(users.id, id)).limit(1).then(r => r[0]);
@@ -268,17 +273,19 @@ export class Storage implements IStorage {
   async createUser(data: { email: string; name: string; company?: string; plan?: string }): Promise<User> {
     const existing = await this.getUserByEmail(data.email);
     if (existing) return existing;
-    const apiKey = generateApiKey();
+    const rawApiKey = generateApiKey();
+    const hashedApiKey = hashToken(rawApiKey);
     const [result] = await db.insert(users).values({
       email: data.email,
       name: data.name,
       company: data.company ?? null,
       plan: data.plan ?? "dev",
       billingCycle: "monthly",
-      apiKey,
+      apiKey: hashedApiKey,
       createdAt: Date.now(),
     }).returning();
-    return result;
+    // Return with the raw key so it can be shown to the user once
+    return { ...result, apiKey: rawApiKey };
   }
   async updateUserPlan(id: number, plan: string, billingCycle: string) {
     return db.update(users).set({ plan, billingCycle }).where(eq(users.id, id)).returning().then(r => r[0]);
@@ -287,8 +294,12 @@ export class Storage implements IStorage {
     await db.update(users).set({ stripeCustomerId }).where(eq(users.id, id));
   }
   async rotateApiKey(id: number) {
-    const newKey = generateApiKey();
-    return db.update(users).set({ apiKey: newKey }).where(eq(users.id, id)).returning().then(r => r[0]);
+    const rawKey = generateApiKey();
+    const hashedKey = hashToken(rawKey);
+    const result = await db.update(users).set({ apiKey: hashedKey }).where(eq(users.id, id)).returning().then(r => r[0]);
+    if (!result) return undefined;
+    // Return with raw key shown once to user
+    return { ...result, apiKey: rawKey };
   }
   async getUser(id: number) {
     return this.getUserById(id);
