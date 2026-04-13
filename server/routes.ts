@@ -73,7 +73,7 @@ async function sendBrevoEmail(to: string, subject: string, html: string, sender:
 
 async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   const baseUrl = process.env.APP_URL || "https://usekioku.com";
-  const link = `${baseUrl}/app#/verify?token=${token}`;
+  const link = `${baseUrl}/auth/verify/${token}`;
   if (!BREVO_API_KEY) {
     console.log(`[MAGIC LINK] ${email} → ${link}`);
     return;
@@ -244,6 +244,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Set httpOnly cookie so session survives page refresh
     res.cookie(COOKIE_NAME, sessionToken, COOKIE_OPTS);
     res.json({ ok: true, sessionToken, user });
+  }));
+
+  // ── GET /auth/verify/:token — one-click magic link (email → cookie → redirect) ──
+  app.get("/auth/verify/:token", asyncHandler(async (req, res) => {
+    const { token } = req.params;
+    const email = await storage.verifyMagicToken(token);
+    if (!email) {
+      // Token invalid/expired → redirect to app login with error flag
+      return res.redirect("/app#/login?error=expired");
+    }
+    let user = await storage.getUserByEmail(email);
+    if (!user) user = await storage.createUser({ email, name: email.split("@")[0] });
+    const sessionToken = createSessionToken(user.id);
+    res.cookie(COOKIE_NAME, sessionToken, COOKIE_OPTS);
+    res.redirect("/app");
   }));
 
   app.get("/api/auth/me", asyncHandler(async (req, res) => {
