@@ -210,7 +210,7 @@ async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<
   if (sessionToken) {
     try {
       const jwt = await import("jsonwebtoken");
-      const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
+      const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
       const payload = jwt.default.verify(sessionToken, JWT_SECRET) as { userId: number };
       if (payload.userId) {
         const user = await storage.getUserById(payload.userId);

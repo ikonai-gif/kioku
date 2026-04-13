@@ -62,7 +62,7 @@ async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   );
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
 
 const COOKIE_NAME = "kioku_session";
 const COOKIE_OPTS = {

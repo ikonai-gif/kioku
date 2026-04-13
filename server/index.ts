@@ -9,6 +9,12 @@ import { applySecurityMiddleware } from "./security";
 import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
 
+// SECURITY: Require JWT_SECRET in production — prevents JWT forgery with fallback secrets
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET env var is required in production');
+  process.exit(1);
+}
+
 const app = express();
 const httpServer = createServer(app);
 
