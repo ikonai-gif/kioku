@@ -44,6 +44,8 @@ function isGeminiModel(model: string): boolean {
   return GEMINI_MODELS.includes(model) || model.startsWith("gemini-");
 }
 
+const LLM_TIMEOUT_MS = 45_000; // 45s per LLM call
+
 /**
  * Call OpenAI LLM directly.
  */
@@ -55,15 +57,18 @@ async function callOpenAI(
   temperature: number
 ): Promise<string> {
   if (!openai) throw new Error("OPENAI_API_KEY not configured");
-  const completion = await openai.chat.completions.create({
-    model,
-    max_tokens: maxTokens,
-    temperature,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
-    ],
-  });
+  const completion = await openai.chat.completions.create(
+    {
+      model,
+      max_tokens: maxTokens,
+      temperature,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+    },
+    { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) }
+  );
   return completion.choices[0]?.message?.content?.trim() || "";
 }
 
@@ -82,6 +87,7 @@ async function callGemini(
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: "user", parts: [{ text: userMessage }] }],
@@ -407,13 +413,11 @@ async function collectPositions(
 
   await postSystemMessage(roomId, phaseLabel);
 
-  const positions: AgentPosition[] = [];
+  // Fetch memories once (shared across all agents) to avoid redundant DB calls
+  const memories = await storage.getMemories(userId);
 
-  for (let i = 0; i < agents.length; i++) {
-    const agent = agents[i];
-
-    // Fetch agent memories for persona
-    const memories = await storage.getMemories(userId);
+  // Run all agents in parallel using Promise.allSettled for resilience
+  const agentPromises = agents.map(async (agent) => {
     const agentMemories = memories
       .filter((m) => m.agentId === agent.id)
       .slice(0, 5)
@@ -430,37 +434,48 @@ async function collectPositions(
       agent.role
     );
 
-    // Use agent's assigned model, or fallback
     const agentModel = agent.model || fallbackModel;
 
-    try {
-      // Check if agent has an external webhook registered
-      const webhook = await storage.getWebhook(agent.id);
-      let parsed: { position: string; confidence: number; reasoning: string };
+    // Check if agent has an external webhook registered
+    const webhook = await storage.getWebhook(agent.id);
+    let parsed: { position: string; confidence: number; reasoning: string };
 
-      if (webhook) {
-        // External agent — dispatch via webhook
-        parsed = await callWebhook(webhook.url, webhook.secret, {
-          event: "deliberation.round",
-          sessionId,
-          roomId,
-          agentId: agent.id,
-          agentName: agent.name,
-          topic,
-          phase,
-          round,
-          priorPositions,
-        });
-      } else {
-        // Internal agent — call LLM directly
-        const raw = await callLLM(
-          agentModel,
-          systemPrompt,
-          `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
-          { maxTokens: 400, temperature: phase === "debate" ? 0.8 : 0.6 }
-        );
-        parsed = parseAgentResponse(raw, agent.name);
-      }
+    if (webhook) {
+      parsed = await callWebhook(webhook.url, webhook.secret, {
+        event: "deliberation.round",
+        sessionId,
+        roomId,
+        agentId: agent.id,
+        agentName: agent.name,
+        topic,
+        phase,
+        round,
+        priorPositions,
+      });
+    } else {
+      const raw = await callLLM(
+        agentModel,
+        systemPrompt,
+        `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
+        { maxTokens: 400, temperature: phase === "debate" ? 0.8 : 0.6 }
+      );
+      parsed = parseAgentResponse(raw, agent.name);
+    }
+
+    return { agent, parsed, agentModel, webhook };
+  });
+
+  const results = await Promise.allSettled(agentPromises);
+
+  const positions: AgentPosition[] = [];
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const agent = agents[i];
+    const agentModel = agent.model || fallbackModel;
+
+    if (result.status === "fulfilled") {
+      const { parsed, webhook } = result.value;
 
       positions.push({
         agentId: agent.id,
@@ -468,9 +483,6 @@ async function collectPositions(
         agentColor: agent.color,
         ...parsed,
       });
-
-      // Stagger timing
-      await sleep(600 + i * 400);
 
       // Post to room as regular message so WS clients see it
       const modelTag = webhook ? " [webhook]" : (agentModel !== DEFAULT_MODEL ? ` [${agentModel}]` : "");
@@ -485,24 +497,23 @@ async function collectPositions(
       });
       if (msg) broadcastToRoom(roomId, msg);
 
-      // Log
       await storage.addLog({
         userId,
         agentName: agent.name,
         agentColor: agent.color,
         operation: "deliberation_round",
-        detail: `${phase} r${round}: ${webhook ? "webhook" : `model=${agentModel}`} confidence=${parsed.confidence}`,
+        detail: `${phase} r${round}: ${result.value.webhook ? "webhook" : `model=${agentModel}`} confidence=${parsed.confidence}`,
         latencyMs: null,
       });
-    } catch (err) {
-      console.error(`[structured-deliberation] ${agent.name} error:`, err);
+    } else {
+      console.error(`[structured-deliberation] ${agent.name} error:`, result.reason);
       positions.push({
         agentId: agent.id,
         agentName: agent.name,
         agentColor: agent.color,
         position: "[no response]",
         confidence: 0,
-        reasoning: "Agent failed to respond",
+        reasoning: `Agent failed to respond: ${(result.reason as Error).message?.slice(0, 100) || "unknown error"}`,
       });
     }
   }
