@@ -2,10 +2,11 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, ilike, or, sql } from "drizzle-orm";
 import {
-  users, agents, memories, flows, rooms, roomMessages, logs, magicTokens,
+  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens,
   type User, type InsertUser,
   type Agent, type InsertAgent,
   type Memory, type InsertMemory,
+  type MemoryLink,
   type Flow, type InsertFlow,
   type Room, type InsertRoom,
   type RoomMessage, type InsertRoomMessage,
@@ -13,6 +14,7 @@ import {
   type MagicToken, type InsertMagicToken,
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
+import { computeDecayedStrength } from "./memory-decay";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const isSSL = (process.env.DATABASE_URL || '').includes('sslmode=require');
@@ -171,6 +173,28 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_webhooks_agent ON kioku_webhooks(agent_id);
   `);
+  // Phase 0: Memory system upgrade — decay columns
+  await pool.query(`
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS strength REAL DEFAULT 1.0;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS emotional_valence REAL;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_accessed_at BIGINT;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS access_count INTEGER DEFAULT 0;
+  `);
+  // Phase 0: Synaptic connections table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS memory_links (
+      id SERIAL PRIMARY KEY,
+      source_memory_id INTEGER NOT NULL,
+      target_memory_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      link_type TEXT NOT NULL DEFAULT 'related',
+      strength REAL NOT NULL DEFAULT 0.5,
+      created_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_memory_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_memory_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_links_user ON memory_links(user_id);
+  `);
   // Phase B-2: deliberation sessions persistence
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kioku_deliberation_sessions (
@@ -233,7 +257,7 @@ export interface IStorage {
   deleteAgent(id: number, userId: number): Promise<boolean>;
 
   getMemories(userId: number, limit?: number): Promise<Memory[]>;
-  searchMemories(userId: number, query: string, queryEmbedding?: number[]): Promise<Memory[]>;
+  searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
   deleteMemory(id: number, userId: number): Promise<boolean>;
   purgeMemories(userId: number, scope: 'all' | 'agent', agentId?: string): Promise<number>;
@@ -354,32 +378,60 @@ export class Storage implements IStorage {
   // ── Memories ───────────────────────────────────────────────────────────────
   async getMemories(userId: number, limit = 100) {
     return db.select().from(memories).where(eq(memories.userId, userId))
-      .orderBy(desc(memories.createdAt)).limit(limit);
+      .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit);
   }
-  async searchMemories(userId: number, query: string, queryEmbedding?: number[]) {
+  async searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string) {
     const all = await this.getMemories(userId, 1000);
+
+    // Namespace filtering — reduce candidate set before scoring
+    const candidates = namespace
+      ? all.filter(m => m.namespace === namespace)
+      : all;
 
     // Semantic search if embedding provided
     if (queryEmbedding && queryEmbedding.length > 0) {
-      const scored = all
+      const scored = candidates
         .filter(m => m.embedding)
         .map(m => {
           try {
             const emb = JSON.parse(m.embedding!) as number[];
-            return { m, score: cosineSimilarity(queryEmbedding, emb) };
-          } catch { return { m, score: 0 }; }
+            const similarity = cosineSimilarity(queryEmbedding, emb);
+            return { m, similarity };
+          } catch { return { m, similarity: 0 }; }
         })
-        .sort((a, b) => b.score - a.score)
-        .filter(x => x.score > 0.7)
-        .map(x => x.m);
+        .filter(x => x.similarity > 0.7)
+        .map(x => {
+          // Combined score: 70% similarity + 30% importance
+          const combinedScore = x.similarity * 0.7 + (x.m.importance ?? 0.5) * 0.3;
+          const decayedStrength = computeDecayedStrength(
+            (x.m as any).strength ?? 1.0,
+            x.m.type,
+            x.m.createdAt,
+            (x.m as any).lastAccessedAt ?? null,
+            (x.m as any).accessCount ?? 0
+          );
+          const finalScore = combinedScore * decayedStrength;
+          return { ...x, combinedScore, finalScore };
+        })
+        .sort((a, b) => b.finalScore - a.finalScore)
+        .map(x => ({ ...x.m, similarity: x.similarity }));
 
       // Fallback to text if no semantic results
-      if (scored.length > 0) return scored.slice(0, 20);
+      if (scored.length > 0) {
+        const results = scored.slice(0, 20);
+        // Fire-and-forget: update access stats for retrieved memories
+        const memoryIds = results.map(r => r.id);
+        pool.query(
+          `UPDATE memories SET last_accessed_at = $1, access_count = COALESCE(access_count, 0) + 1 WHERE id = ANY($2)`,
+          [Date.now(), memoryIds]
+        ).catch(() => {});
+        return results;
+      }
     }
 
     // Text fallback
     const q = query.toLowerCase();
-    return all.filter(m =>
+    return candidates.filter(m =>
       m.content.toLowerCase().includes(q) ||
       (m.agentName ?? "").toLowerCase().includes(q)
     ).slice(0, 20);
@@ -430,6 +482,45 @@ export class Storage implements IStorage {
       "SELECT COUNT(*) as count FROM memories WHERE user_id = $1", [userId]
     );
     return parseInt(result.rows[0]?.count ?? "0");
+  }
+
+  // ── Memory Links (synaptic connections) ────────────────────────────────────
+  async createMemoryLink(userId: number, sourceId: number, targetId: number, linkType: string = "related", strength: number = 0.5) {
+    const [source, target] = await Promise.all([
+      pool.query('SELECT id FROM memories WHERE id = $1 AND user_id = $2', [sourceId, userId]),
+      pool.query('SELECT id FROM memories WHERE id = $1 AND user_id = $2', [targetId, userId]),
+    ]);
+    if (!source.rows.length || !target.rows.length) return null;
+    const result = await pool.query(
+      'INSERT INTO memory_links (source_memory_id, target_memory_id, user_id, link_type, strength, created_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [sourceId, targetId, userId, linkType, strength, Date.now()]
+    );
+    return result.rows[0];
+  }
+
+  async getMemoryLinks(userId: number, memoryId: number) {
+    const result = await pool.query(
+      `SELECT ml.*, m.content as linked_content, m.type as linked_type
+       FROM memory_links ml
+       JOIN memories m ON (ml.target_memory_id = m.id OR ml.source_memory_id = m.id) AND m.id != $1
+       WHERE ml.user_id = $2 AND (ml.source_memory_id = $1 OR ml.target_memory_id = $1)`,
+      [memoryId, userId]
+    );
+    return result.rows;
+  }
+
+  async deleteMemoryLink(userId: number, memoryId: number, linkId: number) {
+    await pool.query(
+      'DELETE FROM memory_links WHERE id = $1 AND user_id = $2 AND (source_memory_id = $3 OR target_memory_id = $3)',
+      [linkId, userId, memoryId]
+    );
+  }
+
+  async deleteMemoryLinks(userId: number, memoryId: number) {
+    await pool.query(
+      'DELETE FROM memory_links WHERE user_id = $1 AND (source_memory_id = $2 OR target_memory_id = $2)',
+      [userId, memoryId]
+    );
   }
 
   // ── Flows ──────────────────────────────────────────────────────────────────

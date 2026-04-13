@@ -21,6 +21,7 @@ import {
   createRoomMessageSchema, deliberateSchema,
   createWebhookSchema, createAgentTokenSchema, agentCallbackSchema,
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
+  createMemoryLinkSchema,
 } from "./validation";
 
 // Async error wrapper — catches unhandled promise rejections in route handlers
@@ -416,10 +417,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const q = req.query.q as string;
+    const namespace = req.query.namespace as string | undefined;
     let results;
     if (q) {
       const queryEmbedding = await embedText(q);
-      results = await storage.searchMemories(userId, q, queryEmbedding ?? undefined);
+      results = await storage.searchMemories(userId, q, queryEmbedding ?? undefined, namespace);
     } else {
       results = await storage.getMemories(userId);
     }
@@ -452,6 +454,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       latencyMs: Math.floor(Math.random() * 30) + 30,
     });
     res.json(mem);
+
+    // Fire-and-forget: auto-link highly similar memories
+    if (embedding) {
+      storage.searchMemories(userId, content, embedding).then(async (similar) => {
+        for (const sim of similar) {
+          if (sim.id !== mem.id && (sim as any).similarity > 0.85) {
+            await storage.createMemoryLink(userId, mem.id, sim.id, "related", (sim as any).similarity);
+          }
+        }
+      }).catch(() => {});
+    }
   }));
 
   // ── GDPR: Purge (Art. 17) ──────────────────────────────────────
@@ -492,6 +505,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const deleted = await storage.deleteMemory(Number(req.params.id), userId);
     if (!deleted) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
+  }));
+
+  // ── Memory Links (synaptic connections) ──────────────────────
+  app.post("/api/memories/:id/links", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const sourceId = Number(req.params.id);
+    const { targetId, linkType, strength } = validateBody(createMemoryLinkSchema, req.body);
+    const link = await storage.createMemoryLink(userId, sourceId, targetId, linkType, strength);
+    if (!link) return res.status(404).json({ error: "Memory not found" });
+    res.status(201).json(link);
+  }));
+
+  app.get("/api/memories/:id/links", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const links = await storage.getMemoryLinks(userId, Number(req.params.id));
+    res.json(links);
+  }));
+
+  app.delete("/api/memories/:id/links/:linkId", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    await storage.deleteMemoryLink(userId, Number(req.params.id), Number(req.params.linkId));
+    res.json({ success: true });
   }));
 
   // ── Flows ─────────────────────────────────────────────────────

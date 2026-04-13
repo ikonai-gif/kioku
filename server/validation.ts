@@ -52,7 +52,7 @@ export const createMemorySchema = z.object({
   content: z.string().min(1).max(50000),
   agentId: z.number().nullable().optional(),
   agentName: z.string().max(100).nullable().optional(),
-  type: z.enum(["semantic", "episodic", "procedural"]).optional(),
+  type: z.enum(["semantic", "episodic", "procedural", "emotional"]).optional(),
   importance: z.number().min(0).max(1).optional(),
   namespace: z.string().max(100).optional(),
   room_id: z.union([z.string(), z.number()]).optional(),
@@ -61,6 +61,13 @@ export const createMemorySchema = z.object({
 export const purgeMemoriesSchema = z.object({
   scope: z.enum(["all", "agent"]),
   agent_id: z.string().max(100).optional(),
+});
+
+// ── Memory Link schemas ────────────────────────────────────────────────────────
+export const createMemoryLinkSchema = z.object({
+  targetId: z.number().int(),
+  linkType: z.enum(["related", "causal", "contradicts", "refines", "supports"]).optional(),
+  strength: z.number().min(0).max(1).optional(),
 });
 
 // ── Flow schemas ────────────────────────────────────────────────────────────────

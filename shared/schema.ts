@@ -59,16 +59,35 @@ export const memories = pgTable("memories", {
   agentId:   integer("agent_id"),
   agentName: text("agent_name"),
   content:   text("content").notNull(),
-  type:      text("type").notNull().default("semantic"),     // semantic | episodic | procedural
+  type:      text("type").notNull().default("semantic"),     // semantic | episodic | procedural | emotional
   importance: real("importance").notNull().default(0.5),
   namespace: text("namespace"),
   embedding: text("embedding"),                              // JSON float[] from OpenAI
+  strength:         real("strength").default(1.0),           // 0.0-1.0, decays over time
+  emotionalValence: real("emotional_valence"),               // -1.0 (negative) to 1.0 (positive)
+  lastAccessedAt:   bigint("last_accessed_at", { mode: "number" }),
+  accessCount:      integer("access_count").default(0),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 export const insertMemorySchema = createInsertSchema(memories).omit({ id: true, createdAt: true });
 export type InsertMemory = z.infer<typeof insertMemorySchema>;
 export type Memory = typeof memories.$inferSelect;
+
+// Memory Links (synaptic connections)
+export const memoryLinks = pgTable("memory_links", {
+  id:             serial("id").primaryKey(),
+  sourceMemoryId: integer("source_memory_id").notNull(),
+  targetMemoryId: integer("target_memory_id").notNull(),
+  userId:         integer("user_id").notNull(),
+  linkType:       text("link_type").notNull().default("related"),  // related | causal | contradicts | refines | supports
+  strength:       real("strength").notNull().default(0.5),         // 0.0-1.0
+  createdAt:      bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const insertMemoryLinkSchema = createInsertSchema(memoryLinks).omit({ id: true, createdAt: true });
+export type InsertMemoryLink = z.infer<typeof insertMemoryLinkSchema>;
+export type MemoryLink = typeof memoryLinks.$inferSelect;
 
 // Flows
 export const flows = pgTable("flows", {
