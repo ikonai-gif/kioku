@@ -48,7 +48,8 @@ export async function triggerAgentResponses(
     }
 
     // Fetch room history for context (last 20 messages)
-    const history = await storage.getRoomMessages(roomId);
+    const history = await storage.getRoomMessages(roomId, userId);
+    if (!history) { roomLocks.delete(roomId); return; }
     const recent = history.slice(-20);
 
     // Each respondent replies in sequence (staggered timing for realism)
@@ -114,10 +115,10 @@ export async function triggerAgentResponses(
         });
 
         // Update agent lastActiveAt
-        await storage.updateAgentStatus(agent.id, "online");
+        await storage.updateAgentStatus(agent.id, userId, "online");
 
         // Broadcast to WS subscribers
-        broadcastToRoom(roomId, msg);
+        if (msg) broadcastToRoom(roomId, msg);
       } catch (err) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
       }

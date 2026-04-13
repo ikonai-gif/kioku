@@ -221,31 +221,31 @@ export interface IStorage {
   getAgents(userId: number): Promise<Agent[]>;
   getAgent(id: number): Promise<Agent | undefined>;
   createAgent(data: InsertAgent): Promise<Agent>;
-  updateAgent(id: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string }>): Promise<void>;
-  updateAgentStatus(id: number, status: string): Promise<void>;
-  toggleAgent(id: number, enabled: boolean): Promise<void>;
-  deleteAgent(id: number): Promise<void>;
+  updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string }>): Promise<boolean>;
+  updateAgentStatus(id: number, userId: number, status: string): Promise<boolean>;
+  toggleAgent(id: number, userId: number, enabled: boolean): Promise<boolean>;
+  deleteAgent(id: number, userId: number): Promise<boolean>;
 
   getMemories(userId: number, limit?: number): Promise<Memory[]>;
   searchMemories(userId: number, query: string, queryEmbedding?: number[]): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
-  deleteMemory(id: number): Promise<void>;
+  deleteMemory(id: number, userId: number): Promise<boolean>;
   getMemoriesCount(userId: number): Promise<number>;
 
   getFlows(userId: number): Promise<Flow[]>;
   getFlow(id: number): Promise<Flow | undefined>;
   createFlow(data: InsertFlow): Promise<Flow>;
-  updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>): Promise<Flow | undefined>;
-  deleteFlow(id: number): Promise<void>;
+  updateFlow(id: number, userId: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>): Promise<Flow | undefined>;
+  deleteFlow(id: number, userId: number): Promise<boolean>;
 
   getRooms(userId: number): Promise<Room[]>;
-  getRoom(id: number): Promise<Room | undefined>;
+  getRoom(id: number, userId?: number): Promise<Room | undefined>;
   createRoom(data: InsertRoom): Promise<Room>;
-  updateRoom(id: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Promise<Room | undefined>;
-  deleteRoom(id: number): Promise<void>;
+  updateRoom(id: number, userId: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Promise<Room | undefined>;
+  deleteRoom(id: number, userId: number): Promise<boolean>;
 
-  getRoomMessages(roomId: number): Promise<RoomMessage[]>;
-  addRoomMessage(data: InsertRoomMessage): Promise<RoomMessage>;
+  getRoomMessages(roomId: number, userId: number): Promise<RoomMessage[] | null>;
+  addRoomMessage(data: InsertRoomMessage, userId?: number): Promise<RoomMessage | null>;
 
   getLogs(userId: number, limit?: number): Promise<Log[]>;
   addLog(data: InsertLog): Promise<Log>;
@@ -319,17 +319,21 @@ export class Storage implements IStorage {
     const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
     return result;
   }
-  async updateAgent(id: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string }>) {
-    await db.update(agents).set(data).where(eq(agents.id, id));
+  async updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string }>): Promise<boolean> {
+    const result = await db.update(agents).set(data).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
-  async updateAgentStatus(id: number, status: string) {
-    await db.update(agents).set({ status, lastActiveAt: Date.now() }).where(eq(agents.id, id));
+  async updateAgentStatus(id: number, userId: number, status: string): Promise<boolean> {
+    const result = await db.update(agents).set({ status, lastActiveAt: Date.now() }).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
-  async toggleAgent(id: number, enabled: boolean) {
-    await db.update(agents).set({ enabled }).where(eq(agents.id, id));
+  async toggleAgent(id: number, userId: number, enabled: boolean): Promise<boolean> {
+    const result = await db.update(agents).set({ enabled }).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
-  async deleteAgent(id: number) {
-    await db.delete(agents).where(eq(agents.id, id));
+  async deleteAgent(id: number, userId: number): Promise<boolean> {
+    const result = await db.delete(agents).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
 
   // ── Memories ───────────────────────────────────────────────────────────────
@@ -379,8 +383,9 @@ export class Storage implements IStorage {
     }
     return mem;
   }
-  async deleteMemory(id: number) {
-    await db.delete(memories).where(eq(memories.id, id));
+  async deleteMemory(id: number, userId: number): Promise<boolean> {
+    const result = await db.delete(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
   async getMemoriesCount(userId: number) {
     const result = await pool.query<{ count: string }>(
@@ -400,37 +405,50 @@ export class Storage implements IStorage {
     const [result] = await db.insert(flows).values({ ...data, createdAt: Date.now() }).returning();
     return result;
   }
-  async updateFlow(id: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>) {
-    return db.update(flows).set(data).where(eq(flows.id, id)).returning().then(r => r[0]);
+  async updateFlow(id: number, userId: number, data: Partial<{ name: string; description: string; agentIds: string; positions: string; agentRoles: string }>): Promise<Flow | undefined> {
+    return db.update(flows).set(data).where(sql`${flows.id} = ${id} AND ${flows.userId} = ${userId}`).returning().then(r => r[0]);
   }
-  async deleteFlow(id: number) {
-    await db.delete(flows).where(eq(flows.id, id));
+  async deleteFlow(id: number, userId: number): Promise<boolean> {
+    const result = await db.delete(flows).where(sql`${flows.id} = ${id} AND ${flows.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
 
   // ── Rooms ──────────────────────────────────────────────────────────────────
   async getRooms(userId: number) {
     return db.select().from(rooms).where(eq(rooms.userId, userId));
   }
-  async getRoom(id: number) {
+  async getRoom(id: number, userId?: number) {
+    if (userId !== undefined) {
+      return db.select().from(rooms).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).limit(1).then(r => r[0]);
+    }
     return db.select().from(rooms).where(eq(rooms.id, id)).limit(1).then(r => r[0]);
   }
   async createRoom(data: InsertRoom): Promise<Room> {
     const [result] = await db.insert(rooms).values({ ...data, createdAt: Date.now() }).returning();
     return result;
   }
-  async updateRoom(id: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>) {
-    return db.update(rooms).set(data).where(eq(rooms.id, id)).returning().then(r => r[0]);
+  async updateRoom(id: number, userId: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Promise<Room | undefined> {
+    return db.update(rooms).set(data).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).returning().then(r => r[0]);
   }
-  async deleteRoom(id: number) {
-    await db.delete(rooms).where(eq(rooms.id, id));
+  async deleteRoom(id: number, userId: number): Promise<boolean> {
+    const result = await db.delete(rooms).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).returning();
+    return result.length > 0;
   }
 
   // ── Room Messages ──────────────────────────────────────────────────────────
-  async getRoomMessages(roomId: number) {
+  async getRoomMessages(roomId: number, userId: number): Promise<RoomMessage[] | null> {
+    // Verify room belongs to user
+    const room = await this.getRoom(roomId, userId);
+    if (!room) return null;
     return db.select().from(roomMessages).where(eq(roomMessages.roomId, roomId))
       .orderBy(roomMessages.createdAt);
   }
-  async addRoomMessage(data: InsertRoomMessage): Promise<RoomMessage> {
+  async addRoomMessage(data: InsertRoomMessage, userId?: number): Promise<RoomMessage | null> {
+    // If userId provided, verify room belongs to user
+    if (userId !== undefined) {
+      const room = await this.getRoom(data.roomId, userId);
+      if (!room) return null;
+    }
     const [result] = await db.insert(roomMessages).values({ ...data, createdAt: Date.now() }).returning();
     return result;
   }
@@ -585,11 +603,14 @@ export class Storage implements IStorage {
     };
   }
 
-  async getAgentTokens(agentId: number) {
-    const { rows } = await pool.query(
-      `SELECT id, agent_id, user_id, name, scopes, rate_limit, expires_at, revoked, created_at, last_used
-       FROM kioku_agent_tokens WHERE agent_id = $1 ORDER BY created_at DESC`, [agentId]
-    );
+  async getAgentTokens(agentId: number, userId?: number) {
+    const query = userId !== undefined
+      ? `SELECT id, agent_id, user_id, name, scopes, rate_limit, expires_at, revoked, created_at, last_used
+         FROM kioku_agent_tokens WHERE agent_id = $1 AND user_id = $2 ORDER BY created_at DESC`
+      : `SELECT id, agent_id, user_id, name, scopes, rate_limit, expires_at, revoked, created_at, last_used
+         FROM kioku_agent_tokens WHERE agent_id = $1 ORDER BY created_at DESC`;
+    const params = userId !== undefined ? [agentId, userId] : [agentId];
+    const { rows } = await pool.query(query, params);
     return rows.map((r: any) => ({
       id: r.id,
       agentId: r.agent_id,
@@ -604,12 +625,22 @@ export class Storage implements IStorage {
     }));
   }
 
-  async revokeAgentToken(tokenId: number) {
+  async revokeAgentToken(tokenId: number, userId?: number): Promise<boolean> {
+    if (userId !== undefined) {
+      const result = await pool.query(`UPDATE kioku_agent_tokens SET revoked = TRUE WHERE id = $1 AND user_id = $2 RETURNING id`, [tokenId, userId]);
+      return result.rows.length > 0;
+    }
     await pool.query(`UPDATE kioku_agent_tokens SET revoked = TRUE WHERE id = $1`, [tokenId]);
+    return true;
   }
 
-  async revokeAllAgentTokens(agentId: number) {
+  async revokeAllAgentTokens(agentId: number, userId?: number): Promise<boolean> {
+    if (userId !== undefined) {
+      const result = await pool.query(`UPDATE kioku_agent_tokens SET revoked = TRUE WHERE agent_id = $1 AND user_id = $2 RETURNING id`, [agentId, userId]);
+      return result.rows.length > 0;
+    }
     await pool.query(`UPDATE kioku_agent_tokens SET revoked = TRUE WHERE agent_id = $1`, [agentId]);
+    return true;
   }
 
   // ── Webhooks (external agents) ────────────────────────────────────────
@@ -624,10 +655,12 @@ export class Storage implements IStorage {
     );
   }
 
-  async getWebhook(agentId: number) {
-    const { rows } = await pool.query(
-      `SELECT * FROM kioku_webhooks WHERE agent_id = $1 AND active = TRUE`, [agentId]
-    );
+  async getWebhook(agentId: number, userId?: number) {
+    const query = userId !== undefined
+      ? `SELECT * FROM kioku_webhooks WHERE agent_id = $1 AND active = TRUE AND user_id = $2`
+      : `SELECT * FROM kioku_webhooks WHERE agent_id = $1 AND active = TRUE`;
+    const params = userId !== undefined ? [agentId, userId] : [agentId];
+    const { rows } = await pool.query(query, params);
     if (!rows[0]) return undefined;
     return {
       id: rows[0].id,
@@ -657,8 +690,13 @@ export class Storage implements IStorage {
     }));
   }
 
-  async deleteWebhook(agentId: number) {
+  async deleteWebhook(agentId: number, userId?: number): Promise<boolean> {
+    if (userId !== undefined) {
+      const result = await pool.query(`DELETE FROM kioku_webhooks WHERE agent_id = $1 AND user_id = $2 RETURNING id`, [agentId, userId]);
+      return result.rows.length > 0;
+    }
     await pool.query(`DELETE FROM kioku_webhooks WHERE agent_id = $1`, [agentId]);
+    return true;
   }
 
   private mapDelibRow(row: any) {

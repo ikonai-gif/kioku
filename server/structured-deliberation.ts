@@ -278,7 +278,7 @@ export async function runDeliberation(
       content: decisionText,
       isDecision: true,
     });
-    broadcastToRoom(roomId, decisionMsg);
+    if (decisionMsg) broadcastToRoom(roomId, decisionMsg);
 
     // Save decision to memories
     await storage.createMemory({
@@ -422,7 +422,7 @@ async function collectPositions(
         content: displayContent,
         isDecision: false,
       });
-      broadcastToRoom(roomId, msg);
+      if (msg) broadcastToRoom(roomId, msg);
 
       // Log
       await storage.addLog({
@@ -618,7 +618,7 @@ async function postSystemMessage(roomId: number, content: string) {
     content,
     isDecision: false,
   });
-  broadcastToRoom(roomId, msg);
+  if (msg) broadcastToRoom(roomId, msg);
 }
 
 function sleep(ms: number): Promise<void> {
