@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff, Crown, Lightbulb, Shield, Loader2, Users, Webhook, Radio, Zap } from "lucide-react";
+import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff, Crown, Lightbulb, Shield, Loader2, Users, Webhook, Radio, Zap, AlertTriangle, RotateCcw } from "lucide-react";
 import { AgentAvatar } from "@/lib/agent-icon";
 import { cn } from "@/lib/utils";
 
@@ -606,6 +606,15 @@ export default function AgentsPage() {
     },
   });
 
+  const resetMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/agents/${id}/reset`).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      toast({ title: "Agent error state reset" });
+    },
+    onError: () => toast({ title: "Failed to reset agent", variant: "destructive" }),
+  });
+
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -660,10 +669,13 @@ export default function AgentsPage() {
                   <div className={cn(
                     "text-[10px] font-medium",
                     agent.status === "online" && agent.enabled ? "text-green-400"
+                    : agent.status === "error" ? "text-red-400"
                     : agent.status === "idle" ? "text-yellow-400"
                     : "text-muted-foreground"
                   )}>
-                    {!agent.enabled ? "disabled" : agent.status}
+                    {!agent.enabled ? "disabled" : agent.status === "error" ? (
+                      <span className="flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> error</span>
+                    ) : agent.status}
                   </div>
                 </div>
               </div>
@@ -676,6 +688,32 @@ export default function AgentsPage() {
 
             {agent.description && (
               <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{agent.description}</p>
+            )}
+
+            {/* Error Badge + Reset */}
+            {agent.status === "error" && (
+              <div className="mb-3 rounded-lg border border-red-400/20 bg-red-400/5 p-2.5 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[10px] font-medium text-red-400">
+                  <AlertTriangle className="w-3 h-3" /> Circuit Breaker Tripped
+                </div>
+                {agent.errorMessage && (
+                  <p className="text-[10px] text-red-400/70 line-clamp-2">{agent.errorMessage}</p>
+                )}
+                <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground">
+                  {agent.consecutiveFailures > 0 && <span>{agent.consecutiveFailures} consecutive failures</span>}
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[10px] gap-1 border-red-400/20 text-red-400 hover:bg-red-400/10 hover:text-red-400"
+                  onClick={() => resetMutation.mutate(agent.id)}
+                  disabled={resetMutation.isPending}
+                  data-testid={`button-reset-agent-${agent.id}`}
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  {resetMutation.isPending ? "Resetting…" : "Reset Agent"}
+                </Button>
+              </div>
             )}
 
             {/* Stats */}

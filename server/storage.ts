@@ -270,6 +270,11 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_agent_turns_session ON agent_turns(session_id);
     CREATE INDEX IF NOT EXISTS idx_agent_turns_expires ON agent_turns(expires_at);
   `);
+  // Phase 4: Circuit breaker — consecutive failure tracking on agents
+  await pool.query(`
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS error_message TEXT;
+  `);
   // Phase 3: Usage metering — per-user per-month tracking
   await pool.query(`
     CREATE TABLE IF NOT EXISTS usage_tracking (
@@ -329,6 +334,8 @@ export interface IStorage {
   updateAgentStatus(id: number, userId: number, status: string): Promise<boolean>;
   toggleAgent(id: number, userId: number, enabled: boolean): Promise<boolean>;
   deleteAgent(id: number, userId: number): Promise<boolean>;
+  updateAgentCircuitBreaker(id: number, consecutiveFailures: number, errorMessage: string | null, status?: string): Promise<boolean>;
+  resetAgentError(id: number, userId: number): Promise<boolean>;
 
   getMemories(userId: number, limit?: number): Promise<Memory[]>;
   searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string): Promise<Memory[]>;
@@ -444,6 +451,16 @@ export class Storage implements IStorage {
   }
   async toggleAgent(id: number, userId: number, enabled: boolean): Promise<boolean> {
     const result = await db.update(agents).set({ enabled }).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
+    return result.length > 0;
+  }
+  async updateAgentCircuitBreaker(id: number, consecutiveFailures: number, errorMessage: string | null, status?: string): Promise<boolean> {
+    const data: any = { consecutiveFailures, errorMessage };
+    if (status) data.status = status;
+    const result = await db.update(agents).set(data).where(sql`${agents.id} = ${id}`).returning();
+    return result.length > 0;
+  }
+  async resetAgentError(id: number, userId: number): Promise<boolean> {
+    const result = await db.update(agents).set({ consecutiveFailures: 0, errorMessage: null, status: "idle" }).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
     return result.length > 0;
   }
   async deleteAgent(id: number, userId: number): Promise<boolean> {

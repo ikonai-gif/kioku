@@ -169,11 +169,14 @@ function PhaseHeader({ label, active, completed }: { label: string; active: bool
 
 // ── Agent Response Card ─────────────────────────────────────────
 function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animate: boolean }) {
+  const isError = item.position.startsWith("[error:");
   return (
     <div className={cn(
       "rounded-xl border p-3 transition-all duration-500",
       animate ? "animate-in slide-in-from-bottom-2 fade-in" : "",
-      item.isHuman
+      isError
+        ? "border-red-400/30 bg-red-400/[0.03]"
+        : item.isHuman
         ? "border-[#D4AF37]/40 bg-[#D4AF37]/[0.03] hover:border-[#D4AF37]/60"
         : "border-border/40 bg-card/30 hover:border-border/60"
     )}>
@@ -183,13 +186,18 @@ function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animat
             <User className="w-3 h-3 text-[#D4AF37]" />
           </div>
         ) : (
-          <AgentAvatar name={item.agentName} color={item.agentColor} size="sm" className="mt-0.5" />
+          <AgentAvatar name={item.agentName} color={isError ? "#EF4444" : item.agentColor} size="sm" className="mt-0.5" />
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="text-xs font-semibold" style={{ color: item.agentColor }}>
+            <span className="text-xs font-semibold" style={{ color: isError ? "#EF4444" : item.agentColor }}>
               {item.agentName}
             </span>
+            {isError && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-400/10 text-red-400 font-medium border border-red-400/20">
+                Error
+              </span>
+            )}
             {item.isHuman && (
               <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#D4AF37]/15 text-[#D4AF37] font-bold uppercase tracking-wider border border-[#D4AF37]/30">
                 Human
@@ -201,8 +209,8 @@ function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animat
               </span>
             )}
           </div>
-          <p className="text-sm text-foreground/90 leading-relaxed mb-2">{item.position}</p>
-          <ConfidenceBar value={item.confidence} />
+          <p className={cn("text-sm leading-relaxed mb-2", isError ? "text-red-400/80" : "text-foreground/90")}>{item.position}</p>
+          {!isError && <ConfidenceBar value={item.confidence} />}
         </div>
       </div>
     </div>

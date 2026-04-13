@@ -18,6 +18,11 @@ import { storage } from "./storage";
 import { broadcastToRoom, broadcastHumanTurn } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
 import { allocateBudget, countTokens } from "./token-budget";
+import {
+  classifyLLMError, classifyWebhookError,
+  withRetry, checkCircuitBreaker, formatErrorLog,
+  type ClassifiedError, type RetryResult, type AgentErrorLog,
+} from "./error-retry";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -331,6 +336,7 @@ export interface DeliberationRound {
   round: number;
   positions: AgentPosition[];
   timestamp: number;
+  errors?: Array<{ agentId: number; agentName: string; errorType: string; errorMessage: string; attempts: number }>;
 }
 
 export interface DeliberationSession {
@@ -512,7 +518,7 @@ export async function runDeliberation(
 async function collectPositions(
   roomId: number,
   userId: number,
-  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null; agentType: string; webhookUrl: string | null; webhookSecret: string | null }>,
+  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null; agentType: string; webhookUrl: string | null; webhookSecret: string | null; consecutiveFailures: number }>,
   topic: string,
   phase: "position" | "debate" | "final",
   round: number,
@@ -553,48 +559,57 @@ async function collectPositions(
 
     // Route based on agent type: internal (LLM), webhook, or polling
     const effectiveType = agent.agentType || "internal";
-    let parsed: { position: string; confidence: number; reasoning: string };
+    let parsed: { position: string; confidence: number; reasoning: string } = { position: "[error: unknown]", confidence: 0, reasoning: "Agent did not produce a response" };
     let isExternal = false;
+    let retryErrors: Array<{ attempt: number; error: ClassifiedError; willRetry: boolean }> = [];
 
     if (effectiveType === "webhook" && agent.webhookUrl && agent.webhookSecret) {
-      // Webhook mode — POST directly to agent's endpoint with HMAC signature
-      parsed = await callWebhook(agent.webhookUrl, agent.webhookSecret, {
+      // Webhook mode — POST with HMAC signature, retry up to 2x with backoff (2s, 6s)
+      const webhookPayload = {
         event: "deliberation.round",
-        sessionId,
-        roomId,
-        agentId: agent.id,
-        agentName: agent.name,
-        topic,
-        phase,
-        round,
-        priorPositions,
-      });
+        sessionId, roomId, agentId: agent.id, agentName: agent.name,
+        topic, phase, round, priorPositions,
+      };
+      const result = await withRetry(
+        () => callWebhook(agent.webhookUrl!, agent.webhookSecret!, webhookPayload),
+        { maxRetries: 2, backoffMs: [2000, 6000], classifier: classifyWebhookError }
+      );
+      retryErrors = result.errors;
+      logRetryErrors(result.errors, agent.id, agent.name, sessionId);
+      if (result.success) {
+        parsed = result.value!;
+      } else {
+        throw Object.assign(new Error(result.error!.message), { _classified: result.error, _retryErrors: retryErrors });
+      }
       isExternal = true;
-      // Meter webhook call
       storage.incrementUsage(userId, 'webhook_calls').catch(() => {});
     } else if (effectiveType === "webhook") {
       // Fallback: check legacy kioku_webhooks table
       const webhook = await storage.getWebhook(agent.id);
       if (webhook) {
-        parsed = await callWebhook(webhook.url, webhook.secret, {
+        const webhookPayload = {
           event: "deliberation.round",
-          sessionId,
-          roomId,
-          agentId: agent.id,
-          agentName: agent.name,
-          topic,
-          phase,
-          round,
-          priorPositions,
-        });
+          sessionId, roomId, agentId: agent.id, agentName: agent.name,
+          topic, phase, round, priorPositions,
+        };
+        const result = await withRetry(
+          () => callWebhook(webhook.url, webhook.secret, webhookPayload),
+          { maxRetries: 2, backoffMs: [2000, 6000], classifier: classifyWebhookError }
+        );
+        retryErrors = result.errors;
+        logRetryErrors(result.errors, agent.id, agent.name, sessionId);
+        if (result.success) {
+          parsed = result.value!;
+        } else {
+          throw Object.assign(new Error(result.error!.message), { _classified: result.error, _retryErrors: retryErrors });
+        }
         isExternal = true;
-        // Meter webhook call
         storage.incrementUsage(userId, 'webhook_calls').catch(() => {});
       } else {
         throw new Error(`Webhook agent ${agent.name} has no webhook URL configured`);
       }
     } else if (effectiveType === "polling") {
-      // Polling mode — queue the turn and wait for agent to respond
+      // Polling mode — no retry (agent controls timing), but clear expiry handling
       const POLLING_TIMEOUT_MS = 60_000;
       const turn = await storage.createAgentTurn({
         sessionId,
@@ -608,7 +623,6 @@ async function collectPositions(
         memories: injectedMemories.map((m: any) => ({ content: m.content, type: m.type, confidence: m.currentConfidence ?? m.confidence })),
         expiresAt: Date.now() + POLLING_TIMEOUT_MS,
       });
-      // Poll for response
       const pollStart = Date.now();
       let responded = false;
       while (Date.now() - pollStart < POLLING_TIMEOUT_MS) {
@@ -622,11 +636,12 @@ async function collectPositions(
         if (updated && updated.status === "expired") break;
       }
       if (!responded!) {
-        parsed = { position: "[no response — polling timeout]", confidence: 0, reasoning: "External agent did not respond within 60s" };
+        console.warn(`[structured-deliberation] Polling agent ${agent.name} (id=${agent.id}) expired: no response within ${POLLING_TIMEOUT_MS / 1000}s in session ${sessionId}, phase=${phase}, round=${round}`);
+        parsed = { position: "[error: polling timeout — no response within 60s]", confidence: 0, reasoning: `Polling agent ${agent.name} did not respond within the 60s window. The turn expired without a submission.` };
       }
       isExternal = true;
     } else {
-      // Internal mode — call LLM with token budget management
+      // Internal mode — call LLM with token budget management + retry logic
       const userMsg = `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`;
 
       // Build prior positions block for budget allocation
@@ -651,28 +666,39 @@ async function collectPositions(
       // Use budget-fitted system prompt
       const fittedSystemPrompt = budget.systemPrompt;
 
-      const raw = await callLLM(
-        agentModel,
-        fittedSystemPrompt,
-        userMsg,
-        {
-          maxTokens: 400,
-          temperature: phase === "debate" ? 0.8 : 0.6,
-          agentLlm: (agent.llmApiKey) ? { provider: agent.llmProvider, apiKey: agent.llmApiKey } : undefined,
-        }
+      // Retry up to 2x with backoff (1s, 3s) on transient errors
+      const result = await withRetry(
+        () => callLLM(
+          agentModel,
+          fittedSystemPrompt,
+          userMsg,
+          {
+            maxTokens: 400,
+            temperature: phase === "debate" ? 0.8 : 0.6,
+            agentLlm: (agent.llmApiKey) ? { provider: agent.llmProvider, apiKey: agent.llmApiKey } : undefined,
+          }
+        ),
+        { maxRetries: 2, backoffMs: [1000, 3000], classifier: classifyLLMError }
       );
-      parsed = parseAgentResponse(raw, agent.name);
-      // Meter approximate token usage (input + output ≈ words/0.75)
-      const estimatedTokens = Math.ceil((fittedSystemPrompt.length + userMsg.length + raw.length) / 4);
-      storage.incrementUsage(userId, 'tokens_used', estimatedTokens).catch(() => {});
+      retryErrors = result.errors;
+      logRetryErrors(result.errors, agent.id, agent.name, sessionId);
+      if (result.success) {
+        const raw = result.value!;
+        parsed = parseAgentResponse(raw, agent.name);
+        const estimatedTokens = Math.ceil((fittedSystemPrompt.length + userMsg.length + raw.length) / 4);
+        storage.incrementUsage(userId, 'tokens_used', estimatedTokens).catch(() => {});
+      } else {
+        throw Object.assign(new Error(result.error!.message), { _classified: result.error, _retryErrors: retryErrors });
+      }
     }
 
-    return { agent, parsed, agentModel, isExternal };
+    return { agent, parsed, agentModel, isExternal, retryErrors };
   });
 
   const results = await Promise.allSettled(agentPromises);
 
   const positions: AgentPosition[] = [];
+  const roundErrors: Array<{ agentId: number; agentName: string; errorType: string; errorMessage: string; attempts: number }> = [];
 
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
@@ -711,18 +737,69 @@ async function collectPositions(
         detail: `${phase} r${round}: ${isExternal ? effectiveType : `model=${agentModel}`} confidence=${parsed.confidence}`,
         latencyMs: null,
       });
+
+      // Circuit breaker: reset on success
+      if (agent.consecutiveFailures > 0) {
+        storage.updateAgentCircuitBreaker(agent.id, 0, null).catch(() => {});
+      }
     } else {
-      console.error(`[structured-deliberation] ${agent.name} error:`, result.reason);
+      const err = result.reason as any;
+      const classified = err?._classified ?? { category: "RETRYABLE", message: err?.message || "unknown error" };
+      const errorMsg = classified.message?.slice(0, 200) || "unknown error";
+      console.error(`[structured-deliberation] ${agent.name} error (${classified.category}):`, errorMsg);
+
+      // Error position uses "[error: <reason>]" format per spec
       positions.push({
         agentId: agent.id,
         agentName: agent.name,
         agentColor: agent.color,
-        position: "[no response]",
+        position: `[error: ${errorMsg.slice(0, 100)}]`,
         confidence: 0,
-        reasoning: `Agent failed to respond: ${(result.reason as Error).message?.slice(0, 100) || "unknown error"}`,
+        reasoning: `Agent failed after retries: ${errorMsg}`,
+      });
+
+      // Track error in round metadata
+      roundErrors.push({
+        agentId: agent.id,
+        agentName: agent.name,
+        errorType: classified.category,
+        errorMessage: errorMsg,
+        attempts: (err?._retryErrors?.length ?? 0) + 1,
+      });
+
+      // Circuit breaker: increment consecutive failures
+      const cbResult = checkCircuitBreaker(agent.consecutiveFailures ?? 0, false, errorMsg);
+      storage.updateAgentCircuitBreaker(
+        agent.id,
+        cbResult.consecutiveFailures,
+        cbResult.errorMessage || null,
+        cbResult.tripped ? "error" : undefined
+      ).catch(() => {});
+
+      if (cbResult.tripped) {
+        console.warn(`[circuit-breaker] Agent ${agent.name} (id=${agent.id}) tripped after ${cbResult.consecutiveFailures} consecutive failures`);
+        await storage.addLog({
+          userId,
+          agentName: agent.name,
+          agentColor: agent.color,
+          operation: "circuit_breaker_tripped",
+          detail: `Agent marked as error after ${cbResult.consecutiveFailures} consecutive deliberation failures: ${errorMsg.slice(0, 100)}`,
+          latencyMs: null,
+        });
+      }
+
+      // Log the error to audit
+      await storage.addLog({
+        userId,
+        agentName: agent.name,
+        agentColor: agent.color,
+        operation: "deliberation_error",
+        detail: `${phase} r${round}: ${classified.category} — ${errorMsg.slice(0, 150)}`,
+        latencyMs: null,
       });
     }
   }
+
 
   // ── Human participant input ──
   if (includeHuman) {
@@ -765,7 +842,11 @@ async function collectPositions(
     }
   }
 
-  return { phase, round, positions, timestamp: Date.now() };
+  const roundResult: DeliberationRound = { phase, round, positions, timestamp: Date.now() };
+  if (roundErrors.length > 0) {
+    roundResult.errors = roundErrors;
+  }
+  return roundResult;
 }
 
 // ── Prompt Builder ────────────────────────────────────────────────
@@ -927,6 +1008,28 @@ function buildConsensus(
     votes,
     dissent,
   };
+}
+
+// ── Retry Error Logger ───────────────────────────────────────────
+
+function logRetryErrors(
+  errors: Array<{ attempt: number; error: ClassifiedError; willRetry: boolean }>,
+  agentId: number,
+  agentName: string,
+  sessionId?: string
+) {
+  for (const entry of errors) {
+    const log: AgentErrorLog = {
+      agentId,
+      agentName,
+      errorType: entry.error.category,
+      errorMessage: entry.error.message,
+      attemptNumber: entry.attempt + 1,
+      willRetry: entry.willRetry,
+      sessionId,
+    };
+    console.warn(formatErrorLog(log));
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

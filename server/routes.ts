@@ -397,6 +397,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   }));
 
+  // Reset agent error state (circuit breaker)
+  app.post("/api/agents/:id/reset", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = Number(req.params.id);
+    const ok = await storage.resetAgentError(agentId, userId);
+    if (!ok) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true, message: "Agent error state reset" });
+  }));
+
   app.delete("/api/agents/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });

@@ -47,7 +47,9 @@ export const agents = pgTable("agents", {
   agentType:     text("agent_type").notNull().default("internal"), // internal | webhook | polling
   webhookUrl:    text("webhook_url"),                          // webhook mode: POST target URL
   webhookSecret: text("webhook_secret"),                       // webhook mode: HMAC signing secret
-  status:        text("status").notNull().default("idle"),   // online | idle | offline
+  status:        text("status").notNull().default("idle"),   // online | idle | offline | error
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),  // circuit breaker counter
+  errorMessage:  text("error_message"),                        // last error reason (when status=error)
   memoriesCount: integer("memories_count").notNull().default(0),
   lastActiveAt:  bigint("last_active_at", { mode: "number" }),
   enabled:       boolean("enabled").notNull().default(true),
