@@ -15,11 +15,13 @@ import {
 import { randomBytes, createHash } from "crypto";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
+const isSSL = (process.env.DATABASE_URL || '').includes('sslmode=require');
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku",
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+  ...(isSSL ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
 export const db = drizzle(pool);
