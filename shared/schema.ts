@@ -63,7 +63,7 @@ export const memories = pgTable("memories", {
   agentId:   integer("agent_id"),
   agentName: text("agent_name"),
   content:   text("content").notNull(),
-  type:      text("type").notNull().default("semantic"),     // semantic | episodic | procedural | emotional
+  type:      text("type").notNull().default("semantic"),     // semantic | episodic | procedural | emotional | temporal | causal | contextual
   importance: real("importance").notNull().default(0.5),
   namespace: text("namespace"),
   embedding: text("embedding"),                              // JSON float[] from OpenAI
@@ -71,6 +71,15 @@ export const memories = pgTable("memories", {
   emotionalValence: real("emotional_valence"),               // -1.0 (negative) to 1.0 (positive)
   lastAccessedAt:   bigint("last_accessed_at", { mode: "number" }),
   accessCount:      integer("access_count").default(0),
+  // Phase 2: Confidence decay system
+  confidence:       real("confidence").default(1.0),         // 0.0-1.0, decays over time unless reinforced
+  decayRate:        real("decay_rate").default(0.01),        // rate per day
+  lastReinforcedAt: bigint("last_reinforced_at", { mode: "number" }),
+  reinforcements:   integer("reinforcements").default(0),
+  // Phase 2: Type-specific fields
+  expiresAt:        bigint("expires_at", { mode: "number" }),          // temporal memories
+  causeId:          integer("cause_id"),                                // causal memories — references another memory
+  contextTrigger:   text("context_trigger"),                           // contextual memories
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 

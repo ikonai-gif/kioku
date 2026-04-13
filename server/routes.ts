@@ -546,7 +546,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (memCounts.memories >= memLimits.memories) {
       return res.status(429).json({ error: `Plan limit reached: ${memLimits.memories} memories (${memPlan} plan)` });
     }
-    const { agentId, agentName, content, type, importance, namespace } = validateBody(createMemorySchema, req.body);
+    const { agentId, agentName, content, type, importance, namespace, confidence, decayRate, expiresAt, causeId, contextTrigger } = validateBody(createMemorySchema, req.body);
     // Generate embedding asynchronously — don't block response
     const embedding = await embedText(content);
     const mem = await storage.createMemory({
@@ -558,6 +558,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       importance: importance ?? 0.5,
       namespace: namespace ?? "default",
       embedding: embedding ? JSON.stringify(embedding) : null,
+      confidence: confidence ?? 1.0,
+      decayRate: decayRate ?? 0.01,
+      expiresAt: expiresAt ?? null,
+      causeId: causeId ?? null,
+      contextTrigger: contextTrigger ?? null,
     });
     // Log it
     await storage.addLog({
@@ -615,6 +620,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(data);
   }));
 
+  // GET single memory — also reinforces (bumps confidence clock)
+  app.get("/api/memories/:id", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const id = Number(req.params.id);
+    const mem = await storage.getMemory(id, userId);
+    if (!mem) return res.status(404).json({ error: "Not found" });
+    // Reinforce on read (fire-and-forget)
+    storage.reinforceMemory(id, userId).catch(() => {});
+    const includeEmbedding = req.query.include_embedding === "true";
+    const now = Date.now();
+    const { computeDecayedConfidence } = await import("./memory-decay");
+    const currentConfidence = computeDecayedConfidence(
+      (mem as any).confidence ?? 1.0,
+      (mem as any).decayRate ?? 0.01,
+      (mem as any).lastReinforcedAt,
+      mem.createdAt,
+      now
+    );
+    res.json(stripEmbedding({ ...mem, currentConfidence }, includeEmbedding));
+  }));
+
   app.delete("/api/memories/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -667,12 +694,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(result);
   }));
 
-  // ── Memory GC (forgetting curve pruning) ────────────────────
+  // ── Memory GC (forgetting curve + confidence pruning) ────────
   app.post("/api/memories/gc", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const threshold = req.body?.threshold ?? 0.05;
-    const result = await pruneDecayedMemories(storage.getPool(), userId, threshold);
+    const confidenceThreshold = req.body?.confidenceThreshold ?? 0.1;
+    const result = await pruneDecayedMemories(storage.getPool(), userId, threshold, confidenceThreshold);
     res.json(result);
   }));
 

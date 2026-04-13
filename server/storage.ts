@@ -14,7 +14,7 @@ import {
   type MagicToken, type InsertMagicToken,
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
-import { computeDecayedStrength } from "./memory-decay";
+import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const dbUrl = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku";
@@ -224,6 +224,22 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_delib_sessions_room ON kioku_deliberation_sessions(room_id);
     CREATE INDEX IF NOT EXISTS idx_delib_sessions_user ON kioku_deliberation_sessions(user_id);
   `);
+  // Phase 2: Memory Types Expansion + Confidence Decay
+  await pool.query(`
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence REAL DEFAULT 1.0;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS decay_rate REAL DEFAULT 0.01;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS last_reinforced_at BIGINT;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS reinforcements INTEGER DEFAULT 0;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS expires_at BIGINT;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS cause_id INTEGER;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS context_trigger TEXT;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_memories_expires_at ON memories(expires_at) WHERE expires_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_memories_cause_id ON memories(cause_id) WHERE cause_id IS NOT NULL;
+  `);
+  // Set last_reinforced_at for existing memories
+  await pool.query(`UPDATE memories SET last_reinforced_at = created_at WHERE last_reinforced_at IS NULL`);
 }
 
 function generateApiKey(): string {
@@ -390,8 +406,19 @@ export class Storage implements IStorage {
 
   // ── Memories ───────────────────────────────────────────────────────────────
   async getMemories(userId: number, limit = 100, offset = 0) {
-    return db.select().from(memories).where(eq(memories.userId, userId))
+    const results = await db.select().from(memories).where(eq(memories.userId, userId))
       .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit).offset(offset);
+    const now = Date.now();
+    return results.map((m: any) => ({
+      ...m,
+      currentConfidence: computeDecayedConfidence(
+        m.confidence ?? 1.0,
+        m.decayRate ?? 0.01,
+        m.lastReinforcedAt,
+        m.createdAt,
+        now
+      ),
+    }));
   }
   async searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string) {
     // Use pgvector for semantic search if embedding provided
@@ -423,7 +450,7 @@ export class Storage implements IStorage {
 
       const result = await pool.query(sqlQuery, params);
 
-      // Apply importance + decay scoring
+      // Apply importance + decay + confidence scoring
       const now = Date.now();
       const scored = result.rows
         .filter((r: any) => r.similarity >= 0.5)
@@ -436,18 +463,30 @@ export class Storage implements IStorage {
             r.access_count ?? 0,
             now
           );
+          const currentConfidence = computeDecayedConfidence(
+            r.confidence ?? 1.0,
+            r.decay_rate ?? 0.01,
+            r.last_reinforced_at ? Number(r.last_reinforced_at) : null,
+            Number(r.created_at),
+            now
+          );
           const combinedScore = r.similarity * 0.7 + (r.importance ?? 0.5) * 0.3;
-          const finalScore = combinedScore * decayedStrength;
-          return { ...r, similarity: r.similarity, score: finalScore };
+          const finalScore = combinedScore * decayedStrength * currentConfidence;
+          return { ...r, similarity: r.similarity, score: finalScore, currentConfidence };
         })
         .sort((a: any, b: any) => b.score - a.score)
         .slice(0, 20);
 
-      // Fire-and-forget: update access stats
+      // Fire-and-forget: update access stats + reinforce confidence
       if (scored.length > 0) {
         const ids = scored.map((s: any) => s.id);
         pool.query(
-          'UPDATE memories SET last_accessed_at = $1, access_count = COALESCE(access_count, 0) + 1 WHERE id = ANY($2)',
+          `UPDATE memories SET
+            last_accessed_at = $1,
+            access_count = COALESCE(access_count, 0) + 1,
+            last_reinforced_at = $1,
+            reinforcements = COALESCE(reinforcements, 0) + 1
+          WHERE id = ANY($2)`,
           [now, ids]
         ).catch(() => {});
       }
@@ -474,7 +513,15 @@ export class Storage implements IStorage {
     return result.rows;
   }
   async createMemory(data: InsertMemory): Promise<Memory> {
-    const [mem] = await db.insert(memories).values({ ...data, createdAt: Date.now() }).returning();
+    const now = Date.now();
+    const [mem] = await db.insert(memories).values({
+      ...data,
+      createdAt: now,
+      lastReinforcedAt: now,
+      confidence: data.confidence ?? 1.0,
+      decayRate: data.decayRate ?? 0.01,
+      reinforcements: 0,
+    }).returning();
 
     // Write embedding_vec for pgvector search
     if (data.embedding) {
@@ -502,6 +549,23 @@ export class Storage implements IStorage {
     }
     return mem;
   }
+  async getMemory(id: number, userId: number): Promise<Memory | undefined> {
+    return db.select().from(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).limit(1).then(r => r[0]);
+  }
+
+  async reinforceMemory(id: number, userId: number): Promise<void> {
+    const now = Date.now();
+    await pool.query(
+      `UPDATE memories SET
+        last_accessed_at = $1,
+        access_count = COALESCE(access_count, 0) + 1,
+        last_reinforced_at = $1,
+        reinforcements = COALESCE(reinforcements, 0) + 1
+      WHERE id = $2 AND user_id = $3`,
+      [now, id, userId]
+    );
+  }
+
   async deleteMemory(id: number, userId: number): Promise<boolean> {
     const result = await db.delete(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).returning();
     return result.length > 0;

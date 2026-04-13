@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Trash2, Brain, Plus, Download } from "lucide-react";
+import { Search, Trash2, Brain, Plus, Download, Clock, GitBranch, MapPin, Shield } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -14,6 +14,15 @@ const typeColors: Record<string, string> = {
   semantic: "bg-blue-400/10 text-blue-400",
   episodic: "bg-yellow-400/10 text-yellow-400",
   procedural: "bg-purple-400/10 text-purple-400",
+  temporal: "bg-cyan-400/10 text-cyan-400",
+  causal: "bg-orange-400/10 text-orange-400",
+  contextual: "bg-emerald-400/10 text-emerald-400",
+};
+
+const typeIcons: Record<string, React.ReactNode> = {
+  temporal: <Clock className="w-3 h-3" />,
+  causal: <GitBranch className="w-3 h-3" />,
+  contextual: <MapPin className="w-3 h-3" />,
 };
 
 function timeAgo(ts: number): string {
@@ -24,13 +33,27 @@ function timeAgo(ts: number): string {
   return `${Math.round(diff / 86400000)}d ago`;
 }
 
+function confidenceColor(confidence: number): string {
+  if (confidence >= 0.7) return "rgb(34 197 94)";   // green
+  if (confidence >= 0.4) return "rgb(245 158 11)";  // amber
+  return "rgb(239 68 68)";                            // red
+}
+
 export default function MemoryPage() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [filterType, setFilterType] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ content: "", type: "semantic", agentName: "", importance: "0.5" });
+  const [form, setForm] = useState({
+    content: "",
+    type: "semantic",
+    agentName: "",
+    importance: "0.5",
+    expiresAt: "",
+    causeId: "",
+    contextTrigger: "",
+  });
 
   // Debounce search
   const handleSearch = (v: string) => {
@@ -47,6 +70,17 @@ export default function MemoryPage() {
       // API returns { data: [...], pagination: {...} } — unwrap
       return Array.isArray(data) ? data : (data.data ?? []);
     },
+  });
+
+  // Fetch all memories for causal link picker
+  const { data: allMemories = [] } = useQuery<any[]>({
+    queryKey: ["/api/memories", "all-for-picker"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/memories?limit=200");
+      const data = await res.json();
+      return Array.isArray(data) ? data : (data.data ?? []);
+    },
+    enabled: creating && form.type === "causal",
   });
 
   const filteredMemories = filterType
@@ -68,10 +102,29 @@ export default function MemoryPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/memories"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       setCreating(false);
-      setForm({ content: "", type: "semantic", agentName: "", importance: "0.5" });
+      setForm({ content: "", type: "semantic", agentName: "", importance: "0.5", expiresAt: "", causeId: "", contextTrigger: "" });
       toast({ title: "Memory added" });
     },
   });
+
+  const handleCreate = () => {
+    const payload: any = {
+      content: form.content,
+      type: form.type,
+      agentName: form.agentName || null,
+      importance: parseFloat(form.importance),
+    };
+    if (form.type === "temporal" && form.expiresAt) {
+      payload.expiresAt = new Date(form.expiresAt).getTime();
+    }
+    if (form.type === "causal" && form.causeId) {
+      payload.causeId = parseInt(form.causeId);
+    }
+    if (form.type === "contextual" && form.contextTrigger) {
+      payload.contextTrigger = form.contextTrigger;
+    }
+    createMutation.mutate(payload);
+  };
 
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4 md:space-y-5">
@@ -89,9 +142,9 @@ export default function MemoryPage() {
             onClick={() => {
               const rows = (filteredMemories as any[]);
               if (!rows.length) return;
-              const header = "id,content,type,agentName,importance,createdAt";
+              const header = "id,content,type,agentName,importance,confidence,createdAt";
               const body = rows.map((m: any) =>
-                `${m.id},"${String(m.content).replace(/"/g, '""')}",${m.type},${m.agentName ?? ""},${m.importance},${new Date(m.createdAt).toISOString()}`
+                `${m.id},"${String(m.content).replace(/"/g, '""')}",${m.type},${m.agentName ?? ""},${m.importance},${(m.currentConfidence ?? m.confidence ?? 1).toFixed(3)},${new Date(m.createdAt).toISOString()}`
               ).join("\n");
               const blob = new Blob([header + "\n" + body], { type: "text/csv" });
               const url = URL.createObjectURL(blob);
@@ -135,7 +188,7 @@ export default function MemoryPage() {
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
         <Input
           type="search"
-          placeholder="Search memories…"
+          placeholder="Search memories..."
           value={search}
           onChange={e => handleSearch(e.target.value)}
           className="pl-9 h-9 text-sm"
@@ -184,38 +237,77 @@ export default function MemoryPage() {
       )}
 
       <div className="space-y-2">
-        {(filteredMemories as any[]).map((mem: any) => (
-          <div key={mem.id}
-            className="bg-card border border-card-border rounded-xl px-4 py-3 flex items-start gap-3 group hover:border-primary/30 transition-colors"
-            data-testid={`row-memory-${mem.id}`}
-          >
-            {/* importance bar */}
-            <div className="w-1 self-stretch rounded-full flex-shrink-0 mt-0.5"
-              style={{ background: `hsl(43 74% ${30 + Math.round(mem.importance * 40)}%)`, opacity: 0.5 + mem.importance * 0.5 }} />
-
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-foreground leading-relaxed">{mem.content}</p>
-              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", typeColors[mem.type] ?? "bg-muted text-muted-foreground")}>
-                  {mem.type}
-                </span>
-                {mem.agentName && (
-                  <span className="text-[10px] text-muted-foreground">{mem.agentName}</span>
-                )}
-                <span className="text-[10px] text-muted-foreground/60">{timeAgo(mem.createdAt)}</span>
-                <span className="text-[10px] text-muted-foreground/50" title="Importance score (0–1): higher = retrieved first">importance: {mem.importance.toFixed(2)}</span>
-              </div>
-            </div>
-
-            <button
-              className="opacity-30 group-hover:opacity-100 text-muted-foreground hover:text-red-400 transition-all p-1"
-              onClick={() => deleteMutation.mutate(mem.id)}
-              data-testid={`button-delete-memory-${mem.id}`}
+        {(filteredMemories as any[]).map((mem: any) => {
+          const conf = mem.currentConfidence ?? mem.confidence ?? 1.0;
+          return (
+            <div key={mem.id}
+              className="bg-card border border-card-border rounded-xl px-4 py-3 flex items-start gap-3 group hover:border-primary/30 transition-colors"
+              data-testid={`row-memory-${mem.id}`}
             >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        ))}
+              {/* importance bar */}
+              <div className="w-1 self-stretch rounded-full flex-shrink-0 mt-0.5"
+                style={{ background: `hsl(43 74% ${30 + Math.round(mem.importance * 40)}%)`, opacity: 0.5 + mem.importance * 0.5 }} />
+
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-foreground leading-relaxed">{mem.content}</p>
+                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                  <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1", typeColors[mem.type] ?? "bg-muted text-muted-foreground")}>
+                    {typeIcons[mem.type] ?? null}
+                    {mem.type}
+                  </span>
+                  {mem.agentName && (
+                    <span className="text-[10px] text-muted-foreground">{mem.agentName}</span>
+                  )}
+                  <span className="text-[10px] text-muted-foreground/60">{timeAgo(mem.createdAt)}</span>
+                  <span className="text-[10px] text-muted-foreground/50" title="Importance score (0-1): higher = retrieved first">importance: {mem.importance.toFixed(2)}</span>
+
+                  {/* Confidence indicator */}
+                  <span className="inline-flex items-center gap-1 text-[10px]" title={`Confidence: ${(conf * 100).toFixed(0)}% | Reinforced ${mem.reinforcements ?? 0}x`}>
+                    <Shield className="w-3 h-3" style={{ color: confidenceColor(conf) }} />
+                    <span style={{ color: confidenceColor(conf) }}>{(conf * 100).toFixed(0)}%</span>
+                  </span>
+
+                  {/* Type-specific metadata */}
+                  {mem.type === "temporal" && mem.expiresAt && (
+                    <span className="text-[10px] text-cyan-400/70">
+                      expires {new Date(mem.expiresAt).toLocaleDateString()}
+                    </span>
+                  )}
+                  {mem.type === "causal" && mem.causeId && (
+                    <span className="text-[10px] text-orange-400/70">
+                      cause: #{mem.causeId}
+                    </span>
+                  )}
+                  {mem.type === "contextual" && mem.contextTrigger && (
+                    <span className="text-[10px] text-emerald-400/70 truncate max-w-[120px]" title={mem.contextTrigger}>
+                      trigger: {mem.contextTrigger}
+                    </span>
+                  )}
+                </div>
+
+                {/* Confidence decay bar */}
+                <div className="mt-2 w-full h-1 rounded-full bg-muted/30 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.max(2, conf * 100)}%`,
+                      background: confidenceColor(conf),
+                      opacity: 0.4 + conf * 0.6,
+                    }}
+                  />
+                </div>
+              </div>
+
+              <button
+                className="opacity-30 group-hover:opacity-100 text-muted-foreground hover:text-red-400 transition-all p-1"
+                onClick={() => deleteMutation.mutate(mem.id)}
+                data-testid={`button-delete-memory-${mem.id}`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          );
+        })}
       </div>
 
       {/* Add memory dialog */}
@@ -247,11 +339,14 @@ export default function MemoryPage() {
                     <SelectItem value="semantic">semantic</SelectItem>
                     <SelectItem value="episodic">episodic</SelectItem>
                     <SelectItem value="procedural">procedural</SelectItem>
+                    <SelectItem value="temporal">temporal</SelectItem>
+                    <SelectItem value="causal">causal</SelectItem>
+                    <SelectItem value="contextual">contextual</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Importance (0–1)</label>
+                <label className="text-xs font-medium">Importance (0-1)</label>
                 <Input
                   type="number"
                   min="0" max="1" step="0.1"
@@ -261,6 +356,52 @@ export default function MemoryPage() {
                 />
               </div>
             </div>
+
+            {/* Conditional fields for new types */}
+            {form.type === "temporal" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">Expires At</label>
+                <Input
+                  type="datetime-local"
+                  value={form.expiresAt}
+                  onChange={e => setForm(f => ({ ...f, expiresAt: e.target.value }))}
+                  className="h-9 text-sm"
+                  data-testid="input-memory-expires-at"
+                />
+              </div>
+            )}
+
+            {form.type === "causal" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">Cause Memory (link to another memory)</label>
+                <Select value={form.causeId} onValueChange={v => setForm(f => ({ ...f, causeId: v }))}>
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue placeholder="Select a cause memory..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(allMemories as any[]).map((m: any) => (
+                      <SelectItem key={m.id} value={String(m.id)}>
+                        #{m.id} - {m.content.slice(0, 50)}{m.content.length > 50 ? "..." : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {form.type === "contextual" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">Context Trigger</label>
+                <Input
+                  placeholder="e.g. in meetings with CEO, always mention..."
+                  value={form.contextTrigger}
+                  onChange={e => setForm(f => ({ ...f, contextTrigger: e.target.value }))}
+                  className="h-9 text-sm"
+                  data-testid="input-memory-context-trigger"
+                />
+              </div>
+            )}
+
             <div className="space-y-1.5">
               <label className="text-xs font-medium">Agent Name (optional)</label>
               <Input
@@ -273,16 +414,11 @@ export default function MemoryPage() {
             <Button
               className="w-full h-9 text-sm"
               style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
-              onClick={() => createMutation.mutate({
-                content: form.content,
-                type: form.type,
-                agentName: form.agentName || null,
-                importance: parseFloat(form.importance),
-              })}
+              onClick={handleCreate}
               disabled={!form.content || createMutation.isPending}
               data-testid="button-create-memory-submit"
             >
-              {createMutation.isPending ? "Saving…" : "Save Memory"}
+              {createMutation.isPending ? "Saving..." : "Save Memory"}
             </Button>
           </div>
         </DialogContent>

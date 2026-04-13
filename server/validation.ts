@@ -58,10 +58,17 @@ export const createMemorySchema = z.object({
   content: z.string().min(1).max(50000),
   agentId: z.number().nullable().optional(),
   agentName: z.string().max(100).nullable().optional(),
-  type: z.enum(["semantic", "episodic", "procedural", "emotional"]).optional(),
+  type: z.enum(["semantic", "episodic", "procedural", "emotional", "temporal", "causal", "contextual"]).optional(),
   importance: z.number().min(0).max(1).optional(),
   namespace: z.string().max(100).optional(),
   room_id: z.union([z.string(), z.number()]).optional(),
+  // Phase 2: Confidence decay
+  confidence: z.number().min(0).max(1).optional(),
+  decayRate: z.number().min(0).max(1).optional(),
+  // Phase 2: Type-specific fields
+  expiresAt: z.number().optional(),        // temporal memories
+  causeId: z.number().int().optional(),     // causal memories
+  contextTrigger: z.string().max(500).optional(), // contextual memories
 });
 
 export const purgeMemoriesSchema = z.object({
