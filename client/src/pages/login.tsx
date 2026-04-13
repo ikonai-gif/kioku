@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "../App";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,7 @@ function KiokuLogo({ size = 56 }: { size?: number }) {
   );
 }
 
-type Step = "email" | "token";
+type Step = "email" | "token" | "auto-verify";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -32,6 +32,38 @@ export default function LoginPage() {
   const [token, setToken] = useState("");
   const [loading, setLoading] = useState(false);
   const [demoToken, setDemoToken] = useState<string | null>(null);
+  const [autoError, setAutoError] = useState<string | null>(null);
+
+  // Auto-verify: if URL contains token (from magic link email), log in automatically
+  useEffect(() => {
+    const hash = window.location.hash || "";
+    const hashQuery = hash.split("?")[1] || "";
+    const params = new URLSearchParams(hashQuery || window.location.search.slice(1));
+    const urlToken = params.get("token");
+    if (!urlToken) return;
+
+    setStep("auto-verify");
+    fetch("/api/auth/verify-magic-link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: urlToken }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.sessionToken) {
+          login(data.sessionToken, data.user);
+          // Clean up URL hash
+          window.location.hash = "#/";
+        } else {
+          setAutoError(data.error || "Link expired or invalid. Please request a new one.");
+          setStep("email");
+        }
+      })
+      .catch(() => {
+        setAutoError("Network error. Please try again.");
+        setStep("email");
+      });
+  }, []);
 
   function handleQuickDemo() {
     login("demo-session", {
@@ -56,7 +88,7 @@ export default function LoginPage() {
       if (!res.ok) throw new Error(data.error);
       setDemoToken(data.token); // demo only
       setStep("token");
-      toast({ title: "Magic link sent", description: "Check your email (demo: token shown below)" });
+      toast({ title: "Magic link sent", description: "Check your email and click the link to sign in" });
     } catch (e: any) {
       toast({ title: "Error", description: e.message, variant: "destructive" });
     } finally {
@@ -99,7 +131,17 @@ export default function LoginPage() {
 
         {/* Card */}
         <div className="bg-card border border-card-border rounded-xl p-6 shadow-lg">
-          {step === "email" ? (
+          {autoError && (
+            <div className="mb-4 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+              <p className="text-xs text-destructive">{autoError}</p>
+            </div>
+          )}
+          {step === "auto-verify" ? (
+            <div className="flex flex-col items-center gap-3 py-6">
+              <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-muted-foreground">Signing you in...</p>
+            </div>
+          ) : step === "email" ? (
             <div className="space-y-4">
               <div>
                 <h2 className="text-sm font-semibold text-foreground mb-1">Sign in</h2>
