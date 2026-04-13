@@ -36,39 +36,15 @@ function isGeminiModel(model: string): boolean {
 }
 
 /**
- * Call appropriate LLM based on model name.
- * Returns the text response.
+ * Call OpenAI LLM directly.
  */
-async function callLLM(
+async function callOpenAI(
   model: string,
   systemPrompt: string,
   userMessage: string,
-  options?: { maxTokens?: number; temperature?: number }
+  maxTokens: number,
+  temperature: number
 ): Promise<string> {
-  const maxTokens = options?.maxTokens ?? 400;
-  const temperature = options?.temperature ?? 0.7;
-
-  if (isGeminiModel(model)) {
-    if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: userMessage }] }],
-        generationConfig: { maxOutputTokens: maxTokens, temperature },
-      }),
-    });
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`Gemini ${model} error ${resp.status}: ${err.slice(0, 200)}`);
-    }
-    const data = await resp.json() as any;
-    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-  }
-
-  // OpenAI models
   if (!openai) throw new Error("OPENAI_API_KEY not configured");
   const completion = await openai.chat.completions.create({
     model,
@@ -80,6 +56,82 @@ async function callLLM(
     ],
   });
   return completion.choices[0]?.message?.content?.trim() || "";
+}
+
+/**
+ * Call Gemini LLM directly.
+ */
+async function callGemini(
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens: number,
+  temperature: number
+): Promise<string> {
+  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: "user", parts: [{ text: userMessage }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature },
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Gemini ${model} error ${resp.status}: ${err.slice(0, 200)}`);
+  }
+  const data = await resp.json() as any;
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+}
+
+const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
+
+/**
+ * Call appropriate LLM based on model name, with provider fallback.
+ * If the primary provider fails, falls back to the other provider.
+ */
+async function callLLM(
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  options?: { maxTokens?: number; temperature?: number }
+): Promise<string> {
+  const maxTokens = options?.maxTokens ?? 400;
+  const temperature = options?.temperature ?? 0.7;
+
+  if (isGeminiModel(model)) {
+    try {
+      return await callGemini(model, systemPrompt, userMessage, maxTokens, temperature);
+    } catch (err: any) {
+      if (!openai) {
+        throw new Error(`All AI providers failed. Gemini: ${err.message}`);
+      }
+      console.warn(`[deliberation] Gemini failed, falling back to OpenAI:`, err.message);
+      try {
+        return await callOpenAI(DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature);
+      } catch (openaiErr: any) {
+        throw new Error(`All AI providers failed. Gemini: ${err.message}, OpenAI: ${openaiErr.message}`);
+      }
+    }
+  }
+
+  // OpenAI models — try OpenAI first, fall back to Gemini
+  try {
+    return await callOpenAI(model, systemPrompt, userMessage, maxTokens, temperature);
+  } catch (err: any) {
+    if (!GEMINI_API_KEY) {
+      throw new Error(`All AI providers failed. OpenAI: ${err.message}`);
+    }
+    console.warn(`[deliberation] OpenAI failed, falling back to Gemini:`, err.message);
+    try {
+      return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature);
+    } catch (geminiErr: any) {
+      throw new Error(`All AI providers failed. OpenAI: ${err.message}, Gemini: ${geminiErr.message}`);
+    }
+  }
 }
 
 // ── Webhook Dispatcher ─────────────────────────────────────────────
@@ -195,7 +247,7 @@ export async function runDeliberation(
   topic: string,
   options?: { model?: string; debateRounds?: number }
 ): Promise<DeliberationSession> {
-  if (!openai) throw new Error("OpenAI API key not configured");
+  if (!openai && !GEMINI_API_KEY) throw new Error("No AI provider configured (set OPENAI_API_KEY or GEMINI_API_KEY)");
   if (activeSessions.has(roomId)) throw new Error("Deliberation already running in this room");
 
   activeSessions.add(roomId);
