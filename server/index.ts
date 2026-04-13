@@ -188,6 +188,11 @@ app.use((req, res, next) => {
     });
   });
 
+  // ── API 404 catch-all — return JSON for unknown /api/* routes ──────
+  app.all('/api/{*path}', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'Not found', code: 'NOT_FOUND', status: 404 });
+  });
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
