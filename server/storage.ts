@@ -909,6 +909,112 @@ export class Storage implements IStorage {
     return true;
   }
 
+  // ── GDPR Art. 17: Full account deletion ─────────────────────────────────
+  async deleteAccount(userId: number): Promise<void> {
+    // Delete in order respecting foreign key dependencies
+    // 1. Memory links (references memories)
+    await pool.query('DELETE FROM memory_links WHERE user_id = $1', [userId]);
+    // 2. Memories
+    await pool.query('DELETE FROM memories WHERE user_id = $1', [userId]);
+    // 3. Room messages (references rooms)
+    await pool.query('DELETE FROM room_messages WHERE room_id IN (SELECT id FROM rooms WHERE user_id = $1)', [userId]);
+    // 4. Rooms
+    await pool.query('DELETE FROM rooms WHERE user_id = $1', [userId]);
+    // 5. Agents
+    await pool.query('DELETE FROM agents WHERE user_id = $1', [userId]);
+    // 6. Flows
+    await pool.query('DELETE FROM flows WHERE user_id = $1', [userId]);
+    // 7. Logs
+    await pool.query('DELETE FROM logs WHERE user_id = $1', [userId]);
+    // 8. Deliberation sessions
+    await pool.query('DELETE FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]);
+    // 9. Agent tokens
+    await pool.query('DELETE FROM kioku_agent_tokens WHERE user_id = $1', [userId]);
+    // 10. Webhooks
+    await pool.query('DELETE FROM kioku_webhooks WHERE user_id = $1', [userId]);
+    // 11. Magic tokens (keyed by email, resolve from user)
+    const userRow = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+    if (userRow.rows[0]?.email) {
+      await pool.query('DELETE FROM magic_tokens WHERE email = $1', [userRow.rows[0].email]);
+    }
+    // 12. User record
+    await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+  }
+
+  // ── GDPR Art. 20: Full data export ─────────────────────────────────────────
+  async exportAllUserData(userId: number): Promise<any> {
+    const [user, memoriesData, agentsData, roomsData, messagesData, flowsData, logsData, deliberations, webhooks, tokens] = await Promise.all([
+      pool.query('SELECT id, email, name, plan, created_at FROM users WHERE id = $1', [userId]),
+      pool.query('SELECT id, content, type, importance, namespace, created_at, strength, emotional_valence FROM memories WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, name, description, status, created_at FROM agents WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, name, description, created_at FROM rooms WHERE user_id = $1', [userId]),
+      pool.query('SELECT rm.id, rm.content, rm.agent_name, rm.created_at, rm.room_id FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1', [userId]),
+      pool.query('SELECT id, name, description, created_at FROM flows WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, operation, detail, created_at FROM logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1000', [userId]),
+      pool.query('SELECT id, room_id, topic, status, created_at FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
+    ]);
+
+    return {
+      exportDate: new Date().toISOString(),
+      user: user.rows[0] || null,
+      memories: memoriesData.rows,
+      agents: agentsData.rows,
+      rooms: roomsData.rows,
+      messages: messagesData.rows,
+      flows: flowsData.rows,
+      activityLogs: logsData.rows,
+      deliberationSessions: deliberations.rows,
+      webhooks: webhooks.rows,
+      agentTokens: tokens.rows,
+    };
+  }
+
+  // ── Request log retention ──────────────────────────────────────────────────
+  async purgeOldRequestLogs(retentionDays: number = 90): Promise<number> {
+    const cutoff = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+    const result = await pool.query(
+      'DELETE FROM kioku_request_logs WHERE timestamp < $1',
+      [cutoff]
+    );
+    return result.rowCount || 0;
+  }
+
+  // ── Per-user resource counts ───────────────────────────────────────────────
+  async getUserResourceCounts(userId: number): Promise<{ agents: number; memories: number; rooms: number; flows: number }> {
+    const [agentsCount, memoriesCount, roomsCount, flowsCount] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int as count FROM agents WHERE user_id = $1', [userId]),
+      pool.query('SELECT COUNT(*)::int as count FROM memories WHERE user_id = $1 AND COALESCE(strength, 1) > 0', [userId]),
+      pool.query('SELECT COUNT(*)::int as count FROM rooms WHERE user_id = $1', [userId]),
+      pool.query('SELECT COUNT(*)::int as count FROM flows WHERE user_id = $1', [userId]),
+    ]);
+    return {
+      agents: agentsCount.rows[0]?.count || 0,
+      memories: memoriesCount.rows[0]?.count || 0,
+      rooms: roomsCount.rows[0]?.count || 0,
+      flows: flowsCount.rows[0]?.count || 0,
+    };
+  }
+
+  async getUserPlan(userId: number): Promise<string> {
+    const result = await pool.query('SELECT plan FROM users WHERE id = $1', [userId]);
+    return result.rows[0]?.plan || 'free';
+  }
+
+  // ── AI usage tracking ──────────────────────────────────────────────────────
+  async checkAIUsage(userId: number, plan: string, dailyCalls: number): Promise<{ allowed: boolean; used: number; limit: number }> {
+    // Count today's deliberation-related calls from request_logs
+    // kioku_request_logs has no user_id, so we count via the deliberation_sessions table
+    const result = await pool.query(
+      `SELECT COUNT(*)::int as count FROM kioku_deliberation_sessions
+       WHERE user_id = $1 AND started_at > $2`,
+      [userId, Date.now() - 86400000]
+    );
+    const used = result.rows[0]?.count || 0;
+    return { allowed: used < dailyCalls, used, limit: dailyCalls };
+  }
+
   private mapDelibRow(row: any) {
     return {
       sessionId: row.id,

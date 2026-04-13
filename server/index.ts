@@ -227,6 +227,24 @@ app.use((req, res, next) => {
   // Start internal watchdog monitor
   startMonitor();
 
+  // Auto-purge old request logs every 24 hours (GDPR compliance)
+  setInterval(async () => {
+    try {
+      const purged = await storage.purgeOldRequestLogs(90);
+      if (purged > 0) console.log(`[GC] Purged ${purged} request logs older than 90 days`);
+    } catch (err) {
+      console.error('[GC] Request log purge error:', err);
+    }
+  }, 24 * 60 * 60 * 1000);
+
+  // Also run once on startup (with delay)
+  setTimeout(async () => {
+    try {
+      const purged = await storage.purgeOldRequestLogs(90);
+      if (purged > 0) console.log(`[GC] Startup purge: ${purged} old request logs removed`);
+    } catch { /* ignore startup errors */ }
+  }, 60000);
+
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.

@@ -12,6 +12,7 @@ import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
 import { checkRegistrationLimit, checkAuthRateLimit } from "./ratelimit";
+import { getLimits, AI_QUOTAS } from "./limits";
 import { consolidateMemories } from "./memory-consolidation";
 import { pruneDecayedMemories } from "./memory-gc";
 import {
@@ -252,6 +253,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   }));
 
+  // ── GDPR Art. 17: Full account deletion ───────────────────────
+  app.delete("/api/account", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    await storage.deleteAccount(userId);
+
+    // Clear session cookie
+    res.clearCookie(COOKIE_NAME, { path: "/" });
+    res.json({ ok: true, message: "Account and all associated data deleted" });
+  }));
+
+  // ── GDPR Art. 20: Full data export ────────────────────────────
+  app.get("/api/account/export", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const data = await storage.exportAllUserData(userId);
+    res.json(data);
+  }));
+
   // ── Stats ─────────────────────────────────────────────────────
   app.get("/api/stats", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
@@ -273,6 +295,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/agents", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const [plan, counts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const limits = getLimits(plan);
+    if (counts.agents >= limits.agents) {
+      return res.status(429).json({ error: `Plan limit reached: ${limits.agents} agents (${plan} plan)` });
+    }
     const { name, description, color } = validateBody(createAgentSchema, req.body);
     const agent = await storage.createAgent({
       userId,
@@ -447,6 +477,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/memories", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const [memPlan, memCounts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const memLimits = getLimits(memPlan);
+    if (memCounts.memories >= memLimits.memories) {
+      return res.status(429).json({ error: `Plan limit reached: ${memLimits.memories} memories (${memPlan} plan)` });
+    }
     const { agentId, agentName, content, type, importance, namespace } = validateBody(createMemorySchema, req.body);
     // Generate embedding asynchronously — don't block response
     const embedding = await embedText(content);
@@ -586,6 +624,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/flows", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const [flowPlan, flowCounts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const flowLimits = getLimits(flowPlan);
+    if (flowCounts.flows >= flowLimits.flows) {
+      return res.status(429).json({ error: `Plan limit reached: ${flowLimits.flows} flows (${flowPlan} plan)` });
+    }
     const { name, description, agentIds, positions } = validateBody(createFlowSchema, req.body);
     const flow = await storage.createFlow({
       userId,
@@ -630,6 +676,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rooms", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const [roomPlan, roomCounts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const roomLimits = getLimits(roomPlan);
+    if (roomCounts.rooms >= roomLimits.rooms) {
+      return res.status(429).json({ error: `Plan limit reached: ${roomLimits.rooms} rooms (${roomPlan} plan)` });
+    }
     const { name, description, agentIds } = validateBody(createRoomSchema, req.body);
     const room = await storage.createRoom({
       userId,
@@ -975,6 +1029,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Verify room belongs to user
     const roomCheck = await storage.getRoom(roomId, userId);
     if (!roomCheck) return res.status(404).json({ error: "Not found" });
+    // AI quota check
+    const deliberatePlan = await storage.getUserPlan(userId);
+    const quota = AI_QUOTAS[deliberatePlan] || AI_QUOTAS.free;
+    const aiCheck = await storage.checkAIUsage(userId, deliberatePlan, quota.dailyCalls);
+    if (!aiCheck.allowed) {
+      return res.status(429).json({
+        error: `Daily AI quota exceeded: ${aiCheck.used}/${aiCheck.limit} calls (${deliberatePlan} plan)`
+      });
+    }
     const { topic, model, debateRounds } = validateBody(deliberateSchema, req.body);
     try {
       const session = await runDeliberation(roomId, userId, topic, {

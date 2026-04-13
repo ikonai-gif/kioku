@@ -9,23 +9,20 @@ import type { Request, Response, NextFunction, Express } from "express";
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  "https://usekioku.com",
-  "https://www.usekioku.com",
-  "https://kioku-production.up.railway.app",
-  // local dev
-  "http://localhost:5000",
-  "http://localhost:3000",
-  "http://127.0.0.1:5000",
+  'https://kioku-production.up.railway.app',
+  'https://usekioku.com',
+  'https://www.usekioku.com',
+  // Development
+  ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5000'] : []),
 ];
 
 export const corsMiddleware = cors({
   origin: (origin, callback) => {
-    // Allow no-origin requests (curl, Postman, server-to-server)
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    // Allow Railway preview URLs
-    if (origin.endsWith(".up.railway.app")) return callback(null, true);
-    callback(new Error(`CORS: origin '${origin}' not allowed`));
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS not allowed'));
+    }
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
