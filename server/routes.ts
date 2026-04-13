@@ -454,15 +454,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(mem);
   }));
 
-  app.delete("/api/memories/:id", asyncHandler(async (req, res) => {
-    const userId = await getUser(req);
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const deleted = await storage.deleteMemory(Number(req.params.id), userId);
-    if (!deleted) return res.status(404).json({ error: "Not found" });
-    res.json({ ok: true });
-  }));
-
   // ── GDPR: Purge (Art. 17) ──────────────────────────────────────
+  // NOTE: must be registered before /api/memories/:id to avoid Express matching "purge" as :id
   app.delete("/api/memories/purge", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -483,6 +476,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // ── GDPR: Export (Art. 20) ──────────────────────────────────────
+  // NOTE: must be registered before /api/memories/:id to avoid Express matching "export" as :id
   app.get("/api/memories/export", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -490,6 +484,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.setHeader("Content-Disposition", 'attachment; filename="kioku-export.json"');
     res.setHeader("Content-Type", "application/json");
     res.json(data);
+  }));
+
+  app.delete("/api/memories/:id", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const deleted = await storage.deleteMemory(Number(req.params.id), userId);
+    if (!deleted) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
   }));
 
   // ── Flows ─────────────────────────────────────────────────────
