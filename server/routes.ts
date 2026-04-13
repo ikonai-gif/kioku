@@ -454,6 +454,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // ── GDPR: Purge (Art. 17) ──────────────────────────────────────
+  app.delete("/api/memories/purge", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { scope, agent_id } = req.body ?? {};
+    if (!scope || !['all', 'agent'].includes(scope)) {
+      return res.status(400).json({ error: "scope must be 'all' or 'agent'" });
+    }
+    if (scope === 'agent' && !agent_id) {
+      return res.status(400).json({ error: "agent_id required when scope is 'agent'" });
+    }
+    const deleted = await storage.purgeMemories(userId, scope, agent_id);
+    await storage.addLog({
+      userId,
+      agentName: "System",
+      agentColor: "#D4AF37",
+      operation: "purge",
+      detail: `GDPR purge: scope=${scope}${agent_id ? ` agent_id=${agent_id}` : ''}, deleted=${deleted}`,
+      latencyMs: null,
+    });
+    res.json({ ok: true, deleted });
+  });
+
+  // ── GDPR: Export (Art. 20) ──────────────────────────────────────
+  app.get("/api/memories/export", async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const data = await storage.exportMemories(userId);
+    res.setHeader("Content-Disposition", 'attachment; filename="kioku-export.json"');
+    res.setHeader("Content-Type", "application/json");
+    res.json(data);
+  });
+
   // ── Flows ─────────────────────────────────────────────────────
   app.get("/api/flows", async (req, res) => {
     const userId = await getUser(req);

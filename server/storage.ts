@@ -234,6 +234,8 @@ export interface IStorage {
   searchMemories(userId: number, query: string, queryEmbedding?: number[]): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
   deleteMemory(id: number, userId: number): Promise<boolean>;
+  purgeMemories(userId: number, scope: 'all' | 'agent', agentId?: string): Promise<number>;
+  exportMemories(userId: number): Promise<any[]>;
   getMemoriesCount(userId: number): Promise<number>;
 
   getFlows(userId: number): Promise<Flow[]>;
@@ -398,6 +400,29 @@ export class Storage implements IStorage {
     const result = await db.delete(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).returning();
     return result.length > 0;
   }
+  async purgeMemories(userId: number, scope: 'all' | 'agent', agentId?: string): Promise<number> {
+    if (scope === 'agent' && agentId) {
+      const result = await db.delete(memories).where(sql`${memories.userId} = ${userId} AND ${memories.agentId} = ${Number(agentId)}`).returning();
+      return result.length;
+    }
+    const result = await db.delete(memories).where(eq(memories.userId, userId)).returning();
+    return result.length;
+  }
+
+  async exportMemories(userId: number): Promise<any[]> {
+    const all = await db.select({
+      id: memories.id,
+      content: memories.content,
+      type: memories.type,
+      importance: memories.importance,
+      agentId: memories.agentId,
+      agentName: memories.agentName,
+      namespace: memories.namespace,
+      createdAt: memories.createdAt,
+    }).from(memories).where(eq(memories.userId, userId)).orderBy(desc(memories.createdAt));
+    return all;
+  }
+
   async getMemoriesCount(userId: number) {
     const result = await pool.query<{ count: string }>(
       "SELECT COUNT(*) as count FROM memories WHERE user_id = $1", [userId]
