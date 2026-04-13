@@ -14,8 +14,30 @@
  */
 
 import type { Express, Request, Response } from "express";
+import { z } from "zod";
 import { storage } from "./storage";
 import { embedText } from "./embeddings";
+import { safeCompare } from "./index";
+
+// MCP tool argument validation schemas
+const mcpStoreMemorySchema = z.object({
+  content: z.string().min(1).max(50000),
+  type: z.enum(["semantic", "episodic", "procedural", "emotional"]).optional(),
+  importance: z.number().min(0).max(1).optional(),
+  namespace: z.string().max(100).optional(),
+  agentName: z.string().max(100).optional(),
+});
+
+const mcpSearchMemorySchema = z.object({
+  query: z.string().min(1).max(1000),
+  namespace: z.string().max(100).optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+});
+
+const mcpListMemoriesSchema = z.object({
+  limit: z.number().int().min(1).max(100).optional(),
+  namespace: z.string().max(100).optional(),
+});
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -114,7 +136,7 @@ async function resolveUserId(req: Request): Promise<number | null> {
   if (!key) return null;
   // Master key from env
   const masterKey = process.env.KIOKU_MASTER_KEY;
-  if (masterKey && key === masterKey) return 1;
+  if (masterKey && safeCompare(key, masterKey)) return 1;
   // lookup by API key
   const user = await storage.getUserByApiKey(key);
   return user?.id ?? null;
@@ -175,15 +197,16 @@ export function registerMcp(app: Express) {
 
         switch (toolName) {
           case "kioku_store_memory": {
+            const validatedArgs = mcpStoreMemorySchema.parse(args);
             const mem = await storage.createMemory({
               userId,
               agentId: null,
-              agentName: (args.agentName as string) ?? "MCP Agent",
-              content: args.content as string,
-              type: (args.type as string) ?? "semantic",
-              importance: typeof args.importance === "number" ? args.importance : 0.7,
-              namespace: (args.namespace as string) ?? "default",
-              embedding: await embedText(args.content as string).then(
+              agentName: validatedArgs.agentName ?? "MCP Agent",
+              content: validatedArgs.content,
+              type: validatedArgs.type ?? "semantic",
+              importance: validatedArgs.importance ?? 0.7,
+              namespace: validatedArgs.namespace ?? "default",
+              embedding: await embedText(validatedArgs.content).then(
                 (v) => (v ? JSON.stringify(v) : null)
               ),
             });
@@ -192,11 +215,11 @@ export function registerMcp(app: Express) {
           }
 
           case "kioku_search_memory": {
-            const query = args.query as string;
-            const embedding = await embedText(query);
-            const results = await storage.searchMemories(userId, query, embedding ?? undefined);
-            const filtered = args.namespace
-              ? results.filter((m) => m.namespace === args.namespace)
+            const validatedArgs = mcpSearchMemorySchema.parse(args);
+            const embedding = await embedText(validatedArgs.query);
+            const results = await storage.searchMemories(userId, validatedArgs.query, embedding ?? undefined);
+            const filtered = validatedArgs.namespace
+              ? results.filter((m) => m.namespace === validatedArgs.namespace)
               : results;
             content = filtered.length === 0
               ? "No memories found."
@@ -217,9 +240,10 @@ export function registerMcp(app: Express) {
           }
 
           case "kioku_list_memories": {
+            const validatedArgs = mcpListMemoriesSchema.parse(args);
             const mems = await storage.getMemories(userId);
-            const filtered = args.namespace
-              ? mems.filter((m) => m.namespace === args.namespace)
+            const filtered = validatedArgs.namespace
+              ? mems.filter((m) => m.namespace === validatedArgs.namespace)
               : mems;
             const slice = filtered.slice(0, 50);
             content = slice.length === 0
@@ -241,6 +265,9 @@ export function registerMcp(app: Express) {
           })
         );
       } catch (err: any) {
+        if (err instanceof z.ZodError) {
+          return res.json(rpcErr(id, -32602, `Invalid params: ${err.issues.map(i => i.message).join("; ")}`));
+        }
         return res.json(rpcErr(id, -32000, err?.message ?? "Internal error"));
       }
     }

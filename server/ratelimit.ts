@@ -83,12 +83,8 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
   // Skip non-API routes and health
   if (!req.path.startsWith("/api") || req.path === "/health") return next();
 
-  // Skip waitlist and auth endpoints — they're public
-  if (
-    req.path.startsWith("/api/auth") ||
-    req.path === "/api/waitlist" ||
-    req.path.startsWith("/api/billing/webhook")
-  ) {
+  // Skip only billing webhooks (Stripe signature verification handles auth)
+  if (req.path.startsWith("/api/billing/webhook")) {
     return next();
   }
 
@@ -175,6 +171,29 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
   });
 }
 
+// Auth-specific rate limiting (per-endpoint, keyed by email or IP)
+const authRateLimits = new Map<string, { count: number; resetAt: number }>();
+
+export function checkAuthRateLimit(key: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entry = authRateLimits.get(key);
+  if (!entry || now > entry.resetAt) {
+    authRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= maxRequests) return false;
+  entry.count++;
+  return true;
+}
+
+// Clean up auth rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of Array.from(authRateLimits.entries())) {
+    if (now > v.resetAt) authRateLimits.delete(k);
+  }
+}, 300_000);
+
 // Registration rate limiter: 3 per hour per IP
 const registrationWindows = new Map<string, { count: number; windowStart: number }>();
 
@@ -212,7 +231,7 @@ async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<
     try {
       const jwt = await import("jsonwebtoken");
       const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
-      const payload = jwt.default.verify(sessionToken, JWT_SECRET) as { userId: number };
+      const payload = jwt.default.verify(sessionToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       if (payload.userId) {
         const user = await storage.getUserById(payload.userId);
         if (user) return user.plan || "dev";

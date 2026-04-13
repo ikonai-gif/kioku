@@ -110,10 +110,17 @@ export const createRoomMessageSchema = z.object({
 });
 
 // ── Deliberation schemas ────────────────────────────────────────────────────────
+const ALLOWED_MODELS = [
+  // OpenAI models
+  "gpt-5.4-mini", "gpt-5.4", "gpt-5.4-nano", "gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o",
+  // Gemini models
+  "gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.1-pro",
+] as const;
+
 export const deliberateSchema = z.object({
   topic: z.string().min(1).max(2000),
-  model: z.string().max(50).optional(),
-  debateRounds: z.number().int().min(1).max(10).optional(),
+  model: z.enum(ALLOWED_MODELS).optional(),
+  debateRounds: z.number().int().min(1).max(5).optional(),
 });
 
 // ── Webhook schemas ─────────────────────────────────────────────────────────────

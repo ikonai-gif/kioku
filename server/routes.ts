@@ -10,7 +10,8 @@ import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
-import { checkRegistrationLimit } from "./ratelimit";
+import { safeCompare } from "./index";
+import { checkRegistrationLimit, checkAuthRateLimit } from "./ratelimit";
 import {
   validateBody, ValidationError,
   magicLinkSchema, verifyTokenSchema,
@@ -97,7 +98,7 @@ function getSessionUser(req: any): number | null {
   const headerAuth = req.headers["x-session-token"] as string;
   if (headerAuth) {
     try {
-      const payload = jwt.verify(headerAuth, JWT_SECRET) as { userId: number };
+      const payload = jwt.verify(headerAuth, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       return payload.userId ?? null;
     } catch { /* fall through to cookie */ }
   }
@@ -105,7 +106,7 @@ function getSessionUser(req: any): number | null {
   const cookieToken = req.cookies?.[COOKIE_NAME] as string | undefined;
   if (!cookieToken) return null;
   try {
-    const payload = jwt.verify(cookieToken, JWT_SECRET) as { userId: number };
+    const payload = jwt.verify(cookieToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
     return payload.userId ?? null;
   } catch {
     return null;
@@ -148,7 +149,7 @@ async function getUser(req: any): Promise<number | null> {
   if (masterKey) {
     const xApiKey = (req.headers["x-api-key"] as string) || "";
     const xMasterKey = (req.headers["x-master-key"] as string) || "";
-    if (xApiKey === masterKey || xMasterKey === masterKey) return 1;
+    if (safeCompare(xApiKey, masterKey) || safeCompare(xMasterKey, masterKey)) return 1;
   }
   return getApiKeyUser(req);
 }
@@ -178,6 +179,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // alias for frontend
   app.post("/api/auth/magic-link", asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
+    if (email && !checkAuthRateLimit(`magic:${email}`, 5, 3600000)) {
+      return res.status(429).json({ error: "Too many requests. Try again later." });
+    }
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
@@ -188,6 +192,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/auth/verify", asyncHandler(async (req, res) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    if (!checkAuthRateLimit(`verify:${ip}`, 10, 900000)) {
+      return res.status(429).json({ error: "Too many attempts. Try again later." });
+    }
     const { token } = validateBody(verifyTokenSchema, req.body);
     const email = await storage.verifyMagicToken(token);
     if (!email) {
@@ -203,6 +210,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/auth/request-magic-link", asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
+    if (email && !checkAuthRateLimit(`magic:${email}`, 5, 3600000)) {
+      return res.status(429).json({ error: "Too many requests. Try again later." });
+    }
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
@@ -212,6 +222,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   app.post("/api/auth/verify-magic-link", asyncHandler(async (req, res) => {
+    const verifyIp = req.ip || 'unknown';
+    if (!checkAuthRateLimit(`verify:${verifyIp}`, 10, 900000)) {
+      return res.status(429).json({ error: "Too many attempts. Try again later." });
+    }
     const { token } = validateBody(verifyTokenSchema, req.body);
     const email = await storage.verifyMagicToken(token);
     if (!email) return res.status(401).json({ error: "Invalid or expired token" });
@@ -757,6 +771,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Waitlist ──────────────────────────────────────────────────
   app.post("/api/waitlist", asyncHandler(async (req, res) => {
+    const waitlistIp = req.ip || 'unknown';
+    if (!checkAuthRateLimit(`waitlist:${waitlistIp}`, 3, 3600000)) {
+      return res.status(429).json({ error: "Too many requests. Try again later." });
+    }
     const { email, name, company, useCase } = validateBody(waitlistSchema, req.body);
     // Store as a user (reuse magic-link flow — already handles duplicates)
     let user = await storage.getUserByEmail(email);
@@ -907,7 +925,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/billing/plan", asyncHandler(async (req, res) => {
     const masterKey = process.env.KIOKU_MASTER_KEY;
     const authHeader = req.headers["x-master-key"] || req.headers.authorization?.replace("Bearer ", "");
-    if (!masterKey || authHeader !== masterKey) {
+    if (!masterKey || !safeCompare(authHeader as string || '', masterKey)) {
       return res.status(403).json({ error: "Admin access required" });
     }
     const userId = await getUser(req);

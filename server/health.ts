@@ -7,6 +7,7 @@
 
 import type { Express, Request, Response } from "express";
 import { pool } from "./storage";
+import { safeCompare } from "./index";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface CheckResult {
@@ -168,7 +169,7 @@ export function registerHealthRoutes(app: Express): void {
   app.get("/health/deep", async (req: Request, res: Response) => {
     // Fail-closed: require KIOKU_MASTER_KEY — deny if not set
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (!masterKey || req.headers["x-master-key"] !== masterKey) {
+    if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
       return res.status(403).json({ error: "Admin access required" });
     }
 

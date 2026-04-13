@@ -17,13 +17,18 @@ import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength } from "./memory-decay";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
-const isSSL = (process.env.DATABASE_URL || '').includes('sslmode=require');
+const dbUrl = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku";
+const sslConfig = dbUrl.includes('neon.tech')
+  ? { ssl: { rejectUnauthorized: true } }  // Neon uses valid public CA certs
+  : (process.env.NODE_ENV === 'production'
+    ? { ssl: { rejectUnauthorized: true } }
+    : (dbUrl.includes('sslmode=require') ? { ssl: { rejectUnauthorized: true } } : {}));
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku",
+  connectionString: dbUrl,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
-  ...(isSSL ? { ssl: { rejectUnauthorized: false } } : {}),
+  ...sslConfig,
 });
 
 export const db = drizzle(pool);

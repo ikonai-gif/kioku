@@ -75,7 +75,7 @@ async function resolveUser(req: Request): Promise<number | null> {
     try {
       const jwt = await import("jsonwebtoken");
       const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
-      const payload = jwt.default.verify(sessionToken, JWT_SECRET) as { userId: number };
+      const payload = jwt.default.verify(sessionToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       return payload.userId ?? null;
     } catch {}
   }

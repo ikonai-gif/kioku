@@ -26,7 +26,7 @@ function authenticateWs(req: any): number | null {
   const cookieToken = cookies["kioku_session"];
   if (cookieToken) {
     try {
-      const payload = jwt.verify(cookieToken, JWT_SECRET) as { userId: number };
+      const payload = jwt.verify(cookieToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       return payload.userId ?? null;
     } catch { /* fall through */ }
   }
@@ -35,7 +35,7 @@ function authenticateWs(req: any): number | null {
   const sessionToken = req.headers["x-session-token"] as string | undefined;
   if (sessionToken) {
     try {
-      const payload = jwt.verify(sessionToken, JWT_SECRET) as { userId: number };
+      const payload = jwt.verify(sessionToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       return payload.userId ?? null;
     } catch { /* fall through */ }
   }
@@ -45,7 +45,7 @@ function authenticateWs(req: any): number | null {
   const queryToken = url.searchParams.get("token");
   if (queryToken) {
     try {
-      const payload = jwt.verify(queryToken, JWT_SECRET) as { userId: number };
+      const payload = jwt.verify(queryToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       return payload.userId ?? null;
     } catch { /* fall through */ }
   }

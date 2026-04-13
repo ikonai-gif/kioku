@@ -3,11 +3,18 @@ import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import crypto from "crypto";
 import { initDb, initDemoUser, storage } from "./storage";
 import { rateLimitMiddleware } from "./ratelimit";
 import { applySecurityMiddleware } from "./security";
 import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
+
+// SECURITY: Timing-safe string comparison to prevent timing attacks on secrets
+export function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 // SECURITY: Require JWT_SECRET in production — prevents JWT forgery with fallback secrets
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
@@ -76,6 +83,20 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// Redact sensitive fields before logging
+const redactBody = (body: any): any => {
+  if (!body || typeof body !== 'object') return body;
+  if (Array.isArray(body)) {
+    return `[Array(${body.length})]`;
+  }
+  const redacted = { ...body };
+  const sensitiveKeys = ['apiKey', 'api_key', 'token', 'jwt', 'secret', 'password', 'key', 'embedding', 'webhookSecret'];
+  for (const k of sensitiveKeys) {
+    if (k in redacted) redacted[k] = '[REDACTED]';
+  }
+  return redacted;
+};
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -94,7 +115,7 @@ app.use((req, res, next) => {
     if (path.startsWith("/api") || path.startsWith("/mcp")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        logLine += ` :: ${JSON.stringify(redactBody(capturedJsonResponse))}`;
       }
       log(logLine);
 
@@ -134,7 +155,7 @@ app.use((req, res, next) => {
   // Monitor status endpoint — master key protected
   app.get("/health/monitor", (req: Request, res: Response) => {
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (!masterKey || req.headers["x-master-key"] !== masterKey) {
+    if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
       return res.status(403).json({ error: "Admin access required" });
     }
     res.json(getMonitorSummary());
@@ -143,7 +164,7 @@ app.use((req, res, next) => {
   // Admin request logs endpoint — master key protected
   app.get("/api/admin/logs", async (req: Request, res: Response) => {
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (!masterKey || req.headers["x-master-key"] !== masterKey) {
+    if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
       return res.status(403).json({ error: "Admin access required" });
     }
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
