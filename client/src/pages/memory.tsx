@@ -44,7 +44,8 @@ export default function MemoryPage() {
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/memories${debouncedQ ? `?q=${encodeURIComponent(debouncedQ)}` : ""}`);
       const data = await res.json();
-      return data;
+      // API returns { data: [...], pagination: {...} } — unwrap
+      return Array.isArray(data) ? data : (data.data ?? []);
     },
   });
 
