@@ -1,12 +1,13 @@
 import { useState, useEffect, createContext, useContext } from "react";
 import { Router, Switch, Route, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { setSessionToken, setUnauthHandler } from "./lib/auth";
 import { Toaster } from "@/components/ui/toaster";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
+import OnboardingWizard from "./components/onboarding-wizard";
 
 import LoginPage from "./pages/login";
 import DashboardPage from "./pages/dashboard";
@@ -99,6 +100,25 @@ interface ThemeCtx { dark: boolean; toggle: () => void; }
 export const ThemeContext = createContext<ThemeCtx>({ dark: true, toggle: () => {} });
 export const useTheme = () => useContext(ThemeContext);
 
+function OnboardingOverlay() {
+  const [dismissed, setDismissed] = useState(false);
+  const { data: agents, isLoading } = useQuery<any[]>({ queryKey: ["/api/agents"] });
+
+  // Show wizard only when agents loaded and count is zero, and user hasn't dismissed
+  if (isLoading || dismissed || !agents || agents.length > 0) return null;
+
+  return (
+    <OnboardingWizard
+      onComplete={() => {
+        setDismissed(true);
+        queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/rooms"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      }}
+    />
+  );
+}
+
 export default function App() {
   const [dark, setDark] = useState(true); // default dark
   const [user, setUser] = useState<any | null>(null);
@@ -188,6 +208,7 @@ export default function App() {
                   <Route path="/terms" component={TermsPage} />
                   <Route component={NotFound} />
                 </Switch>
+                <OnboardingOverlay />
               </AppLayout>
             )}
             <CookieBanner />

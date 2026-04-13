@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff, Crown, Lightbulb, Shield, Loader2, Users } from "lucide-react";
 import { AgentAvatar } from "@/lib/agent-icon";
 import { cn } from "@/lib/utils";
 
@@ -306,6 +306,113 @@ function AgentLlmSection({ agent }: { agent: any }) {
   );
 }
 
+const QUICK_TEMPLATES = [
+  {
+    id: "executive-board",
+    name: "Executive Board",
+    icon: <Crown className="w-4 h-4" />,
+    agents: [
+      { name: "CFO-Agent", color: "#4ade80" },
+      { name: "Legal-Agent", color: "#60a5fa" },
+      { name: "Strategy-Agent", color: "#c084fc" },
+      { name: "Ops-Agent", color: "#f59e0b" },
+    ],
+  },
+  {
+    id: "product-team",
+    name: "Product Team",
+    icon: <Lightbulb className="w-4 h-4" />,
+    agents: [
+      { name: "PM-Agent", color: "#34d399" },
+      { name: "Design-Agent", color: "#f472b6" },
+      { name: "Engineering-Agent", color: "#38bdf8" },
+    ],
+  },
+  {
+    id: "advisory-council",
+    name: "Advisory Council",
+    icon: <Shield className="w-4 h-4" />,
+    agents: [
+      { name: "Risk-Agent", color: "#ef4444" },
+      { name: "Innovation-Agent", color: "#a78bfa" },
+      { name: "Market-Agent", color: "#fb923c" },
+    ],
+  },
+];
+
+function QuickStartSection() {
+  const { toast } = useToast();
+  const [creatingId, setCreatingId] = useState<string | null>(null);
+
+  const createMutation = useMutation({
+    mutationFn: async (templateId: string) => {
+      setCreatingId(templateId);
+      const res = await apiRequest("POST", `/api/agents/templates/${templateId}`);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to create team");
+      }
+      return res.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/rooms"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      toast({ title: `${data.template} team created with ${data.agents.length} agents!` });
+      setCreatingId(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: err.message, variant: "destructive" });
+      setCreatingId(null);
+    },
+  });
+
+  return (
+    <div className="rounded-xl border border-[#D4AF37]/15 bg-gradient-to-r from-[#D4AF37]/[0.03] to-transparent p-4 sm:p-5 space-y-3">
+      <div className="flex items-center gap-2">
+        <Users className="w-4 h-4 text-[#D4AF37]" />
+        <h2 className="text-sm font-semibold text-foreground">Quick Start</h2>
+        <span className="text-[10px] text-muted-foreground">— Create a team with one click</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {QUICK_TEMPLATES.map((tpl) => (
+          <div
+            key={tpl.id}
+            className="rounded-lg border border-white/5 bg-white/[0.02] p-3 space-y-2 hover:border-[#D4AF37]/20 transition-all"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-md bg-[#D4AF37]/10 text-[#D4AF37] flex items-center justify-center">
+                {tpl.icon}
+              </div>
+              <span className="text-xs font-semibold text-foreground">{tpl.name}</span>
+            </div>
+            <div className="flex gap-1 flex-wrap">
+              {tpl.agents.map((a) => (
+                <span key={a.name} className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/[0.03] border border-white/5" style={{ color: a.color }}>
+                  {a.name}
+                </span>
+              ))}
+            </div>
+            <Button
+              size="sm"
+              className="w-full h-7 text-[10px] gap-1"
+              style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
+              onClick={() => createMutation.mutate(tpl.id)}
+              disabled={createMutation.isPending}
+            >
+              {creatingId === tpl.id ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> Creating...</>
+              ) : (
+                "Create Team"
+              )}
+            </Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AgentsPage() {
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
@@ -359,6 +466,9 @@ export default function AgentsPage() {
           <Plus className="w-3.5 h-3.5" /> New Agent
         </Button>
       </div>
+
+      {/* Quick Start Templates — show if fewer than 4 agents */}
+      {!isLoading && agents.length < 4 && <QuickStartSection />}
 
       {isLoading && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

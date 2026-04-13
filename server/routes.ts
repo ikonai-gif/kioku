@@ -1151,6 +1151,113 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(consensus);
   }));
 
+  // ── Agent Templates (Onboarding Quick Start) ──────────────────
+  const AGENT_TEMPLATES: Record<string, { name: string; roomName: string; agents: Array<{ name: string; role: string; model: string; color: string; description: string }> }> = {
+    "executive-board": {
+      name: "Executive Board",
+      roomName: "Executive Board Room",
+      agents: [
+        { name: "CFO-Agent", role: "finance", model: "gpt-4o", color: "#4ade80", description: "Financial analysis, budget approvals, cost optimization" },
+        { name: "Legal-Agent", role: "legal", model: "gpt-4o", color: "#60a5fa", description: "Contract review, compliance checks, regulatory analysis" },
+        { name: "Strategy-Agent", role: "strategy", model: "gpt-4o", color: "#c084fc", description: "Market research, competitive intelligence, growth planning" },
+        { name: "Ops-Agent", role: "operations", model: "gpt-4o", color: "#f59e0b", description: "Infrastructure, process optimization, risk management" },
+      ],
+    },
+    "product-team": {
+      name: "Product Team",
+      roomName: "Product Team Room",
+      agents: [
+        { name: "PM-Agent", role: "product", model: "gpt-4o", color: "#34d399", description: "Product roadmap, feature prioritization, user stories" },
+        { name: "Design-Agent", role: "design", model: "gpt-4o", color: "#f472b6", description: "UX research, design systems, accessibility reviews" },
+        { name: "Engineering-Agent", role: "engineering", model: "gpt-4o", color: "#38bdf8", description: "Architecture decisions, technical feasibility, code quality" },
+      ],
+    },
+    "advisory-council": {
+      name: "Advisory Council",
+      roomName: "Advisory Council Room",
+      agents: [
+        { name: "Risk-Agent", role: "risk", model: "gpt-4o", color: "#ef4444", description: "Risk assessment, scenario planning, mitigation strategies" },
+        { name: "Innovation-Agent", role: "innovation", model: "gpt-4o", color: "#a78bfa", description: "Emerging tech evaluation, R&D recommendations, patents" },
+        { name: "Market-Agent", role: "market", model: "gpt-4o", color: "#fb923c", description: "Market analysis, customer insights, pricing strategy" },
+      ],
+    },
+  };
+
+  // GET all templates (for frontend)
+  app.get("/api/agents/templates", asyncHandler(async (_req, res) => {
+    const templates = Object.entries(AGENT_TEMPLATES).map(([id, t]) => ({
+      id,
+      name: t.name,
+      agents: t.agents.map(a => ({ name: a.name, role: a.role, color: a.color, description: a.description })),
+    }));
+    res.json(templates);
+  }));
+
+  // POST create agents from template + default room
+  app.post("/api/agents/templates/:templateId", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const template = AGENT_TEMPLATES[req.params.templateId];
+    if (!template) return res.status(404).json({ error: "Template not found" });
+
+    // Check plan limits
+    const [plan, counts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const limits = getLimits(plan);
+    if (counts.agents + template.agents.length > limits.agents) {
+      return res.status(429).json({ error: `Would exceed plan limit: ${limits.agents} agents (${plan} plan). Need ${template.agents.length} slots, have ${limits.agents - counts.agents}.` });
+    }
+
+    // Create all agents
+    const createdAgents = [];
+    for (const agentDef of template.agents) {
+      const agent = await storage.createAgent({
+        userId,
+        name: agentDef.name,
+        description: agentDef.description,
+        color: agentDef.color,
+        model: agentDef.model,
+        role: agentDef.role,
+        status: "idle",
+        memoriesCount: 0,
+        lastActiveAt: null,
+        enabled: true,
+        llmProvider: null,
+        llmApiKey: null,
+        llmModel: null,
+      });
+      createdAgents.push(agent);
+    }
+
+    // Create a room with all the new agents
+    const room = await storage.createRoom({
+      userId,
+      name: template.roomName,
+      description: `${template.name} deliberation room`,
+      status: "standby",
+      agentIds: JSON.stringify(createdAgents.map(a => a.id)),
+    });
+
+    // Log it
+    await storage.addLog({
+      userId,
+      agentName: "System",
+      agentColor: "#D4AF37",
+      operation: "template_created",
+      detail: `Created ${template.name} team (${createdAgents.length} agents) + room`,
+      latencyMs: null,
+    });
+
+    res.json({
+      ok: true,
+      template: req.params.templateId,
+      agents: createdAgents.map(maskAgentApiKey),
+      room,
+    });
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {
