@@ -511,7 +511,7 @@ export async function runDeliberation(
 async function collectPositions(
   roomId: number,
   userId: number,
-  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null }>,
+  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null; agentType: string; webhookUrl: string | null; webhookSecret: string | null }>,
   topic: string,
   phase: "position" | "debate" | "final",
   round: number,
@@ -550,12 +550,14 @@ async function collectPositions(
     // Per-agent model: prefer llmModel > model > fallback
     const agentModel = agent.llmModel || agent.model || fallbackModel;
 
-    // Check if agent has an external webhook registered
-    const webhook = await storage.getWebhook(agent.id);
+    // Route based on agent type: internal (LLM), webhook, or polling
+    const effectiveType = agent.agentType || "internal";
     let parsed: { position: string; confidence: number; reasoning: string };
+    let isExternal = false;
 
-    if (webhook) {
-      parsed = await callWebhook(webhook.url, webhook.secret, {
+    if (effectiveType === "webhook" && agent.webhookUrl && agent.webhookSecret) {
+      // Webhook mode — POST directly to agent's endpoint with HMAC signature
+      parsed = await callWebhook(agent.webhookUrl, agent.webhookSecret, {
         event: "deliberation.round",
         sessionId,
         roomId,
@@ -566,7 +568,60 @@ async function collectPositions(
         round,
         priorPositions,
       });
+      isExternal = true;
+    } else if (effectiveType === "webhook") {
+      // Fallback: check legacy kioku_webhooks table
+      const webhook = await storage.getWebhook(agent.id);
+      if (webhook) {
+        parsed = await callWebhook(webhook.url, webhook.secret, {
+          event: "deliberation.round",
+          sessionId,
+          roomId,
+          agentId: agent.id,
+          agentName: agent.name,
+          topic,
+          phase,
+          round,
+          priorPositions,
+        });
+        isExternal = true;
+      } else {
+        throw new Error(`Webhook agent ${agent.name} has no webhook URL configured`);
+      }
+    } else if (effectiveType === "polling") {
+      // Polling mode — queue the turn and wait for agent to respond
+      const POLLING_TIMEOUT_MS = 60_000;
+      const turn = await storage.createAgentTurn({
+        sessionId,
+        agentId: agent.id,
+        roomId,
+        userId,
+        phase,
+        round,
+        topic,
+        otherPositions: priorPositions,
+        memories: injectedMemories.map((m: any) => ({ content: m.content, type: m.type, confidence: m.currentConfidence ?? m.confidence })),
+        expiresAt: Date.now() + POLLING_TIMEOUT_MS,
+      });
+      // Poll for response
+      const pollStart = Date.now();
+      let responded = false;
+      while (Date.now() - pollStart < POLLING_TIMEOUT_MS) {
+        await new Promise(r => setTimeout(r, 2000));
+        const updated = await storage.getAgentTurn(turn.id);
+        if (updated && updated.status === "responded" && updated.response) {
+          parsed = updated.response;
+          responded = true;
+          break;
+        }
+        if (updated && updated.status === "expired") break;
+      }
+      if (!responded!) {
+        parsed = { position: "[no response — polling timeout]", confidence: 0, reasoning: "External agent did not respond within 60s" };
+      }
+      isExternal = true;
     } else {
+      // Internal mode — call LLM
       const raw = await callLLM(
         agentModel,
         systemPrompt,
@@ -580,7 +635,7 @@ async function collectPositions(
       parsed = parseAgentResponse(raw, agent.name);
     }
 
-    return { agent, parsed, agentModel, webhook };
+    return { agent, parsed, agentModel, isExternal };
   });
 
   const results = await Promise.allSettled(agentPromises);
@@ -593,7 +648,7 @@ async function collectPositions(
     const agentModel = agent.llmModel || agent.model || fallbackModel;
 
     if (result.status === "fulfilled") {
-      const { parsed, webhook } = result.value;
+      const { parsed, isExternal } = result.value;
 
       positions.push({
         agentId: agent.id,
@@ -603,8 +658,9 @@ async function collectPositions(
       });
 
       // Post to room as regular message so WS clients see it
-      const modelTag = webhook ? " [webhook]" : (agentModel !== DEFAULT_MODEL ? ` [${agentModel}]` : "");
-      const displayContent = `[${phaseLabel}]${modelTag} ${parsed.position} (confidence: ${(parsed.confidence * 100).toFixed(0)}%)`;
+      const effectiveType = agent.agentType || "internal";
+      const typeTag = isExternal ? ` [${effectiveType}]` : (agentModel !== DEFAULT_MODEL ? ` [${agentModel}]` : "");
+      const displayContent = `[${phaseLabel}]${typeTag} ${parsed.position} (confidence: ${(parsed.confidence * 100).toFixed(0)}%)`;
       const msg = await storage.addRoomMessage({
         roomId,
         agentId: agent.id,
@@ -620,7 +676,7 @@ async function collectPositions(
         agentName: agent.name,
         agentColor: agent.color,
         operation: "deliberation_round",
-        detail: `${phase} r${round}: ${result.value.webhook ? "webhook" : `model=${agentModel}`} confidence=${parsed.confidence}`,
+        detail: `${phase} r${round}: ${isExternal ? effectiveType : `model=${agentModel}`} confidence=${parsed.confidence}`,
         latencyMs: null,
       });
     } else {

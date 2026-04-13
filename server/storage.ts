@@ -240,6 +240,35 @@ export async function initDb() {
   `);
   // Set last_reinforced_at for existing memories
   await pool.query(`UPDATE memories SET last_reinforced_at = created_at WHERE last_reinforced_at IS NULL`);
+  // Phase 3: External agent connection modes — agent type + webhook fields on agents
+  await pool.query(`
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_type TEXT NOT NULL DEFAULT 'internal';
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS webhook_url TEXT;
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+  `);
+  // Phase 3: Polling mode — agent_turns table for pending turn queue
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_turns (
+      id          SERIAL PRIMARY KEY,
+      session_id  TEXT NOT NULL,
+      agent_id    INTEGER NOT NULL,
+      room_id     INTEGER NOT NULL,
+      user_id     INTEGER NOT NULL,
+      phase       TEXT NOT NULL,
+      round       INTEGER NOT NULL DEFAULT 1,
+      topic       TEXT NOT NULL,
+      other_positions TEXT NOT NULL DEFAULT '[]',
+      memories    TEXT NOT NULL DEFAULT '[]',
+      status      TEXT NOT NULL DEFAULT 'pending',
+      response    TEXT,
+      responded_at BIGINT,
+      expires_at  BIGINT NOT NULL,
+      created_at  BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_agent_status ON agent_turns(agent_id, status);
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_session ON agent_turns(session_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_expires ON agent_turns(expires_at);
+  `);
 }
 
 function generateApiKey(): string {
@@ -387,7 +416,7 @@ export class Storage implements IStorage {
     const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
     return result;
   }
-  async updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null }>): Promise<boolean> {
+  async updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null; agentType: string; webhookUrl: string | null; webhookSecret: string | null }>): Promise<boolean> {
     const result = await db.update(agents).set(data).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
     return result.length > 0;
   }
@@ -1083,6 +1112,71 @@ export class Storage implements IStorage {
     );
     const used = result.rows[0]?.count || 0;
     return { allowed: used < dailyCalls, used, limit: dailyCalls };
+  }
+
+  // ── Agent Turns (polling mode queue) ─────────────────────────────────
+  async createAgentTurn(data: {
+    sessionId: string; agentId: number; roomId: number; userId: number;
+    phase: string; round: number; topic: string;
+    otherPositions: any[]; memories: any[]; expiresAt: number;
+  }) {
+    const { rows } = await pool.query(
+      `INSERT INTO agent_turns (session_id, agent_id, room_id, user_id, phase, round, topic, other_positions, memories, status, expires_at, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11)
+       RETURNING *`,
+      [data.sessionId, data.agentId, data.roomId, data.userId, data.phase, data.round,
+       data.topic, JSON.stringify(data.otherPositions), JSON.stringify(data.memories),
+       data.expiresAt, Date.now()]
+    );
+    return this.mapAgentTurnRow(rows[0]);
+  }
+
+  async getAgentTurn(turnId: number) {
+    const { rows } = await pool.query(`SELECT * FROM agent_turns WHERE id = $1`, [turnId]);
+    return rows[0] ? this.mapAgentTurnRow(rows[0]) : undefined;
+  }
+
+  async getPendingTurns(agentId: number) {
+    // Expire stale turns first
+    await pool.query(
+      `UPDATE agent_turns SET status = 'expired' WHERE agent_id = $1 AND status = 'pending' AND expires_at < $2`,
+      [agentId, Date.now()]
+    );
+    const { rows } = await pool.query(
+      `SELECT * FROM agent_turns WHERE agent_id = $1 AND status = 'pending' ORDER BY created_at ASC`,
+      [agentId]
+    );
+    return rows.map((r: any) => this.mapAgentTurnRow(r));
+  }
+
+  async respondToTurn(turnId: number, agentId: number, response: { position: string; confidence: number; reasoning: string }): Promise<boolean> {
+    const result = await pool.query(
+      `UPDATE agent_turns SET status = 'responded', response = $1, responded_at = $2
+       WHERE id = $3 AND agent_id = $4 AND status = 'pending'
+       RETURNING id`,
+      [JSON.stringify(response), Date.now(), turnId, agentId]
+    );
+    return result.rows.length > 0;
+  }
+
+  private mapAgentTurnRow(row: any) {
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      agentId: row.agent_id,
+      roomId: row.room_id,
+      userId: row.user_id,
+      phase: row.phase,
+      round: row.round,
+      topic: row.topic,
+      otherPositions: JSON.parse(row.other_positions || '[]'),
+      memories: JSON.parse(row.memories || '[]'),
+      status: row.status,
+      response: row.response ? JSON.parse(row.response) : null,
+      respondedAt: row.responded_at ? Number(row.responded_at) : null,
+      expiresAt: Number(row.expires_at),
+      createdAt: Number(row.created_at),
+    };
   }
 
   private mapDelibRow(row: any) {

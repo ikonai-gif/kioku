@@ -24,6 +24,7 @@ import {
   createRoomSchema, updateRoomSchema,
   createRoomMessageSchema, deliberateSchema, humanInputSchema,
   createWebhookSchema, createAgentTokenSchema, agentCallbackSchema,
+  agentTurnResponseSchema,
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
   createMemoryLinkSchema,
 } from "./validation";
@@ -335,7 +336,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (counts.agents >= limits.agents) {
       return res.status(429).json({ error: `Plan limit reached: ${limits.agents} agents (${plan} plan)` });
     }
-    const { name, description, color, llmProvider, llmApiKey, llmModel } = validateBody(createAgentSchema, req.body);
+    const { name, description, color, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(createAgentSchema, req.body);
     const agent = await storage.createAgent({
       userId,
       name,
@@ -348,6 +349,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       llmProvider: llmProvider || null,
       llmApiKey: llmApiKey || null,
       llmModel: llmModel || null,
+      agentType: agentType || "internal",
+      webhookUrl: webhookUrl || null,
+      webhookSecret: webhookSecret || null,
     });
     // Mask API key in response
     res.json(maskAgentApiKey(agent));
@@ -358,7 +362,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
-    const { name, description, color, model, role, llmProvider, llmApiKey, llmModel } = validateBody(updateAgentSchema, req.body);
+    const { name, description, color, model, role, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(updateAgentSchema, req.body);
     const updates: Record<string, any> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
@@ -368,6 +372,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (llmProvider !== undefined) updates.llmProvider = llmProvider;
     if (llmApiKey !== undefined) updates.llmApiKey = llmApiKey;
     if (llmModel !== undefined) updates.llmModel = llmModel;
+    if (agentType !== undefined) updates.agentType = agentType;
+    if (webhookUrl !== undefined) updates.webhookUrl = webhookUrl;
+    if (webhookSecret !== undefined) updates.webhookSecret = webhookSecret;
     if (Object.keys(updates).length === 0) return res.status(400).json({ error: "No fields to update" });
     const ok = await storage.updateAgent(agentId, userId, updates);
     if (!ok) return res.status(404).json({ error: "Not found" });
@@ -508,6 +515,109 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
     res.json({ ok: true, agentId: auth.agentId, userId: auth.userId, scopes: auth.scopes });
   }));
+
+  // ── Polling Mode Endpoints (external agents poll for turns) ───
+  // GET /api/agent/pending-turns — returns pending turns for authenticated agent
+  app.get("/api/agent/pending-turns", asyncHandler(async (req, res) => {
+    const auth = await getAgentAuth(req);
+    if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
+    if (!auth.scopes.includes("deliberation.respond")) {
+      return res.status(403).json({ error: "Token lacks deliberation.respond scope" });
+    }
+    const turns = await storage.getPendingTurns(auth.agentId);
+    res.json(turns);
+  }));
+
+  // GET /api/agent/turns/:turnId — get turn details
+  app.get("/api/agent/turns/:turnId", asyncHandler(async (req, res) => {
+    const auth = await getAgentAuth(req);
+    if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
+    const turn = await storage.getAgentTurn(Number(req.params.turnId));
+    if (!turn || turn.agentId !== auth.agentId) {
+      return res.status(404).json({ error: "Turn not found" });
+    }
+    res.json(turn);
+  }));
+
+  // POST /api/agent/turns/:turnId/respond — submit agent's response
+  app.post("/api/agent/turns/:turnId/respond", asyncHandler(async (req, res) => {
+    const auth = await getAgentAuth(req);
+    if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
+    if (!auth.scopes.includes("deliberation.respond")) {
+      return res.status(403).json({ error: "Token lacks deliberation.respond scope" });
+    }
+    const turnId = Number(req.params.turnId);
+    const turn = await storage.getAgentTurn(turnId);
+    if (!turn || turn.agentId !== auth.agentId) {
+      return res.status(404).json({ error: "Turn not found" });
+    }
+    if (turn.status !== "pending") {
+      return res.status(409).json({ error: `Turn already ${turn.status}` });
+    }
+    if (Date.now() > turn.expiresAt) {
+      return res.status(410).json({ error: "Turn expired" });
+    }
+    const { position, confidence, reasoning } = validateBody(agentTurnResponseSchema, req.body);
+    const ok = await storage.respondToTurn(turnId, auth.agentId, {
+      position,
+      confidence: confidence ?? 0.5,
+      reasoning: reasoning ?? "External agent response",
+    });
+    if (!ok) return res.status(409).json({ error: "Failed to respond — turn may have expired" });
+    // Log the response
+    await storage.addLog({
+      userId: auth.userId,
+      agentName: `External Agent #${auth.agentId}`,
+      agentColor: "#9B59B6",
+      operation: "polling_response",
+      detail: `Turn ${turnId}: position received (confidence=${confidence ?? 0.5})`,
+      latencyMs: null,
+    });
+    res.json({ ok: true, turnId });
+  }));
+
+  // POST /api/agents/:id/test-webhook — send a test ping to webhook URL
+  app.post("/api/agents/:id/test-webhook", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = Number(req.params.id);
+    const agent = await storage.getAgent(agentId);
+    if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Not found" });
+    const webhookUrl = (agent as any).webhookUrl;
+    const webhookSecret = (agent as any).webhookSecret;
+    if (!webhookUrl || !webhookSecret) {
+      return res.status(400).json({ error: "Agent has no webhook URL configured" });
+    }
+    try {
+      const { createHmac } = await import("crypto");
+      const payload = JSON.stringify({
+        event: "test.ping",
+        agentId,
+        agentName: agent.name,
+        timestamp: Date.now(),
+      });
+      const signature = createHmac("sha256", webhookSecret).update(payload).digest("hex");
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const resp = await fetch(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Kioku-Signature": signature,
+          "X-Kioku-Event": "test.ping",
+        },
+        body: payload,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const status = resp.status;
+      const body = await resp.text().catch(() => "");
+      res.json({ ok: status >= 200 && status < 300, status, body: body.slice(0, 500) });
+    } catch (err: any) {
+      res.json({ ok: false, error: err.message || "Connection failed" });
+    }
+  }));
+
   // ── Memories ──────────────────────────────────────────────────
   app.get("/api/memories", asyncHandler(async (req, res) => {
     const userId = await getUser(req);

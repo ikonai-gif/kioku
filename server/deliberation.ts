@@ -65,7 +65,8 @@ export async function triggerAgentResponses(
       (a) =>
         roomAgentIds.includes(a.id) &&
         a.status === "online" &&
-        a.id !== triggerAgentId
+        a.id !== triggerAgentId &&
+        ((a as any).agentType || "internal") === "internal" // skip external agents in chat mode
     );
 
     if (respondents.length === 0) {

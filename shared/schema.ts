@@ -44,6 +44,9 @@ export const agents = pgTable("agents", {
   llmProvider:   text("llm_provider"),                         // openai | gemini | null=use default
   llmApiKey:     text("llm_api_key"),                          // encrypted per-agent API key | null=use shared
   llmModel:      text("llm_model"),                            // per-agent model override | null=use default
+  agentType:     text("agent_type").notNull().default("internal"), // internal | webhook | polling
+  webhookUrl:    text("webhook_url"),                          // webhook mode: POST target URL
+  webhookSecret: text("webhook_secret"),                       // webhook mode: HMAC signing secret
   status:        text("status").notNull().default("idle"),   // online | idle | offline
   memoriesCount: integer("memories_count").notNull().default(0),
   lastActiveAt:  bigint("last_active_at", { mode: "number" }),
@@ -148,6 +151,29 @@ export const roomMessages = pgTable("room_messages", {
 export const insertRoomMessageSchema = createInsertSchema(roomMessages).omit({ id: true, createdAt: true });
 export type InsertRoomMessage = z.infer<typeof insertRoomMessageSchema>;
 export type RoomMessage = typeof roomMessages.$inferSelect;
+
+// Agent Turns (polling mode queue)
+export const agentTurns = pgTable("agent_turns", {
+  id:              serial("id").primaryKey(),
+  sessionId:       text("session_id").notNull(),
+  agentId:         integer("agent_id").notNull(),
+  roomId:          integer("room_id").notNull(),
+  userId:          integer("user_id").notNull(),
+  phase:           text("phase").notNull(),
+  round:           integer("round").notNull().default(1),
+  topic:           text("topic").notNull(),
+  otherPositions:  text("other_positions").notNull().default("[]"),
+  memories:        text("memories").notNull().default("[]"),
+  status:          text("status").notNull().default("pending"),  // pending | responded | expired
+  response:        text("response"),                              // JSON: { position, confidence, reasoning }
+  respondedAt:     bigint("responded_at", { mode: "number" }),
+  expiresAt:       bigint("expires_at", { mode: "number" }).notNull(),
+  createdAt:       bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const insertAgentTurnSchema = createInsertSchema(agentTurns).omit({ id: true, createdAt: true });
+export type InsertAgentTurn = z.infer<typeof insertAgentTurnSchema>;
+export type AgentTurn = typeof agentTurns.$inferSelect;
 
 // Live Feed / Logs
 export const logs = pgTable("logs", {

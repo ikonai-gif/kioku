@@ -35,6 +35,9 @@ export const createAgentSchema = z.object({
   llmProvider: z.enum(["openai", "gemini"]).optional().nullable(),
   llmApiKey: z.string().max(256).optional().nullable(),
   llmModel: z.string().max(50).optional().nullable(),
+  agentType: z.enum(["internal", "webhook", "polling"]).optional(),
+  webhookUrl: z.string().url().max(2000).optional().nullable(),
+  webhookSecret: z.string().max(256).optional().nullable(),
 });
 
 export const updateAgentSchema = z.object({
@@ -46,6 +49,9 @@ export const updateAgentSchema = z.object({
   llmProvider: z.enum(["openai", "gemini"]).optional().nullable(),
   llmApiKey: z.string().max(256).optional().nullable(),
   llmModel: z.string().max(50).optional().nullable(),
+  agentType: z.enum(["internal", "webhook", "polling"]).optional(),
+  webhookUrl: z.string().url().max(2000).optional().nullable(),
+  webhookSecret: z.string().max(256).optional().nullable(),
 });
 
 export const toggleAgentSchema = z.object({
@@ -156,6 +162,13 @@ export const createAgentTokenSchema = z.object({
   name: z.string().max(100).optional(),
   scopes: z.array(z.string().max(100)).optional(),
   expiresInDays: z.number().int().min(1).max(365).optional(),
+});
+
+// ── Agent Turn Response schemas (polling mode) ─────────────────────────────────
+export const agentTurnResponseSchema = z.object({
+  position: z.string().min(1).max(5000),
+  confidence: z.number().min(0).max(1).optional(),
+  reasoning: z.string().max(10000).optional(),
 });
 
 // ── Agent Callback schemas ──────────────────────────────────────────────────────

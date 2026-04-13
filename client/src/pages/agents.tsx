@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff, Crown, Lightbulb, Shield, Loader2, Users } from "lucide-react";
+import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff, Crown, Lightbulb, Shield, Loader2, Users, Webhook, Radio, Zap } from "lucide-react";
 import { AgentAvatar } from "@/lib/agent-icon";
 import { cn } from "@/lib/utils";
 
@@ -306,6 +306,163 @@ function AgentLlmSection({ agent }: { agent: any }) {
   );
 }
 
+function AgentConnectionSection({ agent }: { agent: any }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [agentType, setAgentType] = useState<string>(agent.agentType || "internal");
+  const [webhookUrl, setWebhookUrl] = useState(agent.webhookUrl || "");
+  const [webhookSecret, setWebhookSecret] = useState(agent.webhookSecret || "");
+  const [showSecret, setShowSecret] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; status?: number; error?: string } | null>(null);
+
+  const updateMutation = useMutation({
+    mutationFn: (data: any) =>
+      apiRequest("PATCH", `/api/agents/${agent.id}`, data).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      toast({ title: "Connection type updated" });
+      setOpen(false);
+    },
+    onError: () => toast({ title: "Failed to update connection", variant: "destructive" }),
+  });
+
+  const handleSave = () => {
+    const updates: any = { agentType };
+    if (agentType === "webhook") {
+      updates.webhookUrl = webhookUrl || null;
+      updates.webhookSecret = webhookSecret || null;
+    } else {
+      updates.webhookUrl = null;
+      updates.webhookSecret = null;
+    }
+    updateMutation.mutate(updates);
+  };
+
+  const handleTestWebhook = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await apiRequest("POST", `/api/agents/${agent.id}/test-webhook`);
+      const data = await res.json();
+      setTestResult(data);
+    } catch {
+      setTestResult({ ok: false, error: "Request failed" });
+    }
+    setTesting(false);
+  };
+
+  const typeLabel = agent.agentType === "webhook" ? "Webhook" : agent.agentType === "polling" ? "Polling" : "Internal AI";
+  const typeIcon = agent.agentType === "webhook" ? <Webhook className="w-3 h-3" /> : agent.agentType === "polling" ? <Radio className="w-3 h-3" /> : <Zap className="w-3 h-3" />;
+
+  if (!open) {
+    return (
+      <button
+        className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/70 hover:text-[#D4AF37] transition-colors"
+        onClick={() => setOpen(true)}
+      >
+        {typeIcon}
+        <span>{typeLabel}</span>
+        {agent.agentType === "webhook" && agent.webhookUrl && (
+          <span className="text-[9px] text-muted-foreground/50 truncate max-w-[120px]">{agent.webhookUrl}</span>
+        )}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-[#D4AF37]/20 bg-[#0A1628]/60 p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-medium text-[#D4AF37] flex items-center gap-1.5">
+          <Webhook className="w-3 h-3" /> Connection Type
+        </span>
+        <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={() => setOpen(false)}>Close</button>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-[10px] text-muted-foreground">Type</label>
+        <Select value={agentType} onValueChange={setAgentType}>
+          <SelectTrigger className="h-7 text-[11px] bg-background/30 border-border/40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="internal">Internal AI (OpenAI/Gemini)</SelectItem>
+            <SelectItem value="webhook">Webhook (POST to URL)</SelectItem>
+            <SelectItem value="polling">Polling (agent pulls turns)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {agentType === "webhook" && (
+        <>
+          <div className="space-y-1">
+            <label className="text-[10px] text-muted-foreground">Webhook URL</label>
+            <Input
+              placeholder="https://your-server.com/agent/respond"
+              value={webhookUrl}
+              onChange={e => setWebhookUrl(e.target.value)}
+              className="h-7 text-[11px] bg-background/30 border-border/40 font-mono"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] text-muted-foreground">Webhook Secret (HMAC signing key)</label>
+            <div className="relative">
+              <Input
+                type={showSecret ? "text" : "password"}
+                placeholder="whk_..."
+                value={webhookSecret}
+                onChange={e => setWebhookSecret(e.target.value)}
+                className="h-7 text-[11px] pr-8 bg-background/30 border-border/40 font-mono"
+              />
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowSecret(!showSecret)}
+              >
+                {showSecret ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+              </button>
+            </div>
+          </div>
+          {testResult && (
+            <div className={cn("text-[10px] px-2 py-1 rounded", testResult.ok ? "text-green-400 bg-green-400/10" : "text-red-400 bg-red-400/10")}>
+              {testResult.ok ? `Webhook responded: ${testResult.status}` : `Failed: ${testResult.error || `HTTP ${testResult.status}`}`}
+            </div>
+          )}
+        </>
+      )}
+
+      {agentType === "polling" && (
+        <div className="text-[10px] text-muted-foreground bg-muted/20 rounded p-2">
+          Polling mode: Generate an agent token above, then poll <code className="text-[#D4AF37]">GET /api/agent/pending-turns</code> and respond via <code className="text-[#D4AF37]">POST /api/agent/turns/:id/respond</code>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 pt-1">
+        <Button
+          size="sm"
+          className="h-6 text-[10px] px-3"
+          style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
+          onClick={handleSave}
+          disabled={updateMutation.isPending}
+        >
+          {updateMutation.isPending ? "Saving…" : "Save"}
+        </Button>
+        {agentType === "webhook" && webhookUrl && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 text-[10px] px-2 text-muted-foreground hover:text-[#D4AF37]"
+            onClick={handleTestWebhook}
+            disabled={testing}
+          >
+            {testing ? "Testing…" : "Test Webhook"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const QUICK_TEMPLATES = [
   {
     id: "executive-board",
@@ -416,7 +573,7 @@ function QuickStartSection() {
 export default function AgentsPage() {
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "", color: "#D4AF37", llmProvider: "", llmApiKey: "", llmModel: "" });
+  const [form, setForm] = useState({ name: "", description: "", color: "#D4AF37", llmProvider: "", llmApiKey: "", llmModel: "", agentType: "internal", webhookUrl: "", webhookSecret: "" });
 
   const { data: agents = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/agents"] });
 
@@ -429,7 +586,7 @@ export default function AgentsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       setCreating(false);
-      setForm({ name: "", description: "", color: "#D4AF37", llmProvider: "", llmApiKey: "", llmModel: "" });
+      setForm({ name: "", description: "", color: "#D4AF37", llmProvider: "", llmApiKey: "", llmModel: "", agentType: "internal", webhookUrl: "", webhookSecret: "" });
       toast({ title: "Agent created" });
     },
   });
@@ -542,6 +699,9 @@ export default function AgentsPage() {
             {/* LLM Config */}
             <AgentLlmSection agent={agent} />
 
+            {/* Connection Type */}
+            <AgentConnectionSection agent={agent} />
+
             {/* Delete */}
             <button
               className="mt-2 text-[10px] text-muted-foreground/50 hover:text-red-400 flex items-center gap-1 transition-colors"
@@ -629,6 +789,40 @@ export default function AgentsPage() {
                 </>
               )}
             </div>
+            {/* Connection Type */}
+            <div className="space-y-1.5 pt-1 border-t border-border/30">
+              <label className="text-[10px] font-medium text-muted-foreground">Connection Type</label>
+              <Select value={form.agentType} onValueChange={(v) => setForm(f => ({ ...f, agentType: v }))}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="internal">Internal AI</SelectItem>
+                  <SelectItem value="webhook">Webhook</SelectItem>
+                  <SelectItem value="polling">Polling</SelectItem>
+                </SelectContent>
+              </Select>
+              {form.agentType === "webhook" && (
+                <>
+                  <Input
+                    placeholder="https://your-server.com/agent/respond"
+                    value={form.webhookUrl}
+                    onChange={e => setForm(f => ({ ...f, webhookUrl: e.target.value }))}
+                    className="h-8 text-xs font-mono"
+                  />
+                  <Input
+                    type="password"
+                    placeholder="Webhook secret (whk_...)"
+                    value={form.webhookSecret}
+                    onChange={e => setForm(f => ({ ...f, webhookSecret: e.target.value }))}
+                    className="h-8 text-xs font-mono"
+                  />
+                </>
+              )}
+              {form.agentType === "polling" && (
+                <p className="text-[10px] text-muted-foreground">Generate a token after creation to start polling.</p>
+              )}
+            </div>
             <Button
               className="w-full h-9 text-sm"
               style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
@@ -637,6 +831,9 @@ export default function AgentsPage() {
                 if (form.llmProvider) payload.llmProvider = form.llmProvider;
                 if (form.llmApiKey) payload.llmApiKey = form.llmApiKey;
                 if (form.llmModel) payload.llmModel = form.llmModel;
+                if (form.agentType !== "internal") payload.agentType = form.agentType;
+                if (form.agentType === "webhook" && form.webhookUrl) payload.webhookUrl = form.webhookUrl;
+                if (form.agentType === "webhook" && form.webhookSecret) payload.webhookSecret = form.webhookSecret;
                 createMutation.mutate(payload);
               }}
               disabled={createMutation.isPending}
