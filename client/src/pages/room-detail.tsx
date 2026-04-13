@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, Loader2, Trophy, MessageSquare } from "lucide-react";
+import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, ChevronRight, Loader2, Trophy, MessageSquare, ThumbsUp, ThumbsDown, Minus, Clock, History, AlertTriangle } from "lucide-react";
 import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
 import { cn, safeParseIds } from "@/lib/utils";
@@ -204,6 +204,471 @@ function ConsensusCard({ item }: { item: ParsedDelibMessage }) {
   );
 }
 
+// ── Vote Classification Helper ─────────────────────────────────
+// Classifies a vote as agree/disagree/abstain relative to the winning decision
+type VoteType = "agree" | "disagree" | "abstain";
+
+interface ClassifiedVote {
+  agentName: string;
+  position: string;
+  confidence: number;
+  changedMind: boolean;
+  voteType: VoteType;
+}
+
+function classifyVotes(
+  votes: Array<{ agentName: string; position: string; confidence: number; changedMind: boolean }>,
+  winningDecision: string
+): ClassifiedVote[] {
+  return votes.map((v) => {
+    let voteType: VoteType;
+    if (v.confidence < 0.15) {
+      voteType = "abstain";
+    } else {
+      // Compare position similarity to winning decision
+      const normPos = v.position.toLowerCase().trim();
+      const normDecision = winningDecision.toLowerCase().trim();
+      // If positions substantially overlap or match, it's an agree
+      const isAgree = normPos === normDecision ||
+        normPos.includes(normDecision.slice(0, Math.min(40, normDecision.length))) ||
+        normDecision.includes(normPos.slice(0, Math.min(40, normPos.length)));
+      voteType = isAgree ? "agree" : "disagree";
+    }
+    return { ...v, voteType };
+  });
+}
+
+const VOTE_COLORS: Record<VoteType, string> = {
+  agree: "#10B981",
+  disagree: "#EF4444",
+  abstain: "#6B7280",
+};
+
+const VOTE_LABELS: Record<VoteType, string> = {
+  agree: "AGREE",
+  disagree: "DISAGREE",
+  abstain: "ABSTAIN",
+};
+
+const VOTE_ICONS: Record<VoteType, typeof ThumbsUp> = {
+  agree: ThumbsUp,
+  disagree: ThumbsDown,
+  abstain: Minus,
+};
+
+// ── Vote Tally Bar ─────────────────────────────────────────────
+function VoteTallyBar({ votes }: { votes: ClassifiedVote[] }) {
+  const total = votes.length;
+  if (total === 0) return null;
+
+  const agreeCount = votes.filter((v) => v.voteType === "agree").length;
+  const disagreeCount = votes.filter((v) => v.voteType === "disagree").length;
+  const abstainCount = votes.filter((v) => v.voteType === "abstain").length;
+
+  const agreePct = (agreeCount / total) * 100;
+  const disagreePct = (disagreeCount / total) * 100;
+  const abstainPct = (abstainCount / total) * 100;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>Vote Distribution</span>
+        <span>{total} total votes</span>
+      </div>
+      {/* Bar */}
+      <div className="h-3 rounded-full overflow-hidden flex bg-white/5">
+        {agreePct > 0 && (
+          <div
+            className="h-full transition-all duration-700 ease-out"
+            style={{ width: `${agreePct}%`, background: VOTE_COLORS.agree }}
+            title={`Agree: ${agreeCount} (${Math.round(agreePct)}%)`}
+          />
+        )}
+        {disagreePct > 0 && (
+          <div
+            className="h-full transition-all duration-700 ease-out"
+            style={{ width: `${disagreePct}%`, background: VOTE_COLORS.disagree }}
+            title={`Disagree: ${disagreeCount} (${Math.round(disagreePct)}%)`}
+          />
+        )}
+        {abstainPct > 0 && (
+          <div
+            className="h-full transition-all duration-700 ease-out"
+            style={{ width: `${abstainPct}%`, background: VOTE_COLORS.abstain }}
+            title={`Abstain: ${abstainCount} (${Math.round(abstainPct)}%)`}
+          />
+        )}
+      </div>
+      {/* Legend */}
+      <div className="flex items-center gap-4 flex-wrap">
+        {agreeCount > 0 && (
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full" style={{ background: VOTE_COLORS.agree }} />
+            <span className="text-[10px] text-muted-foreground">
+              Agree <span className="font-semibold text-foreground/80">{agreeCount}</span>
+            </span>
+          </div>
+        )}
+        {disagreeCount > 0 && (
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full" style={{ background: VOTE_COLORS.disagree }} />
+            <span className="text-[10px] text-muted-foreground">
+              Disagree <span className="font-semibold text-foreground/80">{disagreeCount}</span>
+            </span>
+          </div>
+        )}
+        {abstainCount > 0 && (
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full" style={{ background: VOTE_COLORS.abstain }} />
+            <span className="text-[10px] text-muted-foreground">
+              Abstain <span className="font-semibold text-foreground/80">{abstainCount}</span>
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Agent Vote Card (with expandable reasoning) ────────────────
+function AgentVoteCard({ vote, agentColor }: { vote: ClassifiedVote; agentColor?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const Icon = VOTE_ICONS[vote.voteType];
+  const color = agentColor || "#888";
+  const pct = Math.round(vote.confidence * 100);
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/30 overflow-hidden transition-all duration-300 hover:border-border/60">
+      <button
+        className="w-full px-3 py-3 flex items-start gap-3 text-left"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <AgentAvatar name={vote.agentName} color={color} size="sm" className="mt-0.5 flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-xs font-semibold" style={{ color }}>
+              {vote.agentName}
+            </span>
+            {/* Vote badge */}
+            <span
+              className="text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider flex items-center gap-1"
+              style={{
+                background: VOTE_COLORS[vote.voteType] + "18",
+                color: VOTE_COLORS[vote.voteType],
+                border: `1px solid ${VOTE_COLORS[vote.voteType]}33`,
+              }}
+            >
+              <Icon className="w-2.5 h-2.5" />
+              {VOTE_LABELS[vote.voteType]}
+            </span>
+            {vote.changedMind && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-400/10 text-yellow-400 font-medium">
+                Changed mind
+              </span>
+            )}
+          </div>
+          {/* Confidence */}
+          <div className="flex items-center gap-2 mt-1">
+            <div className="h-1.5 flex-1 max-w-[120px] rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-700 ease-out"
+                style={{
+                  width: `${pct}%`,
+                  background: pct >= 70 ? "#10B981" : pct >= 40 ? "#D4AF37" : "#EF4444",
+                }}
+              />
+            </div>
+            <span
+              className="text-[10px] font-mono font-semibold"
+              style={{ color: pct >= 70 ? "#10B981" : pct >= 40 ? "#D4AF37" : "#EF4444" }}
+            >
+              {pct}%
+            </span>
+          </div>
+        </div>
+        <ChevronRight
+          className={cn(
+            "w-3.5 h-3.5 text-muted-foreground/40 flex-shrink-0 mt-1 transition-transform duration-200",
+            expanded && "rotate-90"
+          )}
+        />
+      </button>
+      {/* Expandable reasoning */}
+      {expanded && (
+        <div className="px-3 pb-3 pt-0 animate-in slide-in-from-top-1 fade-in duration-200">
+          <div className="ml-9 pl-3 border-l-2 border-border/30">
+            <p className="text-xs text-muted-foreground leading-relaxed">{vote.position}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Confidence Gauge (large radial) ────────────────────────────
+function ConfidenceGauge({ value }: { value: number }) {
+  const pct = Math.round(value * 100);
+  const radius = 40;
+  const circumference = 2 * Math.PI * radius;
+  const progress = (pct / 100) * circumference;
+  const color = pct >= 70 ? "#10B981" : pct >= 40 ? "#D4AF37" : "#EF4444";
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div className="relative w-24 h-24">
+        <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r={radius} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
+          <circle
+            cx="50" cy="50" r={radius} fill="none"
+            stroke={color} strokeWidth="6"
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference - progress}
+            className="transition-all duration-1000 ease-out"
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-xl font-bold font-mono" style={{ color }}>{pct}%</span>
+        </div>
+      </div>
+      <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+        Consensus Confidence
+      </span>
+    </div>
+  );
+}
+
+// ── Enhanced Consensus Panel ───────────────────────────────────
+function EnhancedConsensusPanel({
+  consensus,
+  agentColors,
+}: {
+  consensus: {
+    decision: string;
+    confidence: number;
+    method: string;
+    votes: Array<{ agentName: string; position: string; confidence: number; changedMind: boolean }>;
+    dissent: string[];
+  };
+  agentColors: Record<string, string>;
+}) {
+  const classifiedVotes = classifyVotes(consensus.votes, consensus.decision);
+
+  return (
+    <div
+      className="rounded-2xl border-2 border-[#D4AF37]/30 p-4 md:p-5 space-y-5 animate-in slide-in-from-bottom-3 fade-in duration-700"
+      style={{
+        background: "linear-gradient(135deg, rgba(212,175,55,0.04) 0%, rgba(15,23,42,0.6) 50%, rgba(212,175,55,0.02) 100%)",
+        boxShadow: "0 0 30px rgba(212,175,55,0.06), inset 0 1px 0 rgba(212,175,55,0.1)",
+      }}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Trophy className="w-5 h-5 text-[#D4AF37]" />
+        <span className="text-sm font-bold text-[#D4AF37]">Consensus Reached</span>
+        <span className="ml-auto text-[9px] px-2 py-0.5 rounded-full bg-[#D4AF37]/10 text-[#D4AF37] font-medium uppercase tracking-wider">
+          {consensus.method.replace("_", " ")}
+        </span>
+      </div>
+
+      {/* Decision + Gauge row */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <div className="flex-1">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5 font-medium">
+            Overall Decision
+          </p>
+          <p className="text-sm text-foreground leading-relaxed font-medium">{consensus.decision}</p>
+        </div>
+        <ConfidenceGauge value={consensus.confidence} />
+      </div>
+
+      {/* Vote Tally Bar */}
+      <VoteTallyBar votes={classifiedVotes} />
+
+      {/* Agent Vote Cards */}
+      <div className="space-y-2">
+        <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+          Individual Votes ({consensus.votes.length})
+        </p>
+        {classifiedVotes.map((vote) => (
+          <AgentVoteCard
+            key={vote.agentName}
+            vote={vote}
+            agentColor={agentColors[vote.agentName]}
+          />
+        ))}
+      </div>
+
+      {/* Dissenting Opinions */}
+      {consensus.dissent.length > 0 && (
+        <div
+          className="rounded-xl border border-red-400/20 bg-red-400/5 p-3 space-y-2"
+          style={{ boxShadow: "0 0 12px rgba(239,68,68,0.04)" }}
+        >
+          <div className="flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 text-red-400/80" />
+            <span className="text-[10px] font-semibold text-red-400/90 uppercase tracking-wider">
+              Dissenting Opinions
+            </span>
+          </div>
+          {consensus.dissent.map((d, i) => (
+            <p key={i} className="text-xs text-red-300/70 leading-relaxed pl-5">
+              {d}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Deliberation History Item ──────────────────────────────────
+function DelibHistoryItem({
+  session,
+  onSelect,
+  isSelected,
+}: {
+  session: any;
+  onSelect: () => void;
+  isSelected: boolean;
+}) {
+  const status = session.status as string;
+  const hasConsensus = !!session.consensus;
+  const confidence = hasConsensus ? Math.round(session.consensus.confidence * 100) : 0;
+
+  return (
+    <button
+      className={cn(
+        "w-full text-left rounded-xl border p-3 transition-all duration-200",
+        isSelected
+          ? "border-[#D4AF37]/40 bg-[#D4AF37]/5"
+          : "border-border/30 bg-card/20 hover:border-border/50 hover:bg-card/40"
+      )}
+      onClick={onSelect}
+    >
+      <div className="flex items-start gap-3">
+        <div className={cn(
+          "w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0",
+          status === "completed" ? "bg-emerald-400/10" : status === "failed" ? "bg-red-400/10" : "bg-[#D4AF37]/10"
+        )}>
+          {status === "completed" ? (
+            <Trophy className="w-3.5 h-3.5 text-emerald-400" />
+          ) : status === "failed" ? (
+            <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+          ) : (
+            <Loader2 className="w-3.5 h-3.5 text-[#D4AF37] animate-spin" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-foreground truncate">{session.topic}</p>
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+              <Clock className="w-2.5 h-2.5" />
+              {new Date(session.startedAt).toLocaleDateString(undefined, {
+                month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+              })}
+            </span>
+            {hasConsensus && (
+              <span
+                className="text-[10px] font-mono font-semibold"
+                style={{ color: confidence >= 70 ? "#10B981" : confidence >= 40 ? "#D4AF37" : "#EF4444" }}
+              >
+                {confidence}%
+              </span>
+            )}
+            <span className={cn(
+              "text-[9px] px-1.5 py-0.5 rounded font-medium",
+              status === "completed" ? "bg-emerald-400/10 text-emerald-400" :
+              status === "failed" ? "bg-red-400/10 text-red-400" :
+              "bg-[#D4AF37]/10 text-[#D4AF37]"
+            )}>
+              {status}
+            </span>
+          </div>
+        </div>
+        <ChevronRight className={cn(
+          "w-3.5 h-3.5 text-muted-foreground/30 flex-shrink-0 mt-1 transition-transform duration-200",
+          isSelected && "rotate-90"
+        )} />
+      </div>
+    </button>
+  );
+}
+
+// ── Deliberation History List ──────────────────────────────────
+function DeliberationHistoryList({
+  roomId,
+  agentColors,
+}: {
+  roomId: number;
+  agentColors: Record<string, string>;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const { data: sessions = [], isLoading } = useQuery<any[]>({
+    queryKey: ["/api/rooms", roomId, "deliberations"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/rooms/${roomId}/deliberations`);
+      if (!r.ok) return [];
+      return r.json();
+    },
+  });
+
+  // Sort by most recent first
+  const sorted = useMemo(
+    () => [...sessions].sort((a: any, b: any) => (b.startedAt || 0) - (a.startedAt || 0)),
+    [sessions]
+  );
+
+  const selectedSession = sorted.find((s: any) => s.sessionId === selectedId);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {[1, 2].map((i) => (
+          <div key={i} className="h-16 rounded-xl bg-card/20 animate-pulse border border-border/20" />
+        ))}
+      </div>
+    );
+  }
+
+  if (sorted.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <History className="w-3.5 h-3.5 text-muted-foreground/60" />
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          Deliberation History
+        </span>
+        <span className="text-[10px] text-muted-foreground/40">{sorted.length} sessions</span>
+        <div className="flex-1 h-px bg-border/30" />
+      </div>
+
+      <div className="space-y-2">
+        {sorted.map((session: any) => (
+          <div key={session.sessionId}>
+            <DelibHistoryItem
+              session={session}
+              onSelect={() => setSelectedId(selectedId === session.sessionId ? null : session.sessionId)}
+              isSelected={selectedId === session.sessionId}
+            />
+            {/* Expanded session detail */}
+            {selectedId === session.sessionId && selectedSession?.consensus && (
+              <div className="mt-2 ml-4 animate-in slide-in-from-top-1 fade-in duration-200">
+                <EnhancedConsensusPanel
+                  consensus={selectedSession.consensus}
+                  agentColors={agentColors}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ═════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═════════════════════════════════════════════════════════════════
@@ -230,6 +695,23 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
 
   const { data: agents = [] } = useQuery<any[]>({ queryKey: ["/api/agents"] });
   const { data: flows = [] } = useQuery<any[]>({ queryKey: ["/api/flows"] });
+
+  // ── Fetch latest consensus from structured API ──
+  const { data: latestConsensus } = useQuery<any>({
+    queryKey: ["/api/rooms", roomId, "consensus"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/rooms/${roomId}/consensus`);
+      if (!r.ok) return null;
+      return r.json();
+    },
+  });
+
+  // Build agent name → color map for vote cards
+  const agentColors = useMemo(() => {
+    const map: Record<string, string> = {};
+    (agents as any[]).forEach((a: any) => { map[a.name] = a.color; });
+    return map;
+  }, [agents]);
 
   const [wsConnected, setWsConnected] = useState(false);
 
@@ -892,7 +1374,16 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 <div className="space-y-2 pl-1">
                   {group.items.map((item) =>
                     item.isConsensus ? (
-                      <ConsensusCard key={item.id} item={item} />
+                      // Show enhanced consensus panel if structured data available
+                      latestConsensus?.votes ? (
+                        <EnhancedConsensusPanel
+                          key={item.id}
+                          consensus={latestConsensus}
+                          agentColors={agentColors}
+                        />
+                      ) : (
+                        <ConsensusCard key={item.id} item={item} />
+                      )
                     ) : (
                       <AgentResponseCard key={item.id} item={item} animate={gi === delibPhases.length - 1} />
                     )
@@ -918,6 +1409,11 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                   </div>
                 ))}
               </div>
+            )}
+
+            {/* ── Deliberation History ─────────────────────────────── */}
+            {!isDelibRunning && (
+              <DeliberationHistoryList roomId={roomId} agentColors={agentColors} />
             )}
           </div>
         </div>
