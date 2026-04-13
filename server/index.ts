@@ -16,6 +16,8 @@ if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
 }
 
 const app = express();
+// Trust Railway's proxy to get real client IPs
+app.set('trust proxy', 1);
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -132,9 +134,8 @@ app.use((req, res, next) => {
   // Monitor status endpoint — master key protected
   app.get("/health/monitor", (req: Request, res: Response) => {
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (masterKey) {
-      const auth = req.headers["x-master-key"] || req.headers["authorization"]?.replace("Bearer ", "");
-      if (auth !== masterKey) return res.status(401).json({ error: "Unauthorized" });
+    if (!masterKey || req.headers["x-master-key"] !== masterKey) {
+      return res.status(403).json({ error: "Admin access required" });
     }
     res.json(getMonitorSummary());
   });
@@ -142,9 +143,8 @@ app.use((req, res, next) => {
   // Admin request logs endpoint — master key protected
   app.get("/api/admin/logs", async (req: Request, res: Response) => {
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (masterKey) {
-      const auth = req.headers["x-master-key"] || req.headers["authorization"]?.replace("Bearer ", "");
-      if (auth !== masterKey) return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", status: 401 });
+    if (!masterKey || req.headers["x-master-key"] !== masterKey) {
+      return res.status(403).json({ error: "Admin access required" });
     }
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
     const offset = parseInt(req.query.offset as string) || 0;
@@ -210,6 +210,19 @@ app.use((req, res, next) => {
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
+  // Process-level error handlers for production stability
+  process.on('uncaughtException', (err) => {
+    console.error('[FATAL] Uncaught exception:', err.message);
+    console.error(err.stack);
+    // Give time for logs to flush, then exit
+    setTimeout(() => process.exit(1), 1000);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[ERROR] Unhandled rejection at:', promise);
+    console.error('[ERROR] Reason:', reason);
+  });
+
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen(
     {

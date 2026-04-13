@@ -867,10 +867,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Billing / Plan ────────────────────────────────────────────
   app.patch("/api/billing/plan", asyncHandler(async (req, res) => {
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    const authHeader = req.headers["x-master-key"] || req.headers.authorization?.replace("Bearer ", "");
+    if (!masterKey || authHeader !== masterKey) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { plan, billingCycle } = validateBody(updatePlanSchema, req.body);
-    const updated = await storage.updateUserPlan(userId, plan, billingCycle);
+    const updated = await storage.updateUserPlan(userId, plan, billingCycle ?? "monthly");
     res.json(updated);
   }));
 

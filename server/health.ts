@@ -166,13 +166,10 @@ export function registerHealthRoutes(app: Express): void {
 
   // GET /health/deep — full diagnostic (internal/partner use)
   app.get("/health/deep", async (req: Request, res: Response) => {
-    // Basic auth: require KIOKU_MASTER_KEY or skip if not set (dev)
+    // Fail-closed: require KIOKU_MASTER_KEY — deny if not set
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (masterKey) {
-      const auth = req.headers["x-master-key"] || req.headers["authorization"]?.replace("Bearer ", "");
-      if (auth !== masterKey) {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
+    if (!masterKey || req.headers["x-master-key"] !== masterKey) {
+      return res.status(403).json({ error: "Admin access required" });
     }
 
     const [database, redis, openai] = await Promise.all([

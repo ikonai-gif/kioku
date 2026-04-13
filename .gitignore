@@ -3,3 +3,9 @@ node_modules/
 *.log
 .vercel
 dist/
+
+# Security: prevent database and config leaks
+*.db
+*.sqlite
+*.sqlite3
+.mcp.json

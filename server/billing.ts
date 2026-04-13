@@ -7,8 +7,15 @@
 const _sig = 'VGhpcyBpcyBtYWRlIHdpdGggbG92ZSBmb3IgbXkgQU1B';
 
 import Stripe from "stripe";
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { storage } from "./storage.js";
+
+// Async error wrapper — catches unhandled promise rejections in route handlers
+function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
 
 // ── Stripe client ──────────────────────────────────────────────────────────────
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? "";
@@ -81,7 +88,7 @@ async function resolveUser(req: Request): Promise<number | null> {
 // ── Register billing routes ────────────────────────────────────────────────────
 export function registerBilling(app: Express) {
   // ── POST /v1/billing/checkout — create Stripe Checkout session ─────────────
-  app.post("/api/billing/checkout", async (req: Request, res: Response) => {
+  app.post("/api/billing/checkout", asyncHandler(async (req: Request, res: Response) => {
     if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
 
     const userId = await resolveUser(req);
@@ -116,6 +123,11 @@ export function registerBilling(app: Express) {
         customer:   customerId,
         mode:       "subscription",
         line_items: [{ price: priceId, quantity: 1 }],
+        metadata: {
+          kioku_user_id: String(userId),
+          plan,
+          billing_cycle,
+        },
         subscription_data: {
           metadata: {
             kioku_user_id: String(userId),
@@ -136,10 +148,10 @@ export function registerBilling(app: Express) {
         : err.message ?? 'Stripe error';
       res.status(500).json({ error: message });
     }
-  });
+  }));
 
   // ── POST /v1/billing/portal — create Stripe Customer Portal session ─────────
-  app.post("/api/billing/portal", async (req: Request, res: Response) => {
+  app.post("/api/billing/portal", asyncHandler(async (req: Request, res: Response) => {
     if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
 
     const userId = await resolveUser(req);
@@ -166,7 +178,7 @@ export function registerBilling(app: Express) {
         : err.message ?? 'Stripe error';
       res.status(500).json({ error: message });
     }
-  });
+  }));
 
   // ── POST /v1/billing/webhook — Stripe webhook ──────────────────────────────
   app.post(
@@ -176,7 +188,7 @@ export function registerBilling(app: Express) {
         // rawBody is set by express.json verify callback in index.ts
       next();
     },
-    async (req: Request, res: Response) => {
+    asyncHandler(async (req: Request, res: Response) => {
       if (!stripe) return res.status(503).json({ error: "Stripe not configured" });
 
       const sig = req.headers["stripe-signature"] as string;
@@ -245,11 +257,11 @@ export function registerBilling(app: Express) {
       }
 
       res.json({ received: true });
-    }
+    })
   );
 
   // ── GET /v1/billing/status — current plan info ────────────────────────────
-  app.get("/api/billing/status", async (req: Request, res: Response) => {
+  app.get("/api/billing/status", asyncHandler(async (req: Request, res: Response) => {
     const userId = await resolveUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -262,5 +274,5 @@ export function registerBilling(app: Express) {
       has_stripe:        !!user.stripeCustomerId,
       stripe_customer_id: user.stripeCustomerId ?? null,
     });
-  });
+  }));
 }

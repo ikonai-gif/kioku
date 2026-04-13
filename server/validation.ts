@@ -140,8 +140,8 @@ export const warRoomMessageSchema = z.object({
 
 // ── Billing schemas ─────────────────────────────────────────────────────────────
 export const updatePlanSchema = z.object({
-  plan: z.string().min(1).max(50),
-  billingCycle: z.string().min(1).max(20),
+  plan: z.enum(["free", "starter", "professional", "enterprise"]),
+  billingCycle: z.enum(["monthly", "yearly"]).optional(),
 });
 
 // ── Registration schemas ────────────────────────────────────────────────────────
