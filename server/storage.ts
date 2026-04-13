@@ -951,7 +951,7 @@ export class Storage implements IStorage {
       pool.query('SELECT rm.id, rm.content, rm.agent_name, rm.created_at, rm.room_id FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1', [userId]),
       pool.query('SELECT id, name, description, created_at FROM flows WHERE user_id = $1', [userId]),
       pool.query('SELECT id, operation, detail, created_at FROM logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1000', [userId]),
-      pool.query('SELECT id, room_id, topic, status, created_at FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, room_id, topic, status, started_at FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]),
       pool.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
       pool.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
     ]);
