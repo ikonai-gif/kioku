@@ -4,7 +4,7 @@ import { useAuth, useTheme } from "../App";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
-  CreditCard, LogOut, Sun, Moon, ChevronRight, Menu, X
+  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -28,6 +28,7 @@ const navItems = [
   { href: "/flows",   icon: GitBranch,       label: "Flows"     },
   { href: "/rooms",   icon: MessageSquare,   label: "Rooms"     },
   { href: "/logs",    icon: Activity,        label: "Live Feed" },
+  { href: "/docs",    icon: BookOpen,        label: "API Docs"  },
   { href: "/billing", icon: CreditCard,      label: "Billing"   },
 ];
 
