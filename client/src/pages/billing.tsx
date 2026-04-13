@@ -114,8 +114,8 @@ export default function BillingPage() {
 
   const currentPlan = user?.plan ?? "dev";
   const currentCycle = user?.billingCycle ?? "monthly";
-  // API key is stored in user.apiKey or we use master key for demo
-  const apiKey = user?.apiKey ?? "kioku_master_ikonbai_2026_secret";
+  // API key from authenticated user session
+  const apiKey = user?.apiKey ?? "";
 
   const savings = (plan: typeof PLANS[0]) => {
     if (plan.monthlyPrice === 0) return null;
