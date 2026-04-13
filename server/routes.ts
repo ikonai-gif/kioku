@@ -417,6 +417,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(tokens);
   }));
 
+  app.post("/api/agents/:id/tokens", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = Number(req.params.id);
+    const agent = await storage.getAgent(agentId);
+    if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Not found" });
+    const { name, scopes, expiresInDays } = validateBody(createAgentTokenSchema, req.body || {});
+    const result = await storage.createAgentToken({ agentId, userId, name, scopes, expiresInDays });
+    res.json({ ok: true, ...result, note: "Save this token — it cannot be retrieved later" });
+  }));
+
   app.delete("/api/agents/:id/tokens/:tokenId", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });

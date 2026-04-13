@@ -79,7 +79,7 @@ setInterval(() => {
  * Resolves user plan from session token or X-API-Key header
  * Applies per-minute AND per-day limits
  */
-export function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
+export async function rateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
   // Skip non-API routes and health
   if (!req.path.startsWith("/api") || req.path === "/health") return next();
 
@@ -112,8 +112,8 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     }
   }
 
-  // Async plan resolution — we optimistically use resolved plan
-  resolveUserPlan(apiKey, sessionToken).then((plan) => {
+  try {
+    const plan = await resolveUserPlan(apiKey, sessionToken);
     const limits = PLANS[plan] || PLANS["dev"];
 
     const minKey = `min:${identityKey}`;
@@ -164,11 +164,11 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     }
 
     next();
-  }).catch((err) => {
+  } catch (err) {
     // Fail closed — reject request on rate limit resolution error
     console.error('Rate limit resolution error:', err);
     res.status(429).json({ error: 'Rate limit error, please retry' });
-  });
+  }
 }
 
 // Auth-specific rate limiting (per-endpoint, keyed by email or IP)
