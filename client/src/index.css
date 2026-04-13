@@ -201,3 +201,31 @@
   .border.hover-elevate-2:not(.no-hover-interaction-elevate)::after,
   .border.active-elevate-2:not(.no-active-interaction-elevate)::after { inset: -1px; }
 }
+
+/* Human participant card pulsing gold border */
+@keyframes pulse-gold {
+  0%, 100% { box-shadow: 0 0 20px rgba(212,175,55,0.10), inset 0 1px 0 rgba(212,175,55,0.15); }
+  50% { box-shadow: 0 0 30px rgba(212,175,55,0.20), inset 0 1px 0 rgba(212,175,55,0.25); }
+}
+
+/* Gold confidence slider thumb */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #D4AF37;
+  cursor: pointer;
+  border: 2px solid rgba(255,255,255,0.2);
+  box-shadow: 0 0 6px rgba(212,175,55,0.3);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #D4AF37;
+  cursor: pointer;
+  border: 2px solid rgba(255,255,255,0.2);
+  box-shadow: 0 0 6px rgba(212,175,55,0.3);
+}

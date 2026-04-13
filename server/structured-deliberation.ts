@@ -15,7 +15,7 @@
 import OpenAI from "openai";
 import { createHmac } from "crypto";
 import { storage } from "./storage";
-import { broadcastToRoom } from "./ws";
+import { broadcastToRoom, broadcastHumanTurn } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
 
 // Strip common prompt injection patterns from user-provided content
@@ -236,6 +236,84 @@ async function callWebhook(
 // Active sessions — prevent double-run on same room
 const activeSessions = new Set<number>();
 
+// ── Human Participant Pending Input ──────────────────────────────
+
+const HUMAN_TIMEOUT_MS = 60_000; // 60s for human to respond
+
+interface PendingHumanInput {
+  resolve: (input: { position: string; confidence: number; reasoning: string } | null) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+// Key: `${sessionId}:${phase}:${round}`
+const pendingHumanInputs = new Map<string, PendingHumanInput>();
+
+function humanInputKey(sessionId: string, phase: string, round: number): string {
+  return `${sessionId}:${phase}:${round}`;
+}
+
+/**
+ * Wait for human input during a deliberation phase.
+ * Broadcasts a human_turn event and waits up to 60s for submitHumanInput() to be called.
+ * Returns null if the human skips/times out (abstain).
+ */
+async function waitForHumanInput(
+  roomId: number,
+  sessionId: string,
+  phase: string,
+  round: number,
+  topic: string,
+  priorPositions: AgentPosition[]
+): Promise<{ position: string; confidence: number; reasoning: string } | null> {
+  const key = humanInputKey(sessionId, phase, round);
+
+  // Notify frontend that it's human's turn
+  broadcastHumanTurn(roomId, {
+    sessionId,
+    phase,
+    round,
+    topic,
+    priorPositions: priorPositions.map(p => ({
+      agentName: p.agentName,
+      position: p.position,
+      confidence: p.confidence,
+      reasoning: p.reasoning,
+    })),
+    timeoutMs: HUMAN_TIMEOUT_MS,
+  });
+
+  await postSystemMessage(roomId, "🙋 Waiting for human participant input (60s)...");
+
+  return new Promise<{ position: string; confidence: number; reasoning: string } | null>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingHumanInputs.delete(key);
+      resolve(null); // abstain on timeout
+    }, HUMAN_TIMEOUT_MS);
+
+    pendingHumanInputs.set(key, { resolve, timer });
+  });
+}
+
+/**
+ * Submit human input for a pending deliberation phase.
+ * Called from the API endpoint.
+ */
+export function submitHumanInput(
+  sessionId: string,
+  phase: string,
+  round: number,
+  input: { position: string; confidence: number; reasoning: string }
+): boolean {
+  const key = humanInputKey(sessionId, phase, round);
+  const pending = pendingHumanInputs.get(key);
+  if (!pending) return false;
+
+  clearTimeout(pending.timer);
+  pendingHumanInputs.delete(key);
+  pending.resolve(input);
+  return true;
+}
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface AgentPosition {
@@ -288,7 +366,7 @@ export async function runDeliberation(
   roomId: number,
   userId: number,
   topic: string,
-  options?: { model?: string; debateRounds?: number }
+  options?: { model?: string; debateRounds?: number; includeHuman?: boolean; humanName?: string }
 ): Promise<DeliberationSession> {
   if (!openai && !GEMINI_API_KEY) throw new Error("No AI provider configured (set OPENAI_API_KEY or GEMINI_API_KEY)");
   if (activeSessions.has(roomId)) throw new Error("Deliberation already running in this room");
@@ -297,6 +375,8 @@ export async function runDeliberation(
   const sessionId = `dlb_${roomId}_${Date.now()}`;
   const fallbackModel = options?.model || DEFAULT_MODEL;
   const debateRounds = options?.debateRounds ?? 2;
+  const includeHuman = options?.includeHuman ?? false;
+  const humanName = options?.humanName || "Human Participant";
 
   const session: DeliberationSession = {
     sessionId,
@@ -324,14 +404,17 @@ export async function runDeliberation(
       (a) => roomAgentIds.includes(a.id) && a.status !== "offline"
     );
 
-    if (agents.length < 2) throw new Error("Need at least 2 non-offline agents for deliberation");
+    const minAgents = includeHuman ? 1 : 2;
+    if (agents.length < minAgents) throw new Error(`Need at least ${minAgents} non-offline agent${minAgents > 1 ? 's' : ''} for deliberation`);
 
     // Post system message: deliberation starting
-    await postSystemMessage(roomId, `⚡ Structured deliberation started: "${topic}" — ${agents.length} agents, ${debateRounds} debate rounds`);
+    const participantLabel = includeHuman ? `${agents.length} agents + 1 human` : `${agents.length} agents`;
+    await postSystemMessage(roomId, `⚡ Structured deliberation started: "${topic}" — ${participantLabel}, ${debateRounds} debate rounds`);
 
     // ── Phase 1: Initial Positions ──
     const initialPositions = await collectPositions(
-      roomId, userId, agents, topic, "position", 1, fallbackModel, [], sessionId
+      roomId, userId, agents, topic, "position", 1, fallbackModel, [], sessionId,
+      includeHuman, humanName
     );
     session.rounds.push(initialPositions);
     await persistSession(session, userId);
@@ -340,7 +423,8 @@ export async function runDeliberation(
     let previousPositions = initialPositions.positions;
     for (let r = 1; r <= debateRounds; r++) {
       const debateResult = await collectPositions(
-        roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions, sessionId
+        roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions, sessionId,
+        includeHuman, humanName
       );
       session.rounds.push(debateResult);
       previousPositions = debateResult.positions;
@@ -350,7 +434,8 @@ export async function runDeliberation(
     // ── Phase 3: Final Positions ──
     const allPriorPositions = session.rounds.flatMap((r) => r.positions);
     const finalPositions = await collectPositions(
-      roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions, sessionId
+      roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions, sessionId,
+      includeHuman, humanName
     );
     session.rounds.push(finalPositions);
     await persistSession(session, userId);
@@ -432,7 +517,9 @@ async function collectPositions(
   round: number,
   fallbackModel: string,
   priorPositions: AgentPosition[],
-  sessionId: string
+  sessionId: string,
+  includeHuman: boolean = false,
+  humanName: string = "Human Participant"
 ): Promise<DeliberationRound> {
   const phaseLabel =
     phase === "position" ? "📍 Phase 1 — Initial Positions" :
@@ -546,6 +633,47 @@ async function collectPositions(
         confidence: 0,
         reasoning: `Agent failed to respond: ${(result.reason as Error).message?.slice(0, 100) || "unknown error"}`,
       });
+    }
+  }
+
+  // ── Human participant input ──
+  if (includeHuman) {
+    const humanInput = await waitForHumanInput(roomId, sessionId, phase, round, topic, positions);
+
+    if (humanInput) {
+      const humanPosition: AgentPosition = {
+        agentId: -1, // sentinel for human
+        agentName: humanName,
+        agentColor: "#D4AF37",
+        position: humanInput.position,
+        confidence: Math.max(0, Math.min(1, humanInput.confidence)),
+        reasoning: humanInput.reasoning,
+      };
+      positions.push(humanPosition);
+
+      // Post to room as message
+      const displayContent = `[${phaseLabel}] [Human] ${humanInput.position} (confidence: ${(humanPosition.confidence * 100).toFixed(0)}%)`;
+      const msg = await storage.addRoomMessage({
+        roomId,
+        agentId: null,
+        agentName: humanName,
+        agentColor: "#D4AF37",
+        content: displayContent,
+        isDecision: false,
+      });
+      if (msg) broadcastToRoom(roomId, msg);
+    } else {
+      // Human timed out — mark as abstain
+      positions.push({
+        agentId: -1,
+        agentName: humanName,
+        agentColor: "#D4AF37",
+        position: "[abstained — no response within 60s]",
+        confidence: 0,
+        reasoning: "Human participant did not respond within the time limit.",
+      });
+
+      await postSystemMessage(roomId, `⏱️ ${humanName} did not respond in time — marked as abstain.`);
     }
   }
 

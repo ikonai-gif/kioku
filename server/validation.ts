@@ -134,6 +134,16 @@ export const deliberateSchema = z.object({
   topic: z.string().min(1).max(2000),
   model: z.enum(ALLOWED_MODELS).optional(),
   debateRounds: z.number().int().min(1).max(5).optional(),
+  includeHuman: z.boolean().optional(),
+  humanName: z.string().max(100).optional(),
+});
+
+export const humanInputSchema = z.object({
+  phase: z.enum(["position", "debate", "final"]),
+  round: z.number().int().min(1).max(10),
+  position: z.string().min(1).max(5000),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string().max(5000).optional(),
 });
 
 // ── Webhook schemas ─────────────────────────────────────────────────────────────

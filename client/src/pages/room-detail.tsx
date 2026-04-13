@@ -3,10 +3,11 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, ChevronRight, Loader2, Trophy, MessageSquare, ThumbsUp, ThumbsDown, Minus, Clock, History, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, ChevronRight, Loader2, Trophy, MessageSquare, ThumbsUp, ThumbsDown, Minus, Clock, History, AlertTriangle, User, Timer } from "lucide-react";
 import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
 import { cn, safeParseIds } from "@/lib/utils";
+import { useAuth } from "../App";
 
 const FLOW_COLORS = [
   "#D4AF37", "#3B82F6", "#A855F7", "#10B981",
@@ -26,6 +27,7 @@ interface ParsedDelibMessage {
   modelTag: string;
   isSystem: boolean;
   isConsensus: boolean;
+  isHuman: boolean;
   rawContent: string;
   id: number;
   createdAt: string;
@@ -52,6 +54,7 @@ function parseDelibMessage(msg: any): ParsedDelibMessage | null {
       modelTag: "",
       isSystem: true,
       isConsensus: false,
+      isHuman: false,
       rawContent: content,
       id: msg.id,
       createdAt: msg.createdAt,
@@ -71,6 +74,7 @@ function parseDelibMessage(msg: any): ParsedDelibMessage | null {
       modelTag: "",
       isSystem: false,
       isConsensus: true,
+      isHuman: false,
       rawContent: content,
       id: msg.id,
       createdAt: msg.createdAt,
@@ -98,6 +102,8 @@ function parseDelibMessage(msg: any): ParsedDelibMessage | null {
     .replace(/\(confidence:\s*\d+%\)/, "")
     .trim();
 
+  const isHuman = content.includes("[Human]") || (msg.agentId === null && !msg.agentName?.includes("KIOKU"));
+
   return {
     phase,
     agentName: msg.agentName,
@@ -108,6 +114,7 @@ function parseDelibMessage(msg: any): ParsedDelibMessage | null {
     modelTag,
     isSystem: false,
     isConsensus: false,
+    isHuman,
     rawContent: content,
     id: msg.id,
     createdAt: msg.createdAt,
@@ -166,16 +173,29 @@ function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animat
     <div className={cn(
       "rounded-xl border p-3 transition-all duration-500",
       animate ? "animate-in slide-in-from-bottom-2 fade-in" : "",
-      "border-border/40 bg-card/30 hover:border-border/60"
+      item.isHuman
+        ? "border-[#D4AF37]/40 bg-[#D4AF37]/[0.03] hover:border-[#D4AF37]/60"
+        : "border-border/40 bg-card/30 hover:border-border/60"
     )}>
       <div className="flex items-start gap-3">
-        <AgentAvatar name={item.agentName} color={item.agentColor} size="sm" className="mt-0.5" />
+        {item.isHuman ? (
+          <div className="w-6 h-6 rounded-full bg-[#D4AF37]/20 border border-[#D4AF37]/40 flex items-center justify-center mt-0.5 flex-shrink-0">
+            <User className="w-3 h-3 text-[#D4AF37]" />
+          </div>
+        ) : (
+          <AgentAvatar name={item.agentName} color={item.agentColor} size="sm" className="mt-0.5" />
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-xs font-semibold" style={{ color: item.agentColor }}>
               {item.agentName}
             </span>
-            {item.modelTag && (
+            {item.isHuman && (
+              <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#D4AF37]/15 text-[#D4AF37] font-bold uppercase tracking-wider border border-[#D4AF37]/30">
+                Human
+              </span>
+            )}
+            {item.modelTag && !item.isHuman && (
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-muted-foreground/50 font-mono">
                 {item.modelTag}
               </span>
@@ -669,6 +689,242 @@ function DeliberationHistoryList({
   );
 }
 
+// ── Circular Countdown Timer ──────────────────────────────────
+function CircularTimer({ secondsLeft, totalSeconds }: { secondsLeft: number; totalSeconds: number }) {
+  const radius = 20;
+  const circumference = 2 * Math.PI * radius;
+  const progress = (secondsLeft / totalSeconds) * circumference;
+  const color = secondsLeft > 20 ? "#D4AF37" : secondsLeft > 10 ? "#F97316" : "#EF4444";
+
+  return (
+    <div className="relative w-12 h-12 flex-shrink-0">
+      <svg className="w-12 h-12 -rotate-90" viewBox="0 0 50 50">
+        <circle cx="25" cy="25" r={radius} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="3" />
+        <circle
+          cx="25" cy="25" r={radius} fill="none"
+          stroke={color} strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference - progress}
+          className="transition-all duration-1000 linear"
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-xs font-bold font-mono" style={{ color }}>{secondsLeft}s</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Human Input Card ─────────────────────────────────────────
+function HumanInputCard({
+  sessionId,
+  roomId,
+  phase,
+  round,
+  topic,
+  priorPositions,
+  timeoutMs,
+  onSubmitted,
+  onSkipped,
+}: {
+  sessionId: string;
+  roomId: number;
+  phase: string;
+  round: number;
+  topic: string;
+  priorPositions: Array<{ agentName: string; position: string; confidence: number; reasoning: string }>;
+  timeoutMs: number;
+  onSubmitted: () => void;
+  onSkipped: () => void;
+}) {
+  const [position, setPosition] = useState("");
+  const [confidence, setConfidence] = useState(0.7);
+  const [reasoning, setReasoning] = useState("");
+  const [secondsLeft, setSecondsLeft] = useState(Math.floor(timeoutMs / 1000));
+  const [submitting, setSubmitting] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startTimeRef = useRef(Date.now());
+
+  useEffect(() => {
+    startTimeRef.current = Date.now();
+    timerRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTimeRef.current;
+      const remaining = Math.max(0, Math.ceil((timeoutMs - elapsed) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        onSkipped();
+      }
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [timeoutMs, onSkipped]);
+
+  async function handleSubmit() {
+    if (!position.trim() || submitting) return;
+    setSubmitting(true);
+    try {
+      const r = await apiRequest("POST", `/api/rooms/${roomId}/deliberations/${sessionId}/human-input`, {
+        phase,
+        round,
+        position: position.trim(),
+        confidence,
+        reasoning: reasoning.trim() || undefined,
+      });
+      if (r.ok) {
+        onSubmitted();
+      }
+    } catch {
+      // ignore — will timeout naturally
+    }
+    setSubmitting(false);
+  }
+
+  function handleSkip() {
+    if (timerRef.current) clearInterval(timerRef.current);
+    onSkipped();
+  }
+
+  const phaseLabel = phase === "position" ? "Initial Position" : phase === "debate" ? `Debate Round ${round}` : "Final Position";
+  const confPct = Math.round(confidence * 100);
+  const totalSeconds = Math.floor(timeoutMs / 1000);
+
+  return (
+    <div
+      className="rounded-2xl border-2 p-4 space-y-4 animate-in slide-in-from-bottom-3 fade-in duration-500"
+      style={{
+        borderColor: "#D4AF37",
+        background: "linear-gradient(135deg, rgba(212,175,55,0.06) 0%, rgba(15,23,42,0.8) 50%, rgba(212,175,55,0.03) 100%)",
+        boxShadow: "0 0 30px rgba(212,175,55,0.12), inset 0 1px 0 rgba(212,175,55,0.15)",
+        animation: "pulse-gold 2s ease-in-out infinite",
+      }}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full bg-[#D4AF37]/20 border border-[#D4AF37]/40 flex items-center justify-center">
+          <User className="w-4 h-4 text-[#D4AF37]" />
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-[#D4AF37]">Your Turn</span>
+            <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#D4AF37]/15 text-[#D4AF37] font-semibold uppercase tracking-wider border border-[#D4AF37]/30">
+              Human
+            </span>
+          </div>
+          <span className="text-[10px] text-muted-foreground">{phaseLabel}</span>
+        </div>
+        <CircularTimer secondsLeft={secondsLeft} totalSeconds={totalSeconds} />
+      </div>
+
+      {/* Prior positions summary (collapsed) */}
+      {priorPositions.length > 0 && (
+        <div className="rounded-lg bg-white/[0.02] border border-border/30 p-3 space-y-1.5">
+          <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+            Other positions ({priorPositions.length})
+          </span>
+          {priorPositions.slice(0, 4).map((p, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <span className="text-[10px] font-semibold text-foreground/70 flex-shrink-0">{p.agentName}:</span>
+              <span className="text-[10px] text-muted-foreground leading-relaxed line-clamp-1">{p.position}</span>
+            </div>
+          ))}
+          {priorPositions.length > 4 && (
+            <span className="text-[9px] text-muted-foreground/50">+{priorPositions.length - 4} more</span>
+          )}
+        </div>
+      )}
+
+      {/* Position textarea */}
+      <div>
+        <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">Your Position</label>
+        <textarea
+          className="w-full bg-muted/30 border border-[#D4AF37]/30 rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#D4AF37]/60 transition-colors resize-none"
+          rows={3}
+          placeholder="State your position on the topic..."
+          value={position}
+          onChange={e => setPosition(e.target.value)}
+          disabled={submitting}
+          autoFocus
+        />
+      </div>
+
+      {/* Confidence slider */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-[11px] text-muted-foreground font-medium">Confidence</label>
+          <span
+            className="text-xs font-mono font-bold"
+            style={{ color: confPct >= 70 ? "#10B981" : confPct >= 40 ? "#D4AF37" : "#EF4444" }}
+          >
+            {confPct}%
+          </span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={confidence}
+          onChange={e => setConfidence(parseFloat(e.target.value))}
+          disabled={submitting}
+          className="w-full h-2 rounded-full appearance-none cursor-pointer"
+          style={{
+            background: `linear-gradient(to right, #D4AF37 0%, #D4AF37 ${confPct}%, rgba(255,255,255,0.05) ${confPct}%, rgba(255,255,255,0.05) 100%)`,
+          }}
+        />
+      </div>
+
+      {/* Reasoning (optional) */}
+      <div>
+        <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">Reasoning (optional)</label>
+        <textarea
+          className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#D4AF37]/40 transition-colors resize-none"
+          rows={2}
+          placeholder="Explain your reasoning..."
+          value={reasoning}
+          onChange={e => setReasoning(e.target.value)}
+          disabled={submitting}
+        />
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-3">
+        <Button
+          className="flex-1 font-semibold"
+          style={{
+            background: "linear-gradient(135deg, #D4AF37, #B8960C)",
+            color: "hsl(222 47% 8%)",
+          }}
+          onClick={handleSubmit}
+          disabled={!position.trim() || submitting}
+        >
+          {submitting ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+              Submitting...
+            </>
+          ) : (
+            <>
+              <Send className="w-3.5 h-3.5 mr-1.5" />
+              Submit Position
+            </>
+          )}
+        </Button>
+        <button
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-2"
+          onClick={handleSkip}
+          disabled={submitting}
+        >
+          Skip Round
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ═════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═════════════════════════════════════════════════════════════════
@@ -689,6 +945,18 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const [delibRounds, setDelibRounds] = useState(1);
   const [delibPhase, setDelibPhase] = useState<DelibPhase>("idle");
   const [delibSessionId, setDelibSessionId] = useState<string | null>(null);
+
+  // ── Human Participant State ──
+  const [includeHuman, setIncludeHuman] = useState(false);
+  const [humanTurnData, setHumanTurnData] = useState<{
+    sessionId: string;
+    phase: string;
+    round: number;
+    topic: string;
+    priorPositions: Array<{ agentName: string; position: string; confidence: number; reasoning: string }>;
+    timeoutMs: number;
+  } | null>(null);
+  const { user } = useAuth();
 
   const { data: allRooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
   const room = (allRooms as any[]).find((r: any) => r.id === roomId) ?? null;
@@ -753,6 +1021,15 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 return [...prev, data];
               }
             );
+          } else if (data.type === "human_turn") {
+            setHumanTurnData({
+              sessionId: data.sessionId,
+              phase: data.phase,
+              round: data.round,
+              topic: data.topic,
+              priorPositions: data.priorPositions || [],
+              timeoutMs: data.timeoutMs || 60000,
+            });
           }
         } catch {
           // ignore malformed frames
@@ -815,7 +1092,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
 
   // ── Start Deliberation ──
   const delibMutation = useMutation({
-    mutationFn: async (data: { topic: string; debateRounds: number }) => {
+    mutationFn: async (data: { topic: string; debateRounds: number; includeHuman?: boolean; humanName?: string }) => {
       const r = await apiRequest("POST", `/api/rooms/${roomId}/deliberate`, data);
       if (!r.ok) {
         const err = await r.json().catch(() => ({ error: r.statusText }));
@@ -827,10 +1104,12 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       setDelibSessionId(session.sessionId);
       setDelibPhase("completed");
       setShowDelibPanel(false);
+      setHumanTurnData(null);
       toast({ title: "Deliberation complete" });
     },
     onError: (err: any) => {
       setDelibPhase("failed");
+      setHumanTurnData(null);
       toast({ title: err.message || "Deliberation failed", variant: "destructive" });
     },
   });
@@ -838,7 +1117,13 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   function startDeliberation() {
     if (!delibTopic.trim()) return;
     setDelibPhase("starting");
-    delibMutation.mutate({ topic: delibTopic.trim(), debateRounds: delibRounds });
+    setHumanTurnData(null);
+    delibMutation.mutate({
+      topic: delibTopic.trim(),
+      debateRounds: delibRounds,
+      includeHuman: includeHuman || undefined,
+      humanName: includeHuman ? (user?.name || "Human Participant") : undefined,
+    });
   }
 
   // ── Parse deliberation messages from the chat stream ──
@@ -1240,6 +1525,41 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                   />
                 </div>
 
+                {/* Join as Participant toggle */}
+                <div
+                  className={cn(
+                    "flex items-center gap-3 rounded-xl border p-3 transition-all duration-200 cursor-pointer select-none",
+                    includeHuman
+                      ? "border-[#D4AF37]/40 bg-[#D4AF37]/5"
+                      : "border-border/40 bg-card/20 hover:border-border/60"
+                  )}
+                  onClick={() => !isDelibRunning && setIncludeHuman(!includeHuman)}
+                >
+                  <div className={cn(
+                    "w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors",
+                    includeHuman ? "bg-[#D4AF37]/20 border border-[#D4AF37]/40" : "bg-muted/30 border border-border/40"
+                  )}>
+                    <User className={cn("w-4 h-4", includeHuman ? "text-[#D4AF37]" : "text-muted-foreground/50")} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className={cn("text-xs font-semibold", includeHuman ? "text-[#D4AF37]" : "text-foreground/80")}>
+                      Join as Participant
+                    </span>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Respond alongside AI agents in each phase (60s per round)
+                    </p>
+                  </div>
+                  <div className={cn(
+                    "w-9 h-5 rounded-full relative transition-all duration-200",
+                    includeHuman ? "bg-[#D4AF37]" : "bg-muted/50"
+                  )}>
+                    <div className={cn(
+                      "w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all duration-200",
+                      includeHuman ? "left-[18px]" : "left-0.5"
+                    )} />
+                  </div>
+                </div>
+
                 {/* Rounds selector + Start button row */}
                 <div className="flex items-end gap-3">
                   <div className="flex-shrink-0">
@@ -1265,9 +1585,14 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                       {roomAgents.filter((a: any) => a.status === "online").slice(0, 5).map((a: any) => (
                         <AgentAvatar key={a.id} name={a.name} color={a.color} size="sm" />
                       ))}
+                      {includeHuman && (
+                        <div className="w-6 h-6 rounded-full bg-[#D4AF37]/20 border-2 border-background flex items-center justify-center">
+                          <User className="w-3 h-3 text-[#D4AF37]" />
+                        </div>
+                      )}
                     </div>
                     <span className="text-[10px] text-muted-foreground">
-                      {roomAgents.filter((a: any) => a.status === "online").length} agents online
+                      {roomAgents.filter((a: any) => a.status === "online").length} agents{includeHuman ? " + you" : ""} online
                     </span>
                   </div>
 
@@ -1278,7 +1603,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                       color: "hsl(222 47% 8%)",
                     }}
                     onClick={startDeliberation}
-                    disabled={!delibTopic.trim() || isDelibRunning || roomAgents.filter((a: any) => a.status === "online").length < 2}
+                    disabled={!delibTopic.trim() || isDelibRunning || (!includeHuman && roomAgents.filter((a: any) => a.status === "online").length < 2)}
                     data-testid="button-start-deliberation"
                   >
                     {isDelibRunning ? (
@@ -1296,9 +1621,9 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 </div>
 
                 {/* Minimum agents warning */}
-                {roomAgents.filter((a: any) => a.status === "online").length < 2 && (
+                {!includeHuman && roomAgents.filter((a: any) => a.status === "online").length < 2 && (
                   <p className="text-[11px] text-red-400/80">
-                    At least 2 online agents required for deliberation. Enable agents in the Chat tab.
+                    At least 2 online agents required for deliberation (or enable "Join as Participant"). Enable agents in the Chat tab.
                   </p>
                 )}
               </div>
@@ -1392,8 +1717,23 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
               </div>
             ))}
 
+            {/* Human participant input card */}
+            {humanTurnData && isDelibRunning && (
+              <HumanInputCard
+                sessionId={humanTurnData.sessionId}
+                roomId={roomId}
+                phase={humanTurnData.phase}
+                round={humanTurnData.round}
+                topic={humanTurnData.topic}
+                priorPositions={humanTurnData.priorPositions}
+                timeoutMs={humanTurnData.timeoutMs}
+                onSubmitted={() => setHumanTurnData(null)}
+                onSkipped={() => setHumanTurnData(null)}
+              />
+            )}
+
             {/* Loading placeholder during deliberation */}
-            {isDelibRunning && (
+            {isDelibRunning && !humanTurnData && (
               <div className="space-y-3">
                 {[1, 2].map(i => (
                   <div key={i} className="rounded-xl border border-border/20 p-3 animate-pulse">

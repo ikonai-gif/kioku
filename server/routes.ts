@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
-import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus } from "./structured-deliberation";
+import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
@@ -22,7 +22,7 @@ import {
   createMemorySchema, purgeMemoriesSchema,
   createFlowSchema, updateFlowSchema,
   createRoomSchema, updateRoomSchema,
-  createRoomMessageSchema, deliberateSchema,
+  createRoomMessageSchema, deliberateSchema, humanInputSchema,
   createWebhookSchema, createAgentTokenSchema, agentCallbackSchema,
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
   createMemoryLinkSchema,
@@ -1128,11 +1128,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         error: `Daily AI quota exceeded: ${aiCheck.used}/${aiCheck.limit} calls (${deliberatePlan} plan)`
       });
     }
-    const { topic, model, debateRounds } = validateBody(deliberateSchema, req.body);
+    const { topic, model, debateRounds, includeHuman, humanName } = validateBody(deliberateSchema, req.body);
     try {
       const session = await runDeliberation(roomId, userId, topic, {
         model: model || undefined,
         debateRounds: debateRounds ?? 2,
+        includeHuman: includeHuman ?? false,
+        humanName: humanName || undefined,
       });
       res.json(session);
     } catch (err) {
@@ -1140,6 +1142,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const status = message.includes("already running") ? 409 : 500;
       res.status(status).json({ error: message });
     }
+  }));
+
+  // Submit human participant input during a deliberation
+  app.post("/api/rooms/:id/deliberations/:sessionId/human-input", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    const room = await storage.getRoom(roomId, userId);
+    if (!room) return res.status(404).json({ error: "Not found" });
+
+    const { phase, round, position, confidence, reasoning } = validateBody(humanInputSchema, req.body);
+    const accepted = submitHumanInput(
+      String(req.params.sessionId),
+      phase,
+      round,
+      { position, confidence, reasoning: reasoning || "" }
+    );
+
+    if (!accepted) {
+      return res.status(410).json({ error: "No pending human input for this phase/round (expired or already submitted)" });
+    }
+
+    res.json({ accepted: true });
   }));
 
   // Get deliberation session by ID

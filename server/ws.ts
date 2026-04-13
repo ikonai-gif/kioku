@@ -144,3 +144,25 @@ export function broadcastToRoom(roomId: number, payload: object) {
     }
   });
 }
+
+/**
+ * Broadcast a human_turn event to all clients subscribed to a room.
+ * Signals that it's the human participant's turn to respond in a deliberation.
+ */
+export function broadcastHumanTurn(roomId: number, payload: {
+  sessionId: string;
+  phase: string;
+  round: number;
+  topic: string;
+  priorPositions: Array<{ agentName: string; position: string; confidence: number; reasoning: string }>;
+  timeoutMs: number;
+}) {
+  const clients = roomClients.get(roomId);
+  if (!clients) return;
+  const data = JSON.stringify({ type: "human_turn", ...payload });
+  Array.from(clients).forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  });
+}
