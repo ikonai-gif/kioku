@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, Loader2, Trophy, MessageSquare } from "lucide-react";
 import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
 import { cn, safeParseIds } from "@/lib/utils";
@@ -12,6 +12,201 @@ const FLOW_COLORS = [
   "#D4AF37", "#3B82F6", "#A855F7", "#10B981",
   "#F97316", "#EF4444", "#06B6D4", "#EC4899",
 ];
+
+// ── Deliberation Phase Parsing ──────────────────────────────────
+type DelibPhase = "idle" | "starting" | "position" | "debate" | "final" | "consensus" | "completed" | "failed";
+
+interface ParsedDelibMessage {
+  phase: "position" | "debate" | "final" | "consensus" | "system";
+  agentName: string;
+  agentColor: string;
+  agentId: number | null;
+  position: string;
+  confidence: number;
+  modelTag: string;
+  isSystem: boolean;
+  isConsensus: boolean;
+  rawContent: string;
+  id: number;
+  createdAt: string;
+}
+
+function parseDelibMessage(msg: any): ParsedDelibMessage | null {
+  const content: string = msg.content || "";
+
+  // System messages from KIOKU
+  if (msg.agentName === "KIOKU\u2122 System" || msg.agentName === "KIOKU™ System") {
+    let phase: ParsedDelibMessage["phase"] = "system";
+    if (content.includes("Phase 1")) phase = "position";
+    else if (content.includes("Debate Round")) phase = "debate";
+    else if (content.includes("Final Positions")) phase = "final";
+    else if (content.includes("complete")) phase = "consensus";
+
+    return {
+      phase,
+      agentName: msg.agentName,
+      agentColor: msg.agentColor || "#888",
+      agentId: null,
+      position: content,
+      confidence: 0,
+      modelTag: "",
+      isSystem: true,
+      isConsensus: false,
+      rawContent: content,
+      id: msg.id,
+      createdAt: msg.createdAt,
+    };
+  }
+
+  // Consensus message
+  if (msg.agentName === "KIOKU\u2122 Consensus" || msg.agentName === "KIOKU™ Consensus") {
+    const confMatch = content.match(/confidence:\s*(\d+)%/);
+    return {
+      phase: "consensus",
+      agentName: "Consensus",
+      agentColor: "#FFD700",
+      agentId: null,
+      position: content.replace(/\[CONSENSUS\]\s*/, "").replace(/\(confidence:.*\)/, "").trim(),
+      confidence: confMatch ? parseInt(confMatch[1]) / 100 : 0,
+      modelTag: "",
+      isSystem: false,
+      isConsensus: true,
+      rawContent: content,
+      id: msg.id,
+      createdAt: msg.createdAt,
+    };
+  }
+
+  // Agent deliberation messages — contain phase markers like [📍 Phase 1 — Initial Positions]
+  const phaseMatch = content.match(/\[(📍 Phase 1|💬 Debate Round|🎯 Final)/);
+  if (!phaseMatch) return null;
+
+  let phase: ParsedDelibMessage["phase"] = "position";
+  if (content.includes("💬 Debate")) phase = "debate";
+  else if (content.includes("🎯 Final")) phase = "final";
+
+  const modelMatch = content.match(/\[([^\]]+)\]\s*\[([^\]]+)\]/);
+  const modelTag = modelMatch ? modelMatch[2] : "";
+
+  // Extract position text and confidence
+  const confMatch = content.match(/\(confidence:\s*(\d+)%\)/);
+  const confidence = confMatch ? parseInt(confMatch[1]) / 100 : 0.5;
+
+  // Strip phase label and model tag to get the position
+  const position = content
+    .replace(/\[.*?\]\s*/g, "")
+    .replace(/\(confidence:\s*\d+%\)/, "")
+    .trim();
+
+  return {
+    phase,
+    agentName: msg.agentName,
+    agentColor: msg.agentColor || "#888",
+    agentId: msg.agentId,
+    position,
+    confidence,
+    modelTag,
+    isSystem: false,
+    isConsensus: false,
+    rawContent: content,
+    id: msg.id,
+    createdAt: msg.createdAt,
+  };
+}
+
+// ── Confidence Bar ──────────────────────────────────────────────
+function ConfidenceBar({ value, size = "sm" }: { value: number; size?: "sm" | "md" }) {
+  const pct = Math.round(value * 100);
+  const color = pct >= 70 ? "#10B981" : pct >= 40 ? "#D4AF37" : "#EF4444";
+  return (
+    <div className="flex items-center gap-2">
+      <div className={cn("rounded-full bg-white/5 overflow-hidden", size === "md" ? "h-2 flex-1" : "h-1.5 w-16")}>
+        <div
+          className="h-full rounded-full transition-all duration-700 ease-out"
+          style={{ width: `${pct}%`, background: color }}
+        />
+      </div>
+      <span className={cn("font-mono font-semibold", size === "md" ? "text-xs" : "text-[10px]")} style={{ color }}>
+        {pct}%
+      </span>
+    </div>
+  );
+}
+
+// ── Phase Section Header ────────────────────────────────────────
+function PhaseHeader({ label, active, completed }: { label: string; active: boolean; completed: boolean }) {
+  return (
+    <div className={cn(
+      "flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300",
+      active
+        ? "border-[#D4AF37]/40 bg-[#D4AF37]/5"
+        : completed
+          ? "border-border/50 bg-background/30"
+          : "border-border/20 bg-background/10 opacity-50"
+    )}>
+      <div className={cn(
+        "w-2 h-2 rounded-full flex-shrink-0",
+        active ? "bg-[#D4AF37] animate-pulse" : completed ? "bg-emerald-400" : "bg-muted-foreground/30"
+      )} />
+      <span className={cn(
+        "text-xs font-semibold",
+        active ? "text-[#D4AF37]" : completed ? "text-emerald-400/80" : "text-muted-foreground/40"
+      )}>
+        {label}
+      </span>
+      {completed && <CheckCircle2 className="w-3 h-3 text-emerald-400/60 ml-auto" />}
+      {active && <Loader2 className="w-3 h-3 text-[#D4AF37] animate-spin ml-auto" />}
+    </div>
+  );
+}
+
+// ── Agent Response Card ─────────────────────────────────────────
+function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animate: boolean }) {
+  return (
+    <div className={cn(
+      "rounded-xl border p-3 transition-all duration-500",
+      animate ? "animate-in slide-in-from-bottom-2 fade-in" : "",
+      "border-border/40 bg-card/30 hover:border-border/60"
+    )}>
+      <div className="flex items-start gap-3">
+        <AgentAvatar name={item.agentName} color={item.agentColor} size="sm" className="mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-xs font-semibold" style={{ color: item.agentColor }}>
+              {item.agentName}
+            </span>
+            {item.modelTag && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-muted-foreground/50 font-mono">
+                {item.modelTag}
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-foreground/90 leading-relaxed mb-2">{item.position}</p>
+          <ConfidenceBar value={item.confidence} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Consensus Card ──────────────────────────────────────────────
+function ConsensusCard({ item }: { item: ParsedDelibMessage }) {
+  return (
+    <div className="rounded-xl border-2 border-[#D4AF37]/40 bg-gradient-to-br from-[#D4AF37]/5 to-transparent p-4 space-y-3 animate-in slide-in-from-bottom-3 fade-in duration-700"
+      style={{ boxShadow: "0 0 20px rgba(212,175,55,0.08)" }}>
+      <div className="flex items-center gap-2">
+        <Trophy className="w-4 h-4 text-[#D4AF37]" />
+        <span className="text-sm font-bold text-[#D4AF37]">Consensus Reached</span>
+      </div>
+      <p className="text-sm text-foreground leading-relaxed">{item.position}</p>
+      <ConfidenceBar value={item.confidence} size="md" />
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═════════════════════════════════════════════════════════════════
 
 export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const roomId = Number(params.id);
@@ -22,6 +217,13 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const [showDecisions, setShowDecisions] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── Deliberation State ──
+  const [showDelibPanel, setShowDelibPanel] = useState(false);
+  const [delibTopic, setDelibTopic] = useState("");
+  const [delibRounds, setDelibRounds] = useState(1);
+  const [delibPhase, setDelibPhase] = useState<DelibPhase>("idle");
+  const [delibSessionId, setDelibSessionId] = useState<string | null>(null);
 
   const { data: allRooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
   const room = (allRooms as any[]).find((r: any) => r.id === roomId) ?? null;
@@ -37,11 +239,10 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       const r = await apiRequest("GET", `/api/rooms/${roomId}/messages`);
       return r.json();
     },
-    // Fallback polling only when WebSocket is disconnected
     refetchInterval: wsConnected ? false : 4000,
   });
 
-  // ── WebSocket real-time ───────────────────────────────────────────────
+  // ── WebSocket real-time ───────────────────────────────────────
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const wsUrl = `${protocol}://${window.location.host}/ws`;
@@ -62,12 +263,10 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
         try {
           const data = JSON.parse(event.data);
           if (data.type === "message") {
-            // Append new message to cache without full refetch
             queryClient.setQueryData<any[]>(
               ["/api/rooms", roomId, "messages"],
               (prev) => {
                 if (!prev) return [data];
-                // Deduplicate by id
                 if (prev.some((m) => m.id === data.id)) return prev;
                 return [...prev, data];
               }
@@ -132,6 +331,97 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
     });
   }
 
+  // ── Start Deliberation ──
+  const delibMutation = useMutation({
+    mutationFn: async (data: { topic: string; debateRounds: number }) => {
+      const r = await apiRequest("POST", `/api/rooms/${roomId}/deliberate`, data);
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ error: r.statusText }));
+        throw new Error(err.error || "Failed to start deliberation");
+      }
+      return r.json();
+    },
+    onSuccess: (session: any) => {
+      setDelibSessionId(session.sessionId);
+      setDelibPhase("completed");
+      setShowDelibPanel(false);
+      toast({ title: "Deliberation complete" });
+    },
+    onError: (err: any) => {
+      setDelibPhase("failed");
+      toast({ title: err.message || "Deliberation failed", variant: "destructive" });
+    },
+  });
+
+  function startDeliberation() {
+    if (!delibTopic.trim()) return;
+    setDelibPhase("starting");
+    delibMutation.mutate({ topic: delibTopic.trim(), debateRounds: delibRounds });
+  }
+
+  // ── Parse deliberation messages from the chat stream ──
+  const delibMessages = useMemo(() => {
+    const parsed: ParsedDelibMessage[] = [];
+    for (const msg of messages as any[]) {
+      const p = parseDelibMessage(msg);
+      if (p) parsed.push(p);
+    }
+    return parsed;
+  }, [messages]);
+
+  // Track active phase from incoming messages
+  useEffect(() => {
+    if (delibPhase === "idle" || delibPhase === "completed") return;
+    if (delibMessages.length === 0) return;
+
+    const last = delibMessages[delibMessages.length - 1];
+    if (last.isConsensus) {
+      setDelibPhase("completed");
+    } else if (last.rawContent.includes("failed")) {
+      setDelibPhase("failed");
+    } else if (last.phase === "final" && !last.isSystem) {
+      setDelibPhase("final");
+    } else if (last.phase === "debate" && !last.isSystem) {
+      setDelibPhase("debate");
+    } else if (last.phase === "position" && !last.isSystem) {
+      setDelibPhase("position");
+    } else if (last.isSystem && last.rawContent.includes("started")) {
+      setDelibPhase("starting");
+    }
+  }, [delibMessages, delibPhase]);
+
+  // Group delib messages by phase
+  const delibPhases = useMemo(() => {
+    const groups: { phase: string; label: string; items: ParsedDelibMessage[] }[] = [];
+    let current: typeof groups[0] | null = null;
+
+    for (const msg of delibMessages) {
+      if (msg.isSystem && !msg.isConsensus) {
+        // Phase header from system
+        const label = msg.rawContent
+          .replace(/^[⚡📍💬🎯✅❌📋]\s*/, "")
+          .trim();
+        if (msg.rawContent.includes("Phase 1") || msg.rawContent.includes("Debate Round") || msg.rawContent.includes("Final Positions")) {
+          current = { phase: msg.phase, label, items: [] };
+          groups.push(current);
+        }
+        continue;
+      }
+      if (msg.isConsensus) {
+        groups.push({ phase: "consensus", label: "Consensus", items: [msg] });
+        continue;
+      }
+      if (current) {
+        current.items.push(msg);
+      }
+    }
+    return groups;
+  }, [delibMessages]);
+
+  // Detect if there's an active or recent deliberation in messages
+  const hasDelibActivity = delibMessages.length > 0;
+  const isDelibRunning = delibMutation.isPending;
+
   // Get flow color for room
   const getFlowInfo = () => {
     const result: Array<{ flow: any; color: string; agentIds: number[] }> = [];
@@ -149,13 +439,16 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const decisions = (messages as any[]).filter((m: any) => !!m.isDecision);
   const chat = showDecisions ? decisions : (messages as any[]);
 
+  // ── Tab state: Chat vs Deliberation ──
+  const [activeTab, setActiveTab] = useState<"chat" | "deliberation">("chat");
+
   return (
     <div className="flex flex-col h-screen overflow-hidden">
 
-      {/* ── Top bar ──────────────────────────────────────────────────────── */}
+      {/* ── Top bar ──────────────────────────────────────────────────── */}
       <div className="flex-shrink-0 border-b border-border bg-background">
         {/* Room header */}
-        <div className="px-5 py-3 flex items-center gap-3">
+        <div className="px-4 md:px-5 py-3 flex items-center gap-3">
           <Link href="/rooms">
             <a className="text-muted-foreground hover:text-foreground transition-colors">
               <ArrowLeft className="w-4 h-4" />
@@ -189,9 +482,9 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
           </button>
         </div>
 
-        {/* ── Colored flow labels ───────────────────────────────────────── */}
+        {/* ── Colored flow labels ──────────────────────────────────── */}
         {flowInfo.length > 0 && (
-          <div className="px-5 pb-3 flex items-center gap-2 flex-wrap">
+          <div className="px-4 md:px-5 pb-2 flex items-center gap-2 flex-wrap">
             <span className="text-[10px] text-muted-foreground">Flows:</span>
             {flowInfo.map(({ flow, color, agentIds }) => {
               const flowAgents = (agents as any[]).filter((a: any) => agentIds.includes(a.id) && roomAgentIds.includes(a.id));
@@ -200,7 +493,6 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium cursor-pointer hover:opacity-80 transition-opacity"
                   style={{ background: color + "20", color, border: `1px solid ${color}44` }}
                   onClick={() => {
-                    // select first agent of this flow
                     if (flowAgents[0]) setSpeakingAs(flowAgents[0]);
                   }}
                   title={`Click to speak as ${flowAgents[0]?.name}`}
@@ -215,180 +507,421 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             })}
           </div>
         )}
-      </div>
 
-      {/* ── Messages area ────────────────────────────────────────────────── */}
-      {/* ── AI Disclosure (FTC/EU AI Act) ──────────────────────────────── */}
-      <div className="mx-3 md:mx-5 mt-2 px-3 py-2 rounded-lg bg-yellow-400/5 border border-yellow-400/15 flex items-center gap-2">
-        <Bot className="w-3.5 h-3.5 text-yellow-400/70 flex-shrink-0" />
-        <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
-          <span className="font-semibold text-yellow-400/70">AI Disclosure:</span>{" "}
-          This War Room™ may include AI-generated responses. Content does not constitute professional advice.
-          KIOKU™ is a product of IKONBAI™, Inc.
-        </p>
-      </div>
-
-      <div className="flex-1 overflow-auto px-3 md:px-5 py-4 space-y-3">
-        {msgsLoading && (
-          <div className="space-y-3">
-            {[1, 2, 3].map(i => <div key={i} className="h-14 bg-card rounded-xl animate-pulse" />)}
-          </div>
-        )}
-
-        {!msgsLoading && chat.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <Bot className="w-9 h-9 text-muted-foreground mb-3 opacity-40" />
-            <p className="text-sm text-muted-foreground">
-              {showDecisions ? "No decisions logged yet" : "No messages yet"}
-            </p>
-            <p className="text-xs text-muted-foreground/50 mt-1">
-              {showDecisions
-                ? "Mark a message as Decision to log it here"
-                : "Select an agent below and start the discussion"}
-            </p>
-          </div>
-        )}
-
-        {chat.map((msg: any) => (
-          <div key={msg.id}
+        {/* ── Chat / Deliberation tabs ────────────────────────────── */}
+        <div className="px-4 md:px-5 flex items-center gap-1 border-t border-border/50">
+          <button
             className={cn(
-              "flex gap-3 items-start group",
-              msg.isDecision && "bg-yellow-400/5 border border-yellow-400/15 rounded-xl p-3"
+              "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all",
+              activeTab === "chat"
+                ? "border-[#D4AF37] text-[#D4AF37]"
+                : "border-transparent text-muted-foreground hover:text-foreground"
             )}
-            data-testid={`msg-${msg.id}`}
+            onClick={() => setActiveTab("chat")}
           >
-            <AgentAvatar name={msg.agentName ?? ""} color={msg.agentColor} size="sm" className="mt-0.5" />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                <span className="text-xs font-semibold" style={{ color: msg.agentColor }}>
-                  {msg.agentName}
-                </span>
-                <span className="text-[10px] text-muted-foreground/40">
-                  {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                </span>
-                {!!msg.isDecision && (
-                  <span className="flex items-center gap-1 text-[10px] text-yellow-400 font-medium">
-                    <Star className="w-2.5 h-2.5" fill="currentColor" /> Decision
+            <MessageSquare className="w-3 h-3" />
+            Chat
+          </button>
+          <button
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-all",
+              activeTab === "deliberation"
+                ? "border-[#D4AF37] text-[#D4AF37]"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+            onClick={() => setActiveTab("deliberation")}
+          >
+            <Zap className="w-3 h-3" />
+            Deliberation
+            {isDelibRunning && (
+              <span className="w-1.5 h-1.5 rounded-full bg-[#D4AF37] animate-pulse" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* CHAT TAB                                                   */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {activeTab === "chat" && (
+        <>
+          {/* ── AI Disclosure ──────────────────────────────────────── */}
+          <div className="mx-3 md:mx-5 mt-2 px-3 py-2 rounded-lg bg-yellow-400/5 border border-yellow-400/15 flex items-center gap-2">
+            <Bot className="w-3.5 h-3.5 text-yellow-400/70 flex-shrink-0" />
+            <p className="text-[10px] text-muted-foreground/60 leading-relaxed">
+              <span className="font-semibold text-yellow-400/70">AI Disclosure:</span>{" "}
+              This War Room™ may include AI-generated responses. Content does not constitute professional advice.
+              KIOKU™ is a product of IKONBAI™, Inc.
+            </p>
+          </div>
+
+          {/* ── Messages area ────────────────────────────────────── */}
+          <div className="flex-1 overflow-auto px-3 md:px-5 py-4 space-y-3">
+            {msgsLoading && (
+              <div className="space-y-3">
+                {[1, 2, 3].map(i => <div key={i} className="h-14 bg-card rounded-xl animate-pulse" />)}
+              </div>
+            )}
+
+            {!msgsLoading && chat.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <Bot className="w-9 h-9 text-muted-foreground mb-3 opacity-40" />
+                <p className="text-sm text-muted-foreground">
+                  {showDecisions ? "No decisions logged yet" : "No messages yet"}
+                </p>
+                <p className="text-xs text-muted-foreground/50 mt-1">
+                  {showDecisions
+                    ? "Mark a message as Decision to log it here"
+                    : "Select an agent below and start the discussion"}
+                </p>
+              </div>
+            )}
+
+            {chat.map((msg: any) => (
+              <div key={msg.id}
+                className={cn(
+                  "flex gap-3 items-start group",
+                  msg.isDecision && "bg-yellow-400/5 border border-yellow-400/15 rounded-xl p-3"
+                )}
+                data-testid={`msg-${msg.id}`}
+              >
+                <AgentAvatar name={msg.agentName ?? ""} color={msg.agentColor} size="sm" className="mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                    <span className="text-xs font-semibold" style={{ color: msg.agentColor }}>
+                      {msg.agentName}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/40">
+                      {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    {!!msg.isDecision && (
+                      <span className="flex items-center gap-1 text-[10px] text-yellow-400 font-medium">
+                        <Star className="w-2.5 h-2.5" fill="currentColor" /> Decision
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-foreground leading-relaxed">{msg.content}</p>
+                </div>
+              </div>
+            ))}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* ── Input area ──────────────────────────────────────── */}
+          <div className="flex-shrink-0 border-t border-border bg-background px-3 md:px-5 py-3 md:py-4 space-y-2.5">
+            {/* In Room — participant toggle strip */}
+            {roomAgents.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap border-b border-border pb-3">
+                <span className="text-[10px] text-muted-foreground">In Room:</span>
+                {roomAgents.map((a: any) => {
+                  const online = a.status === "online";
+                  return (
+                    <button
+                      key={a.id}
+                      data-testid={`button-toggle-agent-${a.id}`}
+                      onClick={() => {
+                        const newStatus = online ? "offline" : "online";
+                        apiRequest("PATCH", `/api/agents/${a.id}/toggle`, { status: newStatus })
+                          .then(() => queryClient.invalidateQueries({ queryKey: ["/api/agents"] }));
+                      }}
+                      title={online ? `${a.name} — click to disable` : `${a.name} — click to enable`}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all",
+                        online
+                          ? "border-transparent"
+                          : "border-border text-muted-foreground opacity-40 grayscale hover:opacity-60"
+                      )}
+                      style={online ? { background: a.color + "22", border: `1px solid ${a.color}55`, color: a.color } : {}}
+                    >
+                      <div className={cn("w-1.5 h-1.5 rounded-full", online ? "animate-pulse" : "bg-muted-foreground/30")}
+                        style={online ? { background: a.color } : {}} />
+                      <AgentAvatar name={a.name} color={a.color} size="sm" />
+                      {a.name}
+                      {online
+                        ? <Wifi className="w-2.5 h-2.5 opacity-60" />
+                        : <WifiOff className="w-2.5 h-2.5" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Speaking as — agent pills */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-muted-foreground">Speaking as:</span>
+              {roomAgents.length === 0 && (
+                <span className="text-[10px] text-muted-foreground/50">No agents — add agents when creating the room</span>
+              )}
+              {roomAgents.map((a: any) => {
+                const active = speakingAs?.id === a.id;
+                return (
+                  <button key={a.id}
+                    className={cn("text-[11px] px-3 py-1 rounded-full font-medium border transition-all",
+                      active ? "text-[hsl(222_47%_8%)]" : "border-border text-muted-foreground hover:border-muted-foreground/50")}
+                    style={active ? { background: a.color, border: `1px solid ${a.color}` } : {}}
+                    onClick={() => setSpeakingAs(a)}
+                    data-testid={`button-speak-as-${a.id}`}
+                  >
+                    {a.name}
+                  </button>
+                );
+              })}
+
+              <label className="ml-auto flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" className="w-3 h-3 accent-yellow-400"
+                  checked={isDecision} onChange={e => setIsDecision(e.target.checked)}
+                  data-testid="checkbox-is-decision" />
+                <span className="text-[10px] text-muted-foreground">Mark as Decision</span>
+              </label>
+            </div>
+
+            {/* Text input */}
+            <div className="flex gap-2">
+              {speakingAs && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg flex-shrink-0"
+                  style={{ background: speakingAs.color + "20", border: `1px solid ${speakingAs.color}44` }}>
+                  <div className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold"
+                    style={{ background: speakingAs.color + "33", color: speakingAs.color }}>
+                    {speakingAs.name[0]}
+                  </div>
+                  <span className="text-[10px] font-medium" style={{ color: speakingAs.color }}>
+                    {speakingAs.name}
                   </span>
+                </div>
+              )}
+              <input
+                ref={inputRef}
+                className="flex-1 bg-muted/40 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40 transition-colors"
+                placeholder={
+                  speakingAs
+                    ? `${speakingAs.name}: type a message, command, or task…`
+                    : "Select an agent to speak as"
+                }
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                disabled={!speakingAs || sendMutation.isPending}
+                data-testid="input-room-message"
+              />
+              <Button size="sm" className="h-9 px-3 flex-shrink-0"
+                style={{
+                  background: isDecision ? "hsl(48 96% 53%)" : "hsl(43 74% 52%)",
+                  color: "hsl(222 47% 8%)"
+                }}
+                onClick={send}
+                disabled={!input.trim() || !speakingAs || sendMutation.isPending}
+                data-testid="button-send-message"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* DELIBERATION TAB                                           */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {activeTab === "deliberation" && (
+        <div className="flex-1 overflow-auto">
+          {/* ── Start Deliberation Panel ─────────────────────────── */}
+          <div className="px-4 md:px-5 py-4 border-b border-border/50">
+            <button
+              className="w-full flex items-center justify-between"
+              onClick={() => setShowDelibPanel(!showDelibPanel)}
+            >
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-[#D4AF37]" />
+                <span className="text-sm font-semibold text-foreground">Start Deliberation</span>
+              </div>
+              <ChevronDown className={cn(
+                "w-4 h-4 text-muted-foreground transition-transform duration-200",
+                showDelibPanel && "rotate-180"
+              )} />
+            </button>
+
+            {showDelibPanel && (
+              <div className="mt-4 space-y-4 animate-in slide-in-from-top-1 fade-in duration-200">
+                {/* Topic input */}
+                <div>
+                  <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">
+                    Deliberation Topic
+                  </label>
+                  <textarea
+                    className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#D4AF37]/40 transition-colors resize-none"
+                    rows={3}
+                    placeholder="What should the agents deliberate on? e.g., 'Should we adopt a microservices architecture?'"
+                    value={delibTopic}
+                    onChange={e => setDelibTopic(e.target.value)}
+                    disabled={isDelibRunning}
+                    data-testid="input-delib-topic"
+                  />
+                </div>
+
+                {/* Rounds selector + Start button row */}
+                <div className="flex items-end gap-3">
+                  <div className="flex-shrink-0">
+                    <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">
+                      Debate Rounds
+                    </label>
+                    <select
+                      className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:border-[#D4AF37]/40 transition-colors appearance-none cursor-pointer"
+                      value={delibRounds}
+                      onChange={e => setDelibRounds(Number(e.target.value))}
+                      disabled={isDelibRunning}
+                      data-testid="select-delib-rounds"
+                    >
+                      <option value={1}>1 round</option>
+                      <option value={2}>2 rounds</option>
+                      <option value={3}>3 rounds</option>
+                    </select>
+                  </div>
+
+                  {/* Agent count badge */}
+                  <div className="flex-1 flex items-center gap-2">
+                    <div className="flex -space-x-1.5">
+                      {roomAgents.filter((a: any) => a.status === "online").slice(0, 5).map((a: any) => (
+                        <AgentAvatar key={a.id} name={a.name} color={a.color} size="sm" />
+                      ))}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">
+                      {roomAgents.filter((a: any) => a.status === "online").length} agents online
+                    </span>
+                  </div>
+
+                  <Button
+                    className="flex-shrink-0 px-5 font-semibold"
+                    style={{
+                      background: "linear-gradient(135deg, #D4AF37, #B8960C)",
+                      color: "hsl(222 47% 8%)",
+                    }}
+                    onClick={startDeliberation}
+                    disabled={!delibTopic.trim() || isDelibRunning || roomAgents.filter((a: any) => a.status === "online").length < 2}
+                    data-testid="button-start-deliberation"
+                  >
+                    {isDelibRunning ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                        Running...
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-3.5 h-3.5 mr-1.5" />
+                        Start
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Minimum agents warning */}
+                {roomAgents.filter((a: any) => a.status === "online").length < 2 && (
+                  <p className="text-[11px] text-red-400/80">
+                    At least 2 online agents required for deliberation. Enable agents in the Chat tab.
+                  </p>
                 )}
               </div>
-              <p className="text-sm text-foreground leading-relaxed">{msg.content}</p>
-            </div>
+            )}
           </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
 
-      {/* ── Input area ───────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 border-t border-border bg-background px-3 md:px-5 py-3 md:py-4 space-y-2.5">
-
-        {/* ── In Room — participant toggle strip ── */}
-        {roomAgents.length > 0 && (
-          <div className="flex items-center gap-2 flex-wrap border-b border-border pb-3">
-            <span className="text-[10px] text-muted-foreground">In Room:</span>
-            {roomAgents.map((a: any) => {
-              const online = a.status === "online";
-              return (
-                <button
-                  key={a.id}
-                  data-testid={`button-toggle-agent-${a.id}`}
-                  onClick={() => {
-                    const newStatus = online ? "offline" : "online";
-                    apiRequest("PATCH", `/api/agents/${a.id}/toggle`, { status: newStatus })
-                      .then(() => queryClient.invalidateQueries({ queryKey: ["/api/agents"] }));
-                  }}
-                  title={online ? `${a.name} — click to disable` : `${a.name} — click to enable`}
-                  className={cn(
-                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all",
-                    online
-                      ? "border-transparent"
-                      : "border-border text-muted-foreground opacity-40 grayscale hover:opacity-60"
-                  )}
-                  style={online ? { background: a.color + "22", border: `1px solid ${a.color}55`, color: a.color } : {}}
-                >
-                  <div className={cn("w-1.5 h-1.5 rounded-full", online ? "animate-pulse" : "bg-muted-foreground/30")}
-                    style={online ? { background: a.color } : {}} />
-                  <AgentAvatar name={a.name} color={a.color} size="sm" />
-                  {a.name}
-                  {online
-                    ? <Wifi className="w-2.5 h-2.5 opacity-60" />
-                    : <WifiOff className="w-2.5 h-2.5" />}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Speaking as — agent pills */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[10px] text-muted-foreground">Speaking as:</span>
-          {roomAgents.length === 0 && (
-            <span className="text-[10px] text-muted-foreground/50">No agents — add agents when creating the room</span>
-          )}
-          {roomAgents.map((a: any) => {
-            const active = speakingAs?.id === a.id;
-            return (
-              <button key={a.id}
-                className={cn("text-[11px] px-3 py-1 rounded-full font-medium border transition-all",
-                  active ? "text-[hsl(222_47%_8%)]" : "border-border text-muted-foreground hover:border-muted-foreground/50")}
-                style={active ? { background: a.color, border: `1px solid ${a.color}` } : {}}
-                onClick={() => setSpeakingAs(a)}
-                data-testid={`button-speak-as-${a.id}`}
-              >
-                {a.name}
-              </button>
-            );
-          })}
-
-          <label className="ml-auto flex items-center gap-1.5 cursor-pointer select-none">
-            <input type="checkbox" className="w-3 h-3 accent-yellow-400"
-              checked={isDecision} onChange={e => setIsDecision(e.target.checked)}
-              data-testid="checkbox-is-decision" />
-            <span className="text-[10px] text-muted-foreground">Mark as Decision</span>
-          </label>
-        </div>
-
-        {/* Text input */}
-        <div className="flex gap-2">
-          {speakingAs && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg flex-shrink-0"
-              style={{ background: speakingAs.color + "20", border: `1px solid ${speakingAs.color}44` }}>
-              <div className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold"
-                style={{ background: speakingAs.color + "33", color: speakingAs.color }}>
-                {speakingAs.name[0]}
+          {/* ── Phase Progress Bar ───────────────────────────────── */}
+          {(isDelibRunning || delibPhases.length > 0) && (
+            <div className="px-4 md:px-5 py-3 border-b border-border/30 space-y-2">
+              <div className="flex items-center gap-2">
+                {isDelibRunning && <Loader2 className="w-3 h-3 text-[#D4AF37] animate-spin" />}
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  {isDelibRunning ? "Deliberation in progress..." : "Deliberation phases"}
+                </span>
               </div>
-              <span className="text-[10px] font-medium" style={{ color: speakingAs.color }}>
-                {speakingAs.name}
-              </span>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <PhaseHeader
+                  label="Initial Positions"
+                  active={isDelibRunning && (delibPhase === "starting" || delibPhase === "position")}
+                  completed={delibPhases.some(p => p.phase === "position" && p.items.length > 0)}
+                />
+                <PhaseHeader
+                  label="Debate"
+                  active={isDelibRunning && delibPhase === "debate"}
+                  completed={delibPhases.some(p => p.phase === "debate" && p.items.length > 0)}
+                />
+                <PhaseHeader
+                  label="Final Positions"
+                  active={isDelibRunning && delibPhase === "final"}
+                  completed={delibPhases.some(p => p.phase === "final" && p.items.length > 0)}
+                />
+                <PhaseHeader
+                  label="Consensus"
+                  active={isDelibRunning && delibPhase === "consensus"}
+                  completed={delibPhases.some(p => p.phase === "consensus")}
+                />
+              </div>
             </div>
           )}
-          <input
-            ref={inputRef}
-            className="flex-1 bg-muted/40 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40 transition-colors"
-            placeholder={
-              speakingAs
-                ? `${speakingAs.name}: type a message, command, or task…`
-                : "Select an agent to speak as"
-            }
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            disabled={!speakingAs || sendMutation.isPending}
-            data-testid="input-room-message"
-          />
-          <Button size="sm" className="h-9 px-3 flex-shrink-0"
-            style={{
-              background: isDecision ? "hsl(48 96% 53%)" : "hsl(43 74% 52%)",
-              color: "hsl(222 47% 8%)"
-            }}
-            onClick={send}
-            disabled={!input.trim() || !speakingAs || sendMutation.isPending}
-            data-testid="button-send-message"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </Button>
+
+          {/* ── Deliberation Results ─────────────────────────────── */}
+          <div className="px-4 md:px-5 py-4 space-y-6">
+            {/* Empty state */}
+            {delibPhases.length === 0 && !isDelibRunning && (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-[#D4AF37]/5 border border-[#D4AF37]/20 flex items-center justify-center mb-4"
+                  style={{ boxShadow: "0 0 30px rgba(212,175,55,0.05)" }}>
+                  <Zap className="w-6 h-6 text-[#D4AF37]/50" />
+                </div>
+                <p className="text-sm text-muted-foreground mb-1">No deliberations yet</p>
+                <p className="text-xs text-muted-foreground/50 max-w-[280px]">
+                  Enter a topic above and click Start to begin a structured multi-agent deliberation with phases, confidence scoring, and consensus building.
+                </p>
+              </div>
+            )}
+
+            {/* Phase groups */}
+            {delibPhases.map((group, gi) => (
+              <div key={gi} className="space-y-3">
+                {/* Phase section header */}
+                <div className="flex items-center gap-2">
+                  <div className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    group.phase === "consensus" ? "bg-[#D4AF37]" : "bg-emerald-400"
+                  )} />
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    {group.label}
+                  </span>
+                  <div className="flex-1 h-px bg-border/30" />
+                </div>
+
+                {/* Agent response cards or consensus */}
+                <div className="space-y-2 pl-1">
+                  {group.items.map((item) =>
+                    item.isConsensus ? (
+                      <ConsensusCard key={item.id} item={item} />
+                    ) : (
+                      <AgentResponseCard key={item.id} item={item} animate={gi === delibPhases.length - 1} />
+                    )
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {/* Loading placeholder during deliberation */}
+            {isDelibRunning && (
+              <div className="space-y-3">
+                {[1, 2].map(i => (
+                  <div key={i} className="rounded-xl border border-border/20 p-3 animate-pulse">
+                    <div className="flex items-start gap-3">
+                      <div className="w-6 h-6 rounded-full bg-muted/40" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-3 w-20 bg-muted/30 rounded" />
+                        <div className="h-3 w-full bg-muted/20 rounded" />
+                        <div className="h-3 w-3/4 bg-muted/20 rounded" />
+                        <div className="h-1.5 w-16 bg-muted/20 rounded-full" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
