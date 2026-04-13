@@ -52,7 +52,8 @@ export const insertAgentSchema = createInsertSchema(agents).omit({ id: true, cre
 export type InsertAgent = z.infer<typeof insertAgentSchema>;
 export type Agent = typeof agents.$inferSelect;
 
-// Memories — embedding stored as JSON array string (for pgvector later)
+// Memories — embedding stored as JSON array string
+// NOTE: DB also has `embedding_vec vector(1536)` column managed via raw SQL (pgvector)
 export const memories = pgTable("memories", {
   id:        serial("id").primaryKey(),
   userId:    integer("user_id").notNull(),

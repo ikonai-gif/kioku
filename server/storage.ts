@@ -292,6 +292,8 @@ export interface IStorage {
 
 export class Storage implements IStorage {
 
+  getPool(): Pool { return pool; }
+
   // ── Users ──────────────────────────────────────────────────────────────────
   async getUserByEmail(email: string) {
     return db.select().from(users).where(eq(users.email, email)).limit(1).then(r => r[0]);
@@ -386,63 +388,102 @@ export class Storage implements IStorage {
       .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit);
   }
   async searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string) {
-    const all = await this.getMemories(userId, 1000);
-
-    // Namespace filtering — reduce candidate set before scoring
-    const candidates = namespace
-      ? all.filter(m => m.namespace === namespace)
-      : all;
-
-    // Semantic search if embedding provided
+    // Use pgvector for semantic search if embedding provided
     if (queryEmbedding && queryEmbedding.length > 0) {
-      const scored = candidates
-        .filter(m => m.embedding)
-        .map(m => {
-          try {
-            const emb = JSON.parse(m.embedding!) as number[];
-            const similarity = cosineSimilarity(queryEmbedding, emb);
-            return { m, similarity };
-          } catch { return { m, similarity: 0 }; }
-        })
-        .filter(x => x.similarity > 0.7)
-        .map(x => {
-          // Combined score: 70% similarity + 30% importance
-          const combinedScore = x.similarity * 0.7 + (x.m.importance ?? 0.5) * 0.3;
-          const decayedStrength = computeDecayedStrength(
-            (x.m as any).strength ?? 1.0,
-            x.m.type,
-            x.m.createdAt,
-            (x.m as any).lastAccessedAt ?? null,
-            (x.m as any).accessCount ?? 0
-          );
-          const finalScore = combinedScore * decayedStrength;
-          return { ...x, combinedScore, finalScore };
-        })
-        .sort((a, b) => b.finalScore - a.finalScore)
-        .map(x => ({ ...x.m, similarity: x.similarity }));
+      const embeddingStr = `[${queryEmbedding.join(',')}]`;
 
-      // Fallback to text if no semantic results
-      if (scored.length > 0) {
-        const results = scored.slice(0, 20);
-        // Fire-and-forget: update access stats for retrieved memories
-        const memoryIds = results.map(r => r.id);
-        pool.query(
-          `UPDATE memories SET last_accessed_at = $1, access_count = COALESCE(access_count, 0) + 1 WHERE id = ANY($2)`,
-          [Date.now(), memoryIds]
-        ).catch(() => {});
-        return results;
+      let sqlQuery = `
+        SELECT *,
+          1 - (embedding_vec <=> $1::vector) as similarity,
+          COALESCE(strength, 1.0) as effective_strength
+        FROM memories
+        WHERE user_id = $2
+          AND embedding_vec IS NOT NULL
+      `;
+      const params: any[] = [embeddingStr, userId];
+      let paramIdx = 3;
+
+      if (namespace) {
+        sqlQuery += ` AND namespace = $${paramIdx}`;
+        params.push(namespace);
+        paramIdx++;
       }
+
+      sqlQuery += `
+        ORDER BY embedding_vec <=> $1::vector
+        LIMIT $${paramIdx}
+      `;
+      params.push(40); // Fetch more for post-filtering
+
+      const result = await pool.query(sqlQuery, params);
+
+      // Apply importance + decay scoring
+      const now = Date.now();
+      const scored = result.rows
+        .filter((r: any) => r.similarity >= 0.5)
+        .map((r: any) => {
+          const decayedStrength = computeDecayedStrength(
+            r.strength ?? 1.0,
+            r.type,
+            Number(r.created_at),
+            r.last_accessed_at ? Number(r.last_accessed_at) : null,
+            r.access_count ?? 0,
+            now
+          );
+          const combinedScore = r.similarity * 0.7 + (r.importance ?? 0.5) * 0.3;
+          const finalScore = combinedScore * decayedStrength;
+          return { ...r, similarity: r.similarity, score: finalScore };
+        })
+        .sort((a: any, b: any) => b.score - a.score)
+        .slice(0, 20);
+
+      // Fire-and-forget: update access stats
+      if (scored.length > 0) {
+        const ids = scored.map((s: any) => s.id);
+        pool.query(
+          'UPDATE memories SET last_accessed_at = $1, access_count = COALESCE(access_count, 0) + 1 WHERE id = ANY($2)',
+          [now, ids]
+        ).catch(() => {});
+      }
+
+      if (scored.length > 0) return scored;
     }
 
     // Text fallback
-    const q = query.toLowerCase();
-    return candidates.filter(m =>
-      m.content.toLowerCase().includes(q) ||
-      (m.agentName ?? "").toLowerCase().includes(q)
-    ).slice(0, 20);
+    return this.textSearchMemories(userId, query, 20, namespace);
+  }
+
+  private async textSearchMemories(userId: number, query: string, limit: number, namespace?: string): Promise<any[]> {
+    let sqlQuery = 'SELECT * FROM memories WHERE user_id = $1 AND (content ILIKE $2 OR agent_name ILIKE $2)';
+    const params: any[] = [userId, `%${query}%`];
+    let idx = 3;
+    if (namespace) {
+      sqlQuery += ` AND namespace = $${idx}`;
+      params.push(namespace);
+      idx++;
+    }
+    sqlQuery += ` ORDER BY importance DESC, created_at DESC LIMIT $${idx}`;
+    params.push(limit);
+    const result = await pool.query(sqlQuery, params);
+    return result.rows;
   }
   async createMemory(data: InsertMemory): Promise<Memory> {
     const [mem] = await db.insert(memories).values({ ...data, createdAt: Date.now() }).returning();
+
+    // Write embedding_vec for pgvector search
+    if (data.embedding) {
+      try {
+        const parsed = typeof data.embedding === 'string' ? JSON.parse(data.embedding) : data.embedding;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const vecStr = `[${parsed.join(',')}]`;
+          await pool.query(
+            'UPDATE memories SET embedding_vec = $1::vector WHERE id = $2',
+            [vecStr, mem.id]
+          );
+        }
+      } catch { /* embedding_vec will be null — text search fallback */ }
+    }
+
     if (data.agentId) {
       const agent = await this.getAgent(data.agentId);
       if (agent) {
@@ -526,6 +567,38 @@ export class Storage implements IStorage {
       'DELETE FROM memory_links WHERE user_id = $1 AND (source_memory_id = $2 OR target_memory_id = $2)',
       [userId, memoryId]
     );
+  }
+
+  /**
+   * Traverse synaptic links to find related memories up to N hops.
+   * Uses recursive CTE for BFS through memory_links graph.
+   */
+  async getLinkedMemories(userId: number, memoryId: number, maxDepth: number = 2, maxResults: number = 20): Promise<any[]> {
+    const result = await pool.query(`
+      WITH RECURSIVE linked AS (
+        -- Seed
+        SELECT $1::int as memory_id, 0 as depth, ARRAY[$1::int] as path
+        UNION ALL
+        -- Traverse links
+        SELECT
+          CASE WHEN ml.source_memory_id = l.memory_id THEN ml.target_memory_id ELSE ml.source_memory_id END,
+          l.depth + 1,
+          l.path || CASE WHEN ml.source_memory_id = l.memory_id THEN ml.target_memory_id ELSE ml.source_memory_id END
+        FROM linked l
+        JOIN memory_links ml ON (ml.source_memory_id = l.memory_id OR ml.target_memory_id = l.memory_id)
+          AND ml.user_id = $2
+        WHERE l.depth < $3
+          AND NOT (CASE WHEN ml.source_memory_id = l.memory_id THEN ml.target_memory_id ELSE ml.source_memory_id END = ANY(l.path))
+      )
+      SELECT DISTINCT m.*, l.depth, l.path
+      FROM linked l
+      JOIN memories m ON m.id = l.memory_id AND m.user_id = $2
+      WHERE l.memory_id != $1
+      ORDER BY l.depth, m.importance DESC
+      LIMIT $4
+    `, [memoryId, userId, maxDepth, maxResults]);
+
+    return result.rows;
   }
 
   // ── Flows ──────────────────────────────────────────────────────────────────

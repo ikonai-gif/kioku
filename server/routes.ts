@@ -12,6 +12,8 @@ import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
 import { checkRegistrationLimit, checkAuthRateLimit } from "./ratelimit";
+import { consolidateMemories } from "./memory-consolidation";
+import { pruneDecayedMemories } from "./memory-gc";
 import {
   validateBody, ValidationError,
   magicLinkSchema, verifyTokenSchema,
@@ -544,6 +546,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     await storage.deleteMemoryLink(userId, Number(req.params.id), Number(req.params.linkId));
     res.json({ success: true });
+  }));
+
+  // ── Graph Traversal (synaptic link BFS) ─────────────────────
+  app.get("/api/memories/:id/graph", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const memoryId = Number(req.params.id);
+    const depth = Math.min(Number(req.query.depth) || 2, 4);
+    const limit = Math.min(Number(req.query.limit) || 20, 50);
+    const linked = await storage.getLinkedMemories(userId, memoryId, depth, limit);
+    res.json(linked);
+  }));
+
+  // ── Memory Consolidation ────────────────────────────────────
+  app.post("/api/memories/consolidate", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const result = await consolidateMemories(storage.getPool(), userId);
+    res.json(result);
+  }));
+
+  // ── Memory GC (forgetting curve pruning) ────────────────────
+  app.post("/api/memories/gc", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const threshold = req.body?.threshold ?? 0.05;
+    const result = await pruneDecayedMemories(storage.getPool(), userId, threshold);
+    res.json(result);
   }));
 
   // ── Flows ─────────────────────────────────────────────────────
