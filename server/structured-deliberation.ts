@@ -17,6 +17,7 @@ import { createHmac } from "crypto";
 import { storage } from "./storage";
 import { broadcastToRoom, broadcastHumanTurn } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
+import { allocateBudget, countTokens } from "./token-budget";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -625,11 +626,34 @@ async function collectPositions(
       }
       isExternal = true;
     } else {
-      // Internal mode — call LLM
+      // Internal mode — call LLM with token budget management
       const userMsg = `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`;
+
+      // Build prior positions block for budget allocation
+      const priorBlock = priorPositions.length > 0
+        ? priorPositions.map(
+            (p) => `- ${p.agentName}: "${sanitizeForPrompt(p.position)}" (confidence: ${(p.confidence * 100).toFixed(0)}%) — Reasoning: ${sanitizeForPrompt(p.reasoning)}`
+          ).join("\n")
+        : "";
+
+      // Allocate token budget to stay within model context window
+      const budget = allocateBudget(agentModel, {
+        systemPrompt,
+        memoryContext: memoryContext,
+        topic: userMsg,
+        otherPositions: priorBlock,
+      });
+
+      if (budget.wasOverBudget) {
+        console.warn(`[deliberation] Token budget exceeded for ${agent.name} (model=${agentModel}), content was truncated`);
+      }
+
+      // Use budget-fitted system prompt
+      const fittedSystemPrompt = budget.systemPrompt;
+
       const raw = await callLLM(
         agentModel,
-        systemPrompt,
+        fittedSystemPrompt,
         userMsg,
         {
           maxTokens: 400,
@@ -639,7 +663,7 @@ async function collectPositions(
       );
       parsed = parseAgentResponse(raw, agent.name);
       // Meter approximate token usage (input + output ≈ words/0.75)
-      const estimatedTokens = Math.ceil((systemPrompt.length + userMsg.length + raw.length) / 4);
+      const estimatedTokens = Math.ceil((fittedSystemPrompt.length + userMsg.length + raw.length) / 4);
       storage.incrementUsage(userId, 'tokens_used', estimatedTokens).catch(() => {});
     }
 
