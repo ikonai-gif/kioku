@@ -73,7 +73,7 @@ async function sendBrevoEmail(to: string, subject: string, html: string, sender:
 
 async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   const baseUrl = process.env.APP_URL || "https://usekioku.com";
-  const link = `${baseUrl}/verify?token=${token}`;
+  const link = `${baseUrl}/#/verify?token=${token}`;
   if (!BREVO_API_KEY) {
     console.log(`[MAGIC LINK] ${email} → ${link}`);
     return;
