@@ -52,6 +52,29 @@ function maskAgentApiKey(agent: any): any {
   return agent;
 }
 
+/** Strip sensitive fields from user objects before sending to client */
+function sanitizeUser(user: any): any {
+  if (!user) return user;
+  const { apiKey, api_key, ...safe } = user;
+  // Return masked key so the frontend can show "kk_••••abcd"
+  if (apiKey) {
+    safe.apiKeyHint = apiKey.length > 8 ? apiKey.slice(0, 3) + "••••" + apiKey.slice(-4) : "••••";
+  } else if (api_key) {
+    safe.apiKeyHint = api_key.length > 8 ? api_key.slice(0, 3) + "••••" + api_key.slice(-4) : "••••";
+  }
+  return safe;
+}
+
+/** Sanitize user-supplied content to prevent stored XSS */
+function sanitizeHtml(input: string): string {
+  return input
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
 const SENDERS = {
@@ -225,7 +248,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user) user = await storage.createUser({ email, name: email.split("@")[0] });
     const sessionToken = createSessionToken(user.id);
     recordAuthSuccess(ip);
-    res.json({ ok: true, sessionToken, user });
+    res.json({ ok: true, sessionToken, user: sanitizeUser(user) });
   }));
 
   app.post("/api/auth/request-magic-link", asyncHandler(async (req, res) => {
@@ -254,7 +277,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const sessionToken = createSessionToken(user.id);
     // Set httpOnly cookie so session survives page refresh
     res.cookie(COOKIE_NAME, sessionToken, COOKIE_OPTS);
-    res.json({ ok: true, sessionToken, user });
+    res.json({ ok: true, sessionToken, user: sanitizeUser(user) });
   }));
 
   // ── GET /auth/verify/:token — one-click magic link (email → cookie → redirect) ──
@@ -277,7 +300,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
-    res.json(user);
+    res.json(sanitizeUser(user));
   }));
 
   app.post("/api/auth/logout", asyncHandler(async (req, res) => {
@@ -336,11 +359,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (counts.agents >= limits.agents) {
       return res.status(429).json({ error: `Plan limit reached: ${limits.agents} agents (${plan} plan)` });
     }
-    const { name, description, color, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(createAgentSchema, req.body);
+    const { name: rawAgentName, description: rawAgentDesc, color, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(createAgentSchema, req.body);
     const agent = await storage.createAgent({
       userId,
-      name,
-      description: description || null,
+      name: sanitizeHtml(rawAgentName),
+      description: rawAgentDesc ? sanitizeHtml(rawAgentDesc) : null,
       color: color || "#D4AF37",
       status: "idle",
       memoriesCount: 0,
@@ -666,13 +689,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (memCounts.memories >= memLimits.memories) {
       return res.status(429).json({ error: `Plan limit reached: ${memLimits.memories} memories (${memPlan} plan)` });
     }
-    const { agentId, agentName, content, type, importance, namespace, confidence, decayRate, expiresAt, causeId, contextTrigger } = validateBody(createMemorySchema, req.body);
+    const { agentId, agentName, content: rawContent, type, importance, namespace, confidence, decayRate, expiresAt, causeId, contextTrigger } = validateBody(createMemorySchema, req.body);
+    const content = sanitizeHtml(rawContent);
     // Generate embedding asynchronously — don't block response
     const embedding = await embedText(content);
     const mem = await storage.createMemory({
       userId,
       agentId: agentId ?? null,
-      agentName: agentName ?? null,
+      agentName: agentName ? sanitizeHtml(agentName) : null,
       content,
       type: type ?? "semantic",
       importance: importance ?? 0.5,
@@ -894,11 +918,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (roomCounts.rooms >= roomLimits.rooms) {
       return res.status(429).json({ error: `Plan limit reached: ${roomLimits.rooms} rooms (${roomPlan} plan)` });
     }
-    const { name, description, agentIds } = validateBody(createRoomSchema, req.body);
+    const { name: rawName, description: rawDesc, agentIds } = validateBody(createRoomSchema, req.body);
     const room = await storage.createRoom({
       userId,
-      name,
-      description: description || null,
+      name: sanitizeHtml(rawName),
+      description: rawDesc ? sanitizeHtml(rawDesc) : null,
       status: "standby",
       agentIds: JSON.stringify(agentIds ?? []),
     });
@@ -939,7 +963,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { agentId, agentName, agentColor, content, isDecision } = validateBody(createRoomMessageSchema, req.body);
+    const { agentId, agentName: rawMsgName, agentColor, content: rawMsgContent, isDecision } = validateBody(createRoomMessageSchema, req.body);
+    const agentName = sanitizeHtml(rawMsgName);
+    const content = sanitizeHtml(rawMsgContent);
     const msg = await storage.addRoomMessage({
       roomId: Number(req.params.id),
       agentId: agentId ?? null,

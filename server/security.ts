@@ -54,6 +54,7 @@ export const helmetMiddleware = helmet({
     },
   },
   crossOriginEmbedderPolicy: false, // allow embedding Stripe
+  frameguard: { action: "deny" }, // X-Frame-Options: DENY (matches CSP frame-ancestors: 'none')
   hsts: {
     maxAge: 31536000,       // 1 year
     includeSubDomains: true,
@@ -142,6 +143,8 @@ export function securityAuditHeader(_req: Request, res: Response, next: NextFunc
 
 // ── APPLY ALL SECURITY MIDDLEWARE ─────────────────────────────────────────────
 export function applySecurityMiddleware(app: Express): void {
+  // Explicitly disable X-Powered-By before helmet (belt & suspenders)
+  app.disable('x-powered-by');
   app.use(helmetMiddleware);
   app.use(corsMiddleware);
   app.options("/{*path}", corsMiddleware); // preflight
