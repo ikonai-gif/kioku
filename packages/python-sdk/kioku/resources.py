@@ -134,17 +134,25 @@ class Memories:
         agent_id: Optional[int] = None,
         agent_name: Optional[str] = None,
         memory_type: Optional[str] = None,
+        type: Optional[str] = None,
         importance: Optional[float] = None,
         namespace: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Store a new memory. Auto-generates embedding."""
+        """Store a new memory. Auto-generates embedding.
+
+        Args:
+            content: The memory text.
+            memory_type: One of semantic, episodic, procedural, emotional.
+                         Alias ``type`` is also accepted.
+        """
+        resolved_type = memory_type or type
         body: Dict[str, Any] = {"content": content}
         if agent_id is not None:
             body["agentId"] = agent_id
         if agent_name is not None:
             body["agentName"] = agent_name
-        if memory_type is not None:
-            body["type"] = memory_type
+        if resolved_type is not None:
+            body["type"] = resolved_type
         if importance is not None:
             body["importance"] = importance
         if namespace is not None:
@@ -246,6 +254,7 @@ class Memories:
             "agent_id": "agentId",
             "agent_name": "agentName",
             "memory_type": "type",
+            "type": "type",
             "importance": "importance",
             "namespace": "namespace",
         }
