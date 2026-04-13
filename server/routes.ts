@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
@@ -22,6 +22,13 @@ import {
   createWebhookSchema, createAgentTokenSchema, agentCallbackSchema,
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
 } from "./validation";
+
+// Async error wrapper — catches unhandled promise rejections in route handlers
+function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
@@ -168,7 +175,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Auth ──────────────────────────────────────────────────────
   // alias for frontend
-  app.post("/api/auth/magic-link", async (req, res) => {
+  app.post("/api/auth/magic-link", asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
@@ -176,9 +183,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     await sendMagicLinkEmail(email, token);
     const isDev = !process.env.BREVO_API_KEY;
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
-  });
+  }));
 
-  app.post("/api/auth/verify", async (req, res) => {
+  app.post("/api/auth/verify", asyncHandler(async (req, res) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
     const { token } = validateBody(verifyTokenSchema, req.body);
     const email = await storage.verifyMagicToken(token);
@@ -191,9 +198,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const sessionToken = createSessionToken(user.id);
     recordAuthSuccess(ip);
     res.json({ ok: true, sessionToken, user });
-  });
+  }));
 
-  app.post("/api/auth/request-magic-link", async (req, res) => {
+  app.post("/api/auth/request-magic-link", asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
@@ -201,9 +208,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     await sendMagicLinkEmail(email, token);
     const isDev = !process.env.BREVO_API_KEY;
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
-  });
+  }));
 
-  app.post("/api/auth/verify-magic-link", async (req, res) => {
+  app.post("/api/auth/verify-magic-link", asyncHandler(async (req, res) => {
     const { token } = validateBody(verifyTokenSchema, req.body);
     const email = await storage.verifyMagicToken(token);
     if (!email) return res.status(401).json({ error: "Invalid or expired token" });
@@ -213,40 +220,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Set httpOnly cookie so session survives page refresh
     res.cookie(COOKIE_NAME, sessionToken, COOKIE_OPTS);
     res.json({ ok: true, sessionToken, user });
-  });
+  }));
 
-  app.get("/api/auth/me", async (req, res) => {
+  app.get("/api/auth/me", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const user = await storage.getUserById(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json(user);
-  });
+  }));
 
-  app.post("/api/auth/logout", async (req, res) => {
+  app.post("/api/auth/logout", asyncHandler(async (req, res) => {
     res.clearCookie(COOKIE_NAME, { path: "/" });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Stats ─────────────────────────────────────────────────────
-  app.get("/api/stats", async (req, res) => {
+  app.get("/api/stats", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getStats(userId));
-  });
+  }));
 
   app.get("/api/embed/status", (_req, res) => {
     res.json({ enabled: embeddingsEnabled, model: "text-embedding-3-small" });
   });
 
   // ── Agents ────────────────────────────────────────────────────
-  app.get("/api/agents", async (req, res) => {
+  app.get("/api/agents", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getAgents(userId));
-  });
+  }));
 
-  app.post("/api/agents", async (req, res) => {
+  app.post("/api/agents", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, color } = validateBody(createAgentSchema, req.body);
@@ -261,10 +268,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       enabled: true,
     });
     res.json(agent);
-  });
+  }));
 
   // Update agent fields (name, description, color, model)
-  app.patch("/api/agents/:id", async (req, res) => {
+  app.patch("/api/agents/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
@@ -280,9 +287,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ok) return res.status(404).json({ error: "Not found" });
     const agent = await storage.getAgent(agentId);
     res.json(agent);
-  });
+  }));
 
-  app.patch("/api/agents/:id/toggle", async (req, res) => {
+  app.patch("/api/agents/:id/toggle", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
@@ -295,19 +302,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     if (!ok) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
-  app.delete("/api/agents/:id", async (req, res) => {
+  app.delete("/api/agents/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const deleted = await storage.deleteAgent(Number(req.params.id), userId);
     if (!deleted) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
 
   // ── Webhooks (external agents) ─────────────────────────────────
-  app.post("/api/agents/:id/webhook", async (req, res) => {
+  app.post("/api/agents/:id/webhook", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
@@ -318,33 +325,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const secret = "whk_" + randomBytes(24).toString("hex");
     await storage.registerWebhook({ agentId, userId, url, secret });
     res.json({ ok: true, agentId, url, secret, note: "Save this secret — it signs X-Kioku-Signature headers" });
-  });
+  }));
 
-  app.get("/api/agents/:id/webhook", async (req, res) => {
+  app.get("/api/agents/:id/webhook", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const wh = await storage.getWebhook(Number(req.params.id), userId);
     if (!wh) return res.status(404).json({ error: "No webhook registered" });
     res.json(wh);
-  });
+  }));
 
-  app.delete("/api/agents/:id/webhook", async (req, res) => {
+  app.delete("/api/agents/:id/webhook", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const deleted = await storage.deleteWebhook(Number(req.params.id), userId);
     if (!deleted) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
-  app.get("/api/webhooks", async (req, res) => {
+  app.get("/api/webhooks", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const webhooks = await storage.getWebhooksByUser(userId);
     res.json(webhooks);
-  });
+  }));
 
   // ── Agent Tokens (external agent auth) ─────────────────────────
-  app.post("/api/agents/:id/token", async (req, res) => {
+  app.post("/api/agents/:id/token", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
@@ -354,32 +361,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { name, scopes, expiresInDays } = validateBody(createAgentTokenSchema, req.body || {});
     const result = await storage.createAgentToken({ agentId, userId, name, scopes, expiresInDays });
     res.json({ ok: true, ...result, note: "Save this token — it cannot be retrieved later" });
-  });
+  }));
 
-  app.get("/api/agents/:id/tokens", async (req, res) => {
+  app.get("/api/agents/:id/tokens", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const tokens = await storage.getAgentTokens(Number(req.params.id), userId);
     res.json(tokens);
-  });
+  }));
 
-  app.delete("/api/agents/:id/tokens/:tokenId", async (req, res) => {
+  app.delete("/api/agents/:id/tokens/:tokenId", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const revoked = await storage.revokeAgentToken(Number(req.params.tokenId), userId);
     if (!revoked) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
-  app.delete("/api/agents/:id/tokens", async (req, res) => {
+  app.delete("/api/agents/:id/tokens", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     await storage.revokeAllAgentTokens(Number(req.params.id), userId);
     res.json({ ok: true });
-  });
+  }));
 
   // ── Agent Callback (external agents authenticate with kat_* token) ──
-  app.post("/api/agent-callback", async (req, res) => {
+  app.post("/api/agent-callback", asyncHandler(async (req, res) => {
     const auth = await getAgentAuth(req);
     if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
     if (!auth.scopes.includes("deliberation.respond")) {
@@ -396,16 +403,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       latencyMs: null,
     });
     res.json({ ok: true, received: { agentId: auth.agentId, sessionId, position, confidence: confidence || 0.5 } });
-  });
+  }));
 
   // Agent token validation endpoint (for external agents to verify their token)
-  app.get("/api/agent-auth/verify", async (req, res) => {
+  app.get("/api/agent-auth/verify", asyncHandler(async (req, res) => {
     const auth = await getAgentAuth(req);
     if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
     res.json({ ok: true, agentId: auth.agentId, userId: auth.userId, scopes: auth.scopes });
-  });
+  }));
   // ── Memories ──────────────────────────────────────────────────
-  app.get("/api/memories", async (req, res) => {
+  app.get("/api/memories", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const q = req.query.q as string;
@@ -417,9 +424,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       results = await storage.getMemories(userId);
     }
     res.json(results);
-  });
+  }));
 
-  app.post("/api/memories", async (req, res) => {
+  app.post("/api/memories", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentId, agentName, content, type, importance, namespace } = validateBody(createMemorySchema, req.body);
@@ -445,18 +452,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       latencyMs: Math.floor(Math.random() * 30) + 30,
     });
     res.json(mem);
-  });
+  }));
 
-  app.delete("/api/memories/:id", async (req, res) => {
+  app.delete("/api/memories/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const deleted = await storage.deleteMemory(Number(req.params.id), userId);
     if (!deleted) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
   // ── GDPR: Purge (Art. 17) ──────────────────────────────────────
-  app.delete("/api/memories/purge", async (req, res) => {
+  app.delete("/api/memories/purge", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { scope, agent_id } = validateBody(purgeMemoriesSchema, req.body ?? {});
@@ -473,26 +480,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       latencyMs: null,
     });
     res.json({ ok: true, deleted });
-  });
+  }));
 
   // ── GDPR: Export (Art. 20) ──────────────────────────────────────
-  app.get("/api/memories/export", async (req, res) => {
+  app.get("/api/memories/export", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const data = await storage.exportMemories(userId);
     res.setHeader("Content-Disposition", 'attachment; filename="kioku-export.json"');
     res.setHeader("Content-Type", "application/json");
     res.json(data);
-  });
+  }));
 
   // ── Flows ─────────────────────────────────────────────────────
-  app.get("/api/flows", async (req, res) => {
+  app.get("/api/flows", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getFlows(userId));
-  });
+  }));
 
-  app.post("/api/flows", async (req, res) => {
+  app.post("/api/flows", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds, positions } = validateBody(createFlowSchema, req.body);
@@ -504,9 +511,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       positions: JSON.stringify(positions ?? {}),
     });
     res.json(flow);
-  });
+  }));
 
-  app.patch("/api/flows/:id", async (req, res) => {
+  app.patch("/api/flows/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds, positions, agentRoles } = validateBody(updateFlowSchema, req.body);
@@ -519,24 +526,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
     if (!updated) return res.status(404).json({ error: "Not found" });
     res.json(updated);
-  });
+  }));
 
-  app.delete("/api/flows/:id", async (req, res) => {
+  app.delete("/api/flows/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const deleted = await storage.deleteFlow(Number(req.params.id), userId);
     if (!deleted) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Rooms ─────────────────────────────────────────────────────
-  app.get("/api/rooms", async (req, res) => {
+  app.get("/api/rooms", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getRooms(userId));
-  });
+  }));
 
-  app.post("/api/rooms", async (req, res) => {
+  app.post("/api/rooms", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, agentIds } = validateBody(createRoomSchema, req.body);
@@ -548,9 +555,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       agentIds: JSON.stringify(agentIds ?? []),
     });
     res.json(room);
-  });
+  }));
 
-  app.patch("/api/rooms/:id", async (req, res) => {
+  app.patch("/api/rooms/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { name, description, status, agentIds } = validateBody(updateRoomSchema, req.body);
@@ -562,26 +569,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
     if (!updated) return res.status(404).json({ error: "Not found" });
     res.json(updated);
-  });
+  }));
 
-  app.delete("/api/rooms/:id", async (req, res) => {
+  app.delete("/api/rooms/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const deleted = await storage.deleteRoom(Number(req.params.id), userId);
     if (!deleted) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Room Messages ─────────────────────────────────────────────
-  app.get("/api/rooms/:id/messages", async (req, res) => {
+  app.get("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const messages = await storage.getRoomMessages(Number(req.params.id), userId);
     if (messages === null) return res.status(404).json({ error: "Not found" });
     res.json(messages);
-  });
+  }));
 
-  app.post("/api/rooms/:id/messages", async (req, res) => {
+  app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentId, agentName, agentColor, content, isDecision } = validateBody(createRoomMessageSchema, req.body);
@@ -633,19 +640,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         roomAgentIds
       ).catch((e) => console.error("[deliberation]", e));
     }
-  });
+  }));
 
   // ── Logs / Live Feed ──────────────────────────────────────────
-  app.get("/api/logs", async (req, res) => {
+  app.get("/api/logs", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     res.json(await storage.getLogs(userId));
-  });
+  }));
 
   // ── War Room — Agent Write API ──────────────────────────────────────────
   // POST /api/warroom/message — Boss Agent or external agents write to War Room
   // Finds or creates a "War Room" room, posts message, broadcasts via WebSocket
-  app.post("/api/warroom/message", async (req, res) => {
+  app.post("/api/warroom/message", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { agentName, content, agentColor, isDecision, roomName } = validateBody(warRoomMessageSchema, req.body);
@@ -697,19 +704,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     broadcastToRoom(room.id, msg);
     res.json({ ok: true, roomId: room.id, message: msg });
-  });
+  }));
 
   // ── API Key Rotation ──────────────────────────────────────────
-  app.post("/api/auth/rotate-key", async (req, res) => {
+  app.post("/api/auth/rotate-key", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (userId === 1) return res.status(403).json({ error: "Demo account key cannot be rotated" });
     const user = await storage.rotateApiKey(userId);
     res.json({ ok: true, apiKey: user?.apiKey });
-  });
+  }));
 
   // ── Waitlist ──────────────────────────────────────────────────
-  app.post("/api/waitlist", async (req, res) => {
+  app.post("/api/waitlist", asyncHandler(async (req, res) => {
     const { email, name, company, useCase } = validateBody(waitlistSchema, req.body);
     // Store as a user (reuse magic-link flow — already handles duplicates)
     let user = await storage.getUserByEmail(email);
@@ -740,12 +747,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     console.log(`[waitlist] ${email}${company ? ` (${company})` : ""}${useCase ? ` use: ${useCase}` : ""}`);
     res.json({ ok: true, message: "You're on the waitlist. We'll be in touch." });
-  });
+  }));
 
   // ── Tenant Self-Registration ──────────────────────────────────
   // POST /api/register — create new tenant + generate API key
   // (accessible via /api/v1/register thanks to versioning middleware)
-  app.post("/api/register", async (req, res) => {
+  app.post("/api/register", asyncHandler(async (req, res) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
 
     // Rate limit: 3 registrations per hour per IP
@@ -784,12 +791,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       plan: "free",
       message: "Registration successful. Use the api_key in the x-api-key header for API access.",
     });
-  });
+  }));
 
   // ── Usage Dashboard ──────────────────────────────────────────
   // GET /api/usage — returns usage stats for authenticated API key
   // (accessible via /api/v1/usage thanks to versioning middleware)
-  app.get("/api/usage", async (req, res) => {
+  app.get("/api/usage", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED", status: 401 });
 
@@ -854,21 +861,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         active_agents: stats.activeAgents,
       },
     });
-  });
+  }));
 
   // ── Billing / Plan ────────────────────────────────────────────
-  app.patch("/api/billing/plan", async (req, res) => {
+  app.patch("/api/billing/plan", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { plan, billingCycle } = validateBody(updatePlanSchema, req.body);
     const updated = await storage.updateUserPlan(userId, plan, billingCycle);
     res.json(updated);
-  });
+  }));
 
   // ── Structured Deliberation (Phase B-1) ───────────────────────
 
   // Start a structured deliberation session
-  app.post("/api/rooms/:id/deliberate", async (req, res) => {
+  app.post("/api/rooms/:id/deliberate", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.params.id);
@@ -887,24 +894,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const status = message.includes("already running") ? 409 : 500;
       res.status(status).json({ error: message });
     }
-  });
+  }));
 
   // Get deliberation session by ID
-  app.get("/api/rooms/:id/deliberations/:sessionId", async (req, res) => {
+  app.get("/api/rooms/:id/deliberations/:sessionId", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     // Verify room belongs to user
     const room = await storage.getRoom(Number(req.params.id), userId);
     if (!room) return res.status(404).json({ error: "Not found" });
-    const session = await getSession(req.params.sessionId);
+    const session = await getSession(String(req.params.sessionId));
     if (!session || session.roomId !== Number(req.params.id)) {
       return res.status(404).json({ error: "Session not found" });
     }
     res.json(session);
-  });
+  }));
 
   // List all deliberation sessions for a room
-  app.get("/api/rooms/:id/deliberations", async (req, res) => {
+  app.get("/api/rooms/:id/deliberations", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     // Verify room belongs to user
@@ -912,10 +919,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!room) return res.status(404).json({ error: "Not found" });
     const sessions = await getSessionsByRoom(Number(req.params.id));
     res.json(sessions);
-  });
+  }));
 
   // Get latest consensus for a room
-  app.get("/api/rooms/:id/consensus", async (req, res) => {
+  app.get("/api/rooms/:id/consensus", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     // Verify room belongs to user
@@ -924,7 +931,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const consensus = await getLatestConsensus(Number(req.params.id));
     if (!consensus) return res.status(404).json({ error: "No consensus found" });
     res.json(consensus);
-  });
+  }));
 
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
