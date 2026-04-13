@@ -18,7 +18,7 @@ from kioku.exceptions import (
 
 DEFAULT_BASE_URL = "https://usekioku.com"
 DEFAULT_TIMEOUT = 30.0
-SDK_USER_AGENT = "kioku-python/0.1.0"
+SDK_USER_AGENT = "kioku-python/0.2.0"
 
 
 class HttpClient:

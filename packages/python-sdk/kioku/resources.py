@@ -1,4 +1,4 @@
-"""KIOKU™ SDK resource classes — Agents, Memories, Rooms, Deliberation, etc."""
+"""KIOKU™ SDK resource classes — Agents, Memories, Rooms, Deliberation, Templates, Polling, Usage, etc."""
 
 from __future__ import annotations
 
@@ -28,6 +28,13 @@ class Agents:
         *,
         description: Optional[str] = None,
         color: Optional[str] = None,
+        model: Optional[str] = None,
+        role: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_api_key: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        agent_type: Optional[str] = None,
+        webhook_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new agent."""
         body: Dict[str, Any] = {"name": name}
@@ -35,6 +42,20 @@ class Agents:
             body["description"] = description
         if color is not None:
             body["color"] = color
+        if model is not None:
+            body["model"] = model
+        if role is not None:
+            body["role"] = role
+        if llm_provider is not None:
+            body["llmProvider"] = llm_provider
+        if llm_api_key is not None:
+            body["llmApiKey"] = llm_api_key
+        if llm_model is not None:
+            body["llmModel"] = llm_model
+        if agent_type is not None:
+            body["agentType"] = agent_type
+        if webhook_url is not None:
+            body["webhookUrl"] = webhook_url
         return self._http.post("/api/v1/agents", json=body)
 
     def update(
@@ -46,6 +67,11 @@ class Agents:
         color: Optional[str] = None,
         model: Optional[str] = None,
         role: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_api_key: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        agent_type: Optional[str] = None,
+        webhook_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Update an agent."""
         body: Dict[str, Any] = {}
@@ -59,7 +85,35 @@ class Agents:
             body["model"] = model
         if role is not None:
             body["role"] = role
+        if llm_provider is not None:
+            body["llmProvider"] = llm_provider
+        if llm_api_key is not None:
+            body["llmApiKey"] = llm_api_key
+        if llm_model is not None:
+            body["llmModel"] = llm_model
+        if agent_type is not None:
+            body["agentType"] = agent_type
+        if webhook_url is not None:
+            body["webhookUrl"] = webhook_url
         return self._http.patch(f"/api/v1/agents/{agent_id}", json=body)
+
+    def update_llm(
+        self,
+        agent_id: int,
+        *,
+        provider: str,
+        api_key: str,
+        model: str,
+    ) -> Dict[str, Any]:
+        """Update agent LLM configuration."""
+        return self._http.patch(
+            f"/api/v1/agents/{agent_id}",
+            json={
+                "llmProvider": provider,
+                "llmApiKey": api_key,
+                "llmModel": model,
+            },
+        )
 
     def set_status(
         self,
@@ -86,8 +140,49 @@ class Agents:
         return await self._http.aget("/api/v1/agents")
 
     async def acreate(self, name: str, **kwargs: Any) -> Dict[str, Any]:
-        body: Dict[str, Any] = {"name": name, **kwargs}
+        body: Dict[str, Any] = {"name": name}
+        field_map = {
+            "description": "description",
+            "color": "color",
+            "model": "model",
+            "role": "role",
+            "llm_provider": "llmProvider",
+            "llm_api_key": "llmApiKey",
+            "llm_model": "llmModel",
+            "agent_type": "agentType",
+            "webhook_url": "webhookUrl",
+        }
+        for py_key, api_key in field_map.items():
+            if py_key in kwargs and kwargs[py_key] is not None:
+                body[api_key] = kwargs[py_key]
         return await self._http.apost("/api/v1/agents", json=body)
+
+    async def aupdate(self, agent_id: int, **kwargs: Any) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        field_map = {
+            "name": "name",
+            "description": "description",
+            "color": "color",
+            "model": "model",
+            "role": "role",
+            "llm_provider": "llmProvider",
+            "llm_api_key": "llmApiKey",
+            "llm_model": "llmModel",
+            "agent_type": "agentType",
+            "webhook_url": "webhookUrl",
+        }
+        for py_key, api_key in field_map.items():
+            if py_key in kwargs and kwargs[py_key] is not None:
+                body[api_key] = kwargs[py_key]
+        return await self._http.apatch(f"/api/v1/agents/{agent_id}", json=body)
+
+    async def aupdate_llm(
+        self, agent_id: int, *, provider: str, api_key: str, model: str
+    ) -> Dict[str, Any]:
+        return await self._http.apatch(
+            f"/api/v1/agents/{agent_id}",
+            json={"llmProvider": provider, "llmApiKey": api_key, "llmModel": model},
+        )
 
     async def adelete(self, agent_id: int) -> Dict[str, Any]:
         return await self._http.adelete(f"/api/v1/agents/{agent_id}")
@@ -136,14 +231,16 @@ class Memories:
         memory_type: Optional[str] = None,
         type: Optional[str] = None,
         importance: Optional[float] = None,
+        confidence: Optional[float] = None,
         namespace: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Store a new memory. Auto-generates embedding.
 
         Args:
             content: The memory text.
-            memory_type: One of semantic, episodic, procedural, emotional.
+            memory_type: One of semantic, episodic, procedural, temporal, causal, contextual.
                          Alias ``type`` is also accepted.
+            confidence: Confidence score 0.0-1.0.
         """
         resolved_type = memory_type or type
         body: Dict[str, Any] = {"content": content}
@@ -155,6 +252,8 @@ class Memories:
             body["type"] = resolved_type
         if importance is not None:
             body["importance"] = importance
+        if confidence is not None:
+            body["confidence"] = confidence
         if namespace is not None:
             body["namespace"] = namespace
         return self._http.post("/api/v1/memories", json=body)
@@ -256,6 +355,7 @@ class Memories:
             "memory_type": "type",
             "type": "type",
             "importance": "importance",
+            "confidence": "confidence",
             "namespace": "namespace",
         }
         for py_key, api_key in field_map.items():
@@ -381,17 +481,23 @@ class Deliberation:
         *,
         model: Optional[str] = None,
         debate_rounds: Optional[int] = None,
+        include_human: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Start a structured deliberation session.
 
-        Agents debate in phases: Position → Debate → Final → Consensus.
+        Agents debate in phases: Position -> Debate -> Final -> Consensus.
         Returns the full session with rounds and consensus result.
+
+        Args:
+            include_human: If True, pause for human input during debate phases.
         """
         body: Dict[str, Any] = {"topic": topic}
         if model is not None:
             body["model"] = model
         if debate_rounds is not None:
             body["debateRounds"] = debate_rounds
+        if include_human is not None:
+            body["includeHuman"] = include_human
         return self._http.post(f"/api/v1/rooms/{room_id}/deliberate", json=body)
 
     def get(self, room_id: int, session_id: str) -> Dict[str, Any]:
@@ -411,6 +517,40 @@ class Deliberation:
         """
         return self._http.get(f"/api/v1/rooms/{room_id}/consensus")
 
+    def submit_human_input(
+        self,
+        room_id: int,
+        session_id: str,
+        *,
+        phase: str,
+        round: int,
+        position: str,
+        confidence: Optional[float] = None,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Submit human participant input during a deliberation.
+
+        Args:
+            phase: The deliberation phase (e.g. 'debate', 'final').
+            round: The round number within the phase.
+            position: The human's position/opinion.
+            confidence: Confidence level 0.0-1.0.
+            reasoning: Detailed reasoning.
+        """
+        body: Dict[str, Any] = {
+            "phase": phase,
+            "round": round,
+            "position": position,
+        }
+        if confidence is not None:
+            body["confidence"] = confidence
+        if reasoning is not None:
+            body["reasoning"] = reasoning
+        return self._http.post(
+            f"/api/v1/rooms/{room_id}/deliberations/{session_id}/human-input",
+            json=body,
+        )
+
     # --- Async ---
 
     async def astart(self, room_id: int, topic: str, **kwargs: Any) -> Dict[str, Any]:
@@ -419,6 +559,8 @@ class Deliberation:
             body["model"] = kwargs["model"]
         if "debate_rounds" in kwargs:
             body["debateRounds"] = kwargs["debate_rounds"]
+        if "include_human" in kwargs:
+            body["includeHuman"] = kwargs["include_human"]
         return await self._http.apost(
             f"/api/v1/rooms/{room_id}/deliberate", json=body
         )
@@ -433,6 +575,23 @@ class Deliberation:
 
     async def aconsensus(self, room_id: int) -> Dict[str, Any]:
         return await self._http.aget(f"/api/v1/rooms/{room_id}/consensus")
+
+    async def asubmit_human_input(
+        self, room_id: int, session_id: str, **kwargs: Any
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "phase": kwargs["phase"],
+            "round": kwargs["round"],
+            "position": kwargs["position"],
+        }
+        if "confidence" in kwargs:
+            body["confidence"] = kwargs["confidence"]
+        if "reasoning" in kwargs:
+            body["reasoning"] = kwargs["reasoning"]
+        return await self._http.apost(
+            f"/api/v1/rooms/{room_id}/deliberations/{session_id}/human-input",
+            json=body,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +695,138 @@ class Tokens:
     def revoke_all(self, agent_id: int) -> Dict[str, Any]:
         """Revoke all tokens for an agent."""
         return self._http.delete(f"/api/v1/agents/{agent_id}/tokens")
+
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+
+class Templates:
+    """Manage agent templates — pre-built agent teams."""
+
+    def __init__(self, http: HttpClient):
+        self._http = http
+
+    def list(self) -> List[Dict[str, Any]]:
+        """List available agent templates."""
+        return self._http.get("/api/v1/agents/templates")
+
+    def create_from_template(self, template_id: str) -> Dict[str, Any]:
+        """Create agents and a room from a template.
+
+        Returns the created agents and room.
+        """
+        return self._http.post(f"/api/v1/agents/templates/{template_id}")
+
+    # --- Async ---
+
+    async def alist(self) -> List[Dict[str, Any]]:
+        return await self._http.aget("/api/v1/agents/templates")
+
+    async def acreate_from_template(self, template_id: str) -> Dict[str, Any]:
+        return await self._http.apost(f"/api/v1/agents/templates/{template_id}")
+
+
+# ---------------------------------------------------------------------------
+# Polling (External Agent Turn-Based Deliberation)
+# ---------------------------------------------------------------------------
+
+
+class Polling:
+    """Poll-based deliberation for external agents using kat_* tokens."""
+
+    def __init__(self, http: HttpClient):
+        self._http = http
+
+    def get_pending_turns(self) -> List[Dict[str, Any]]:
+        """Get pending deliberation turns for the authenticated agent."""
+        return self._http.get("/api/v1/agent/pending-turns")
+
+    def get_turn(self, turn_id: int) -> Dict[str, Any]:
+        """Get a specific turn by ID."""
+        return self._http.get(f"/api/v1/agent/turns/{turn_id}")
+
+    def respond_to_turn(
+        self,
+        turn_id: int,
+        *,
+        position: str,
+        confidence: Optional[float] = None,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Respond to a pending deliberation turn.
+
+        Args:
+            turn_id: The turn ID.
+            position: The agent's position.
+            confidence: Confidence 0.0-1.0 (defaults to 0.5).
+            reasoning: Reasoning text.
+        """
+        body: Dict[str, Any] = {"position": position}
+        if confidence is not None:
+            body["confidence"] = confidence
+        if reasoning is not None:
+            body["reasoning"] = reasoning
+        return self._http.post(f"/api/v1/agent/turns/{turn_id}/respond", json=body)
+
+    # --- Async ---
+
+    async def aget_pending_turns(self) -> List[Dict[str, Any]]:
+        return await self._http.aget("/api/v1/agent/pending-turns")
+
+    async def aget_turn(self, turn_id: int) -> Dict[str, Any]:
+        return await self._http.aget(f"/api/v1/agent/turns/{turn_id}")
+
+    async def arespond_to_turn(
+        self, turn_id: int, *, position: str, **kwargs: Any
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"position": position}
+        if "confidence" in kwargs:
+            body["confidence"] = kwargs["confidence"]
+        if "reasoning" in kwargs:
+            body["reasoning"] = kwargs["reasoning"]
+        return await self._http.apost(
+            f"/api/v1/agent/turns/{turn_id}/respond", json=body
+        )
+
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+
+class Usage:
+    """Usage metering and history."""
+
+    def __init__(self, http: HttpClient):
+        self._http = http
+
+    def get(self) -> Dict[str, Any]:
+        """Get current usage and limits."""
+        return self._http.get("/api/v1/usage")
+
+    def get_history(self, *, months: Optional[int] = None) -> Dict[str, Any]:
+        """Get usage history for past months.
+
+        Args:
+            months: Number of months to retrieve (1-12, default 6).
+        """
+        params: Dict[str, Any] = {}
+        if months is not None:
+            params["months"] = months
+        return self._http.get("/api/v1/usage/history", params=params or None)
+
+    # --- Async ---
+
+    async def aget(self) -> Dict[str, Any]:
+        return await self._http.aget("/api/v1/usage")
+
+    async def aget_history(self, *, months: Optional[int] = None) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if months is not None:
+            params["months"] = months
+        return await self._http.aget("/api/v1/usage/history", params=params or None)
 
 
 # ---------------------------------------------------------------------------

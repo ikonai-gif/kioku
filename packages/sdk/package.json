@@ -1,7 +1,7 @@
 {
   "name": "@ikonbai/kioku-sdk",
-  "version": "0.2.0",
-  "description": "Official SDK for KIOKU™ Agent Memory, Deliberation, Webhooks & External Agent API by IKONBAI™",
+  "version": "0.3.0",
+  "description": "Official SDK for KIOKU™ Agent Memory, Deliberation, Templates, Polling, Usage & External Agent API by IKONBAI™",
   "keywords": [
     "kioku",
     "ikonbai",
@@ -11,7 +11,11 @@
     "deliberation",
     "multi-agent",
     "webhooks",
-    "external-agents"
+    "external-agents",
+    "templates",
+    "polling",
+    "usage",
+    "human-input"
   ],
   "author": "IKONBAI™ <dev@ikonbai.com>",
   "license": "MIT",

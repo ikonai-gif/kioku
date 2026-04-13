@@ -12,8 +12,11 @@ from kioku.resources import (
     Deliberation,
     Flows,
     Memories,
+    Polling,
     Rooms,
+    Templates,
     Tokens,
+    Usage,
     WarRoom,
     Webhooks,
 )
@@ -28,18 +31,30 @@ class KiokuClient:
 
         client = KiokuClient(api_key="kk_your_key")
 
-        # Store a memory
-        memory = client.memories.create("User prefers dark mode")
+        # Store a memory (with new types: temporal, causal, contextual)
+        memory = client.memories.create(
+            "User prefers dark mode",
+            memory_type="semantic",
+            confidence=0.95,
+        )
 
         # Semantic search
         results = client.memories.search("user preferences")
 
-        # Start deliberation
+        # Create agents from a template
+        team = client.templates.create_from_template("executive-board")
+
+        # Start deliberation with human input
         session = client.deliberation.start(
             room_id=1,
             topic="Should we migrate to a new framework?",
+            include_human=True,
         )
         print(session["consensus"])
+
+        # Check usage
+        usage = client.usage.get()
+        print(usage["plan"], usage["usage"])
 
     Args:
         api_key: Your KIOKU API key (kk_...).
@@ -64,6 +79,9 @@ class KiokuClient:
         self.warroom = WarRoom(self._http)
         self.webhooks = Webhooks(self._http)
         self.tokens = Tokens(self._http)
+        self.templates = Templates(self._http)
+        self.polling = Polling(self._http)
+        self.usage = Usage(self._http)
         self.flows = Flows(self._http)
         self.account = Account(self._http)
         self.billing = Billing(self._http)
@@ -77,10 +95,6 @@ class KiokuClient:
     def stats(self) -> Dict[str, Any]:
         """Get usage stats."""
         return self._http.get("/api/v1/stats")
-
-    def usage(self) -> Dict[str, Any]:
-        """Get detailed usage and limits."""
-        return self._http.get("/api/v1/usage")
 
     def me(self) -> Dict[str, Any]:
         """Get current user info."""

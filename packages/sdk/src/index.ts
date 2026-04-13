@@ -14,14 +14,20 @@
  * // Semantic search
  * const results = await kioku.memories.search({ query: "user preferences" });
  *
- * // Start a deliberation
- * const session = await kioku.deliberation.start(2, { topic: "Should we pivot?", model: "gpt-4o" });
+ * // Start a deliberation (with human input)
+ * const session = await kioku.deliberation.start(2, { topic: "Should we pivot?", model: "gpt-4o", includeHuman: true });
  *
  * // Register webhook for external agent
  * await kioku.webhooks.register(6, { url: "https://my-agent.example.com/hook" });
  *
  * // Create agent token
  * const token = await kioku.tokens.create(3, { name: "prod-agent", expiresInDays: 90 });
+ *
+ * // Create agents from template
+ * const team = await kioku.templates.createFromTemplate("executive-board");
+ *
+ * // Get usage
+ * const usage = await kioku.usage.get();
  * ```
  */
 
@@ -44,6 +50,9 @@ export interface Agent {
   role?: string | null;
   memoriesCount: number;
   enabled: boolean;
+  llmProvider?: string | null;
+  llmModel?: string | null;
+  agentType?: string | null;
   createdAt: number;
 }
 
@@ -52,8 +61,9 @@ export interface Memory {
   agentId?: number | null;
   agentName?: string | null;
   content: string;
-  type: "semantic" | "episodic" | "procedural";
+  type: "semantic" | "episodic" | "procedural" | "temporal" | "causal" | "contextual";
   importance: number;
+  confidence?: number | null;
   namespace: string;
   createdAt: number;
 }
@@ -85,6 +95,7 @@ export interface DeliberationSession {
   status: string;
   phases: DeliberationPhase[];
   consensus?: string | null;
+  includeHuman?: boolean;
   createdAt: number;
 }
 
@@ -130,6 +141,65 @@ export interface AgentTokenInfo {
   createdAt: number;
 }
 
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  agents: Array<{
+    name: string;
+    role: string;
+    color: string;
+    description: string;
+  }>;
+}
+
+export interface TemplateResult {
+  agents: Agent[];
+  room: Room;
+}
+
+export interface PendingTurn {
+  id: number;
+  agentId: number;
+  sessionId: string;
+  roomId: number;
+  phase: string;
+  round: number;
+  topic: string;
+  status: "pending" | "responded" | "expired";
+  expiresAt: number;
+  createdAt: number;
+}
+
+export interface UsageInfo {
+  plan: string;
+  billing_cycle: string;
+  usage: {
+    deliberations: { used: number; limit: number };
+    api_calls: { used: number; limit: number };
+    webhooks: { used: number; limit: number };
+    tokens_used: { used: number; limit: number };
+  };
+  resource_limits: {
+    agents: { used: number; limit: number };
+    memories: { used: number; limit: number };
+    rooms: { used: number; limit: number };
+    flows: { used: number; limit: number };
+  };
+  period: { start: number; end: number };
+}
+
+export interface UsageHistoryEntry {
+  month: string;
+  deliberations: number;
+  apiCalls: number;
+  webhooks: number;
+  tokensUsed: number;
+}
+
+export interface HumanInputResult {
+  accepted: boolean;
+}
+
 // ── Input types ──────────────────────────────────────────
 
 export interface CreateAgentInput {
@@ -138,6 +208,11 @@ export interface CreateAgentInput {
   color?: string;
   model?: string;
   role?: "devils_advocate" | "contrarian" | "mediator" | "analyst" | "optimist" | "pessimist";
+  llmProvider?: string;
+  llmApiKey?: string;
+  llmModel?: string;
+  agentType?: string;
+  webhookUrl?: string;
 }
 
 export interface UpdateAgentInput {
@@ -146,14 +221,26 @@ export interface UpdateAgentInput {
   color?: string;
   model?: string;
   role?: string;
+  llmProvider?: string;
+  llmApiKey?: string;
+  llmModel?: string;
+  agentType?: string;
+  webhookUrl?: string;
+}
+
+export interface UpdateAgentLLMInput {
+  provider: string;
+  apiKey: string;
+  model: string;
 }
 
 export interface CreateMemoryInput {
   content: string;
   agentId?: number;
   agentName?: string;
-  type?: "semantic" | "episodic" | "procedural";
+  type?: "semantic" | "episodic" | "procedural" | "temporal" | "causal" | "contextual";
   importance?: number;
+  confidence?: number;
   namespace?: string;
 }
 
@@ -179,6 +266,7 @@ export interface StartDeliberationInput {
   topic: string;
   model?: string;
   debateRounds?: number;
+  includeHuman?: boolean;
 }
 
 export interface RegisterWebhookInput {
@@ -197,6 +285,20 @@ export interface AgentCallbackInput {
   reasoning?: string;
 }
 
+export interface RespondToTurnInput {
+  position: string;
+  confidence?: number;
+  reasoning?: string;
+}
+
+export interface HumanInputInput {
+  phase: string;
+  round: number;
+  position: string;
+  confidence?: number;
+  reasoning?: string;
+}
+
 // ── Client ──────────────────────────────────────────────
 
 export class KiokuClient {
@@ -209,6 +311,9 @@ export class KiokuClient {
   readonly deliberation: DeliberationResource;
   readonly webhooks: WebhooksResource;
   readonly tokens: TokensResource;
+  readonly templates: TemplatesResource;
+  readonly usage: UsageResource;
+  readonly polling: PollingResource;
 
   constructor(config: KiokuConfig) {
     this.baseUrl = (config.baseUrl || "https://usekioku.com").replace(/\/$/, "");
@@ -222,6 +327,9 @@ export class KiokuClient {
     this.deliberation = new DeliberationResource(this);
     this.webhooks = new WebhooksResource(this);
     this.tokens = new TokensResource(this);
+    this.templates = new TemplatesResource(this);
+    this.usage = new UsageResource(this);
+    this.polling = new PollingResource(this);
   }
 
   /** @internal */
@@ -254,6 +362,15 @@ class AgentsResource {
 
   update(id: number, input: UpdateAgentInput): Promise<Agent> {
     return this.client._fetch("PATCH", `/agents/${id}`, input);
+  }
+
+  /** Update agent LLM configuration (provider, apiKey, model) */
+  updateLLM(id: number, input: UpdateAgentLLMInput): Promise<Agent> {
+    return this.client._fetch("PATCH", `/agents/${id}`, {
+      llmProvider: input.provider,
+      llmApiKey: input.apiKey,
+      llmModel: input.model,
+    });
   }
 
   setStatus(id: number, status: "online" | "idle" | "offline"): Promise<{ ok: boolean }> {
@@ -331,6 +448,11 @@ class DeliberationResource {
   consensus(roomId: number): Promise<{ sessionId: string; consensus: string; createdAt: number }> {
     return this.client._fetch("GET", `/rooms/${roomId}/consensus`);
   }
+
+  /** Submit human participant input during a deliberation */
+  submitHumanInput(roomId: number, sessionId: string, input: HumanInputInput): Promise<HumanInputResult> {
+    return this.client._fetch("POST", `/rooms/${roomId}/deliberations/${sessionId}/human-input`, input);
+  }
 }
 
 class WebhooksResource {
@@ -388,6 +510,54 @@ class TokensResource {
   }
 }
 
+class TemplatesResource {
+  constructor(private readonly client: KiokuClient) {}
+
+  /** List available agent templates */
+  list(): Promise<AgentTemplate[]> {
+    return this.client._fetch("GET", "/agents/templates");
+  }
+
+  /** Create agents from a template (also creates a room) */
+  createFromTemplate(templateId: string): Promise<TemplateResult> {
+    return this.client._fetch("POST", `/agents/templates/${templateId}`);
+  }
+}
+
+class UsageResource {
+  constructor(private readonly client: KiokuClient) {}
+
+  /** Get current usage and limits */
+  get(): Promise<UsageInfo> {
+    return this.client._fetch("GET", "/usage");
+  }
+
+  /** Get usage history for past months */
+  getHistory(months?: number): Promise<{ history: UsageHistoryEntry[] }> {
+    const q = months ? `?months=${months}` : "";
+    return this.client._fetch("GET", `/usage/history${q}`);
+  }
+}
+
+class PollingResource {
+  constructor(private readonly client: KiokuClient) {}
+
+  /** Get pending turns for the authenticated agent (use with ExternalAgentClient) */
+  getPendingTurns(): Promise<PendingTurn[]> {
+    return this.client._fetch("GET", "/agent/pending-turns");
+  }
+
+  /** Get a specific turn by ID */
+  getTurn(turnId: number): Promise<PendingTurn> {
+    return this.client._fetch("GET", `/agent/turns/${turnId}`);
+  }
+
+  /** Respond to a pending turn */
+  respondToTurn(turnId: number, input: RespondToTurnInput): Promise<{ ok: boolean; turnId: number }> {
+    return this.client._fetch("POST", `/agent/turns/${turnId}/respond`, input);
+  }
+}
+
 // ── External Agent Client ──────────────────────────────
 
 /**
@@ -402,6 +572,17 @@ class TokensResource {
  *   baseUrl: "https://usekioku.com",
  * });
  *
+ * // Poll for pending turns
+ * const turns = await agent.getPendingTurns();
+ *
+ * // Respond to a turn
+ * await agent.respondToTurn(turns[0].id, {
+ *   position: "We should proceed with caution",
+ *   confidence: 0.85,
+ *   reasoning: "Market conditions are uncertain",
+ * });
+ *
+ * // Or use direct callback
  * await agent.callback({
  *   sessionId: "dlb_2_123",
  *   position: "We should proceed with caution",
@@ -419,28 +600,44 @@ export class ExternalAgentClient {
     this.agentToken = config.agentToken;
   }
 
-  /** Send a position to an active deliberation session */
-  async callback(input: AgentCallbackInput): Promise<{ ok: boolean; received: unknown }> {
-    const res = await fetch(`${this.baseUrl}/api/agent-callback`, {
-      method: "POST",
+  private async _fetch<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl}/api${path}`, {
+      method,
       headers: {
         "Content-Type": "application/json",
         "X-Agent-Token": this.agentToken,
       },
-      body: JSON.stringify(input),
+      ...(body !== undefined && { body: JSON.stringify(body) }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(err.error || `HTTP ${res.status}`);
     }
-    return res.json();
+    return res.json() as Promise<T>;
+  }
+
+  /** Send a position to an active deliberation session */
+  async callback(input: AgentCallbackInput): Promise<{ ok: boolean; received: unknown }> {
+    return this._fetch("POST", "/agent-callback", input);
   }
 
   /** Verify this token is valid */
   async verify(): Promise<{ ok: boolean; agentId: number; userId: number; scopes: string[] }> {
-    const res = await fetch(`${this.baseUrl}/api/agent-auth/verify`, {
-      headers: { "X-Agent-Token": this.agentToken },
-    });
-    return res.json();
+    return this._fetch("GET", "/agent-auth/verify");
+  }
+
+  /** Get pending deliberation turns for this agent */
+  async getPendingTurns(): Promise<PendingTurn[]> {
+    return this._fetch("GET", "/agent/pending-turns");
+  }
+
+  /** Get a specific turn */
+  async getTurn(turnId: number): Promise<PendingTurn> {
+    return this._fetch("GET", `/agent/turns/${turnId}`);
+  }
+
+  /** Respond to a pending deliberation turn */
+  async respondToTurn(turnId: number, input: RespondToTurnInput): Promise<{ ok: boolean; turnId: number }> {
+    return this._fetch("POST", `/agent/turns/${turnId}/respond`, input);
   }
 }
