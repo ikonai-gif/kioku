@@ -11,6 +11,17 @@ import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { checkRegistrationLimit } from "./ratelimit";
+import {
+  validateBody, ValidationError,
+  magicLinkSchema, verifyTokenSchema,
+  createAgentSchema, updateAgentSchema, toggleAgentSchema,
+  createMemorySchema, purgeMemoriesSchema,
+  createFlowSchema, updateFlowSchema,
+  createRoomSchema, updateRoomSchema,
+  createRoomMessageSchema, deliberateSchema,
+  createWebhookSchema, createAgentTokenSchema, agentCallbackSchema,
+  warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
+} from "./validation";
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
@@ -158,8 +169,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Auth ──────────────────────────────────────────────────────
   // alias for frontend
   app.post("/api/auth/magic-link", async (req, res) => {
-    const { email, name, company } = req.body;
-    if (!email) return res.status(400).json({ error: "Email required" });
+    const { email, name, company } = validateBody(magicLinkSchema, req.body);
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
@@ -170,8 +180,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/auth/verify", async (req, res) => {
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "Token required" });
+    const { token } = validateBody(verifyTokenSchema, req.body);
     const email = await storage.verifyMagicToken(token);
     if (!email) {
       recordAuthFailure(ip);
@@ -185,8 +194,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/auth/request-magic-link", async (req, res) => {
-    const { email, name, company } = req.body;
-    if (!email) return res.status(400).json({ error: "Email required" });
+    const { email, name, company } = validateBody(magicLinkSchema, req.body);
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
@@ -196,8 +204,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/auth/verify-magic-link", async (req, res) => {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: "Token required" });
+    const { token } = validateBody(verifyTokenSchema, req.body);
     const email = await storage.verifyMagicToken(token);
     if (!email) return res.status(401).json({ error: "Invalid or expired token" });
     let user = await storage.getUserByEmail(email);
@@ -242,8 +249,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/agents", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { name, description, color } = req.body;
-    if (!name) return res.status(400).json({ error: "Name required" });
+    const { name, description, color } = validateBody(createAgentSchema, req.body);
     const agent = await storage.createAgent({
       userId,
       name,
@@ -262,7 +268,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
-    const { name, description, color, model, role } = req.body;
+    const { name, description, color, model, role } = validateBody(updateAgentSchema, req.body);
     const updates: Record<string, any> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
@@ -280,7 +286,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
-    const { enabled, status } = req.body;
+    const { enabled, status } = validateBody(toggleAgentSchema, req.body);
     let ok: boolean;
     if (status !== undefined) {
       ok = await storage.updateAgentStatus(agentId, userId, status);
@@ -308,8 +314,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Verify agent belongs to user
     const agent = await storage.getAgent(agentId);
     if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Not found" });
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: "url is required" });
+    const { url } = validateBody(createWebhookSchema, req.body);
     const secret = "whk_" + randomBytes(24).toString("hex");
     await storage.registerWebhook({ agentId, userId, url, secret });
     res.json({ ok: true, agentId, url, secret, note: "Save this secret — it signs X-Kioku-Signature headers" });
@@ -346,7 +351,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Verify agent belongs to user
     const agent = await storage.getAgent(agentId);
     if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Not found" });
-    const { name, scopes, expiresInDays } = req.body || {};
+    const { name, scopes, expiresInDays } = validateBody(createAgentTokenSchema, req.body || {});
     const result = await storage.createAgentToken({ agentId, userId, name, scopes, expiresInDays });
     res.json({ ok: true, ...result, note: "Save this token — it cannot be retrieved later" });
   });
@@ -380,10 +385,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!auth.scopes.includes("deliberation.respond")) {
       return res.status(403).json({ error: "Token lacks deliberation.respond scope" });
     }
-    const { sessionId, position, confidence, reasoning } = req.body;
-    if (!sessionId || !position) {
-      return res.status(400).json({ error: "sessionId and position are required" });
-    }
+    const { sessionId, position, confidence, reasoning } = validateBody(agentCallbackSchema, req.body);
     // Log the callback
     await storage.addLog({
       userId: auth.userId,
@@ -420,8 +422,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/memories", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { agentId, agentName, content, type, importance, namespace } = req.body;
-    if (!content) return res.status(400).json({ error: "Content required" });
+    const { agentId, agentName, content, type, importance, namespace } = validateBody(createMemorySchema, req.body);
     // Generate embedding asynchronously — don't block response
     const embedding = await embedText(content);
     const mem = await storage.createMemory({
@@ -458,10 +459,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/memories/purge", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { scope, agent_id } = req.body ?? {};
-    if (!scope || !['all', 'agent'].includes(scope)) {
-      return res.status(400).json({ error: "scope must be 'all' or 'agent'" });
-    }
+    const { scope, agent_id } = validateBody(purgeMemoriesSchema, req.body ?? {});
     if (scope === 'agent' && !agent_id) {
       return res.status(400).json({ error: "agent_id required when scope is 'agent'" });
     }
@@ -497,8 +495,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/flows", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { name, description, agentIds, positions } = req.body;
-    if (!name) return res.status(400).json({ error: "Name required" });
+    const { name, description, agentIds, positions } = validateBody(createFlowSchema, req.body);
     const flow = await storage.createFlow({
       userId,
       name,
@@ -512,10 +509,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/flows/:id", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { name, description, agentIds, positions, agentRoles } = req.body;
+    const { name, description, agentIds, positions, agentRoles } = validateBody(updateFlowSchema, req.body);
     const updated = await storage.updateFlow(Number(req.params.id), userId, {
       ...(name !== undefined && { name }),
-      ...(description !== undefined && { description }),
+      ...(description !== undefined && { description: description ?? undefined }),
       ...(agentIds !== undefined && { agentIds: JSON.stringify(agentIds) }),
       ...(positions !== undefined && { positions: JSON.stringify(positions) }),
       ...(agentRoles !== undefined && { agentRoles: JSON.stringify(agentRoles) }),
@@ -542,8 +539,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rooms", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { name, description, agentIds } = req.body;
-    if (!name) return res.status(400).json({ error: "Name required" });
+    const { name, description, agentIds } = validateBody(createRoomSchema, req.body);
     const room = await storage.createRoom({
       userId,
       name,
@@ -557,10 +553,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/rooms/:id", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { name, description, status, agentIds } = req.body;
+    const { name, description, status, agentIds } = validateBody(updateRoomSchema, req.body);
     const updated = await storage.updateRoom(Number(req.params.id), userId, {
       ...(name !== undefined && { name }),
-      ...(description !== undefined && { description }),
+      ...(description !== undefined && { description: description ?? undefined }),
       ...(status !== undefined && { status }),
       ...(agentIds !== undefined && { agentIds: JSON.stringify(agentIds) }),
     });
@@ -588,8 +584,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rooms/:id/messages", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { agentId, agentName, agentColor, content, isDecision } = req.body;
-    if (!content || !agentName) return res.status(400).json({ error: "agentName and content required" });
+    const { agentId, agentName, agentColor, content, isDecision } = validateBody(createRoomMessageSchema, req.body);
     const msg = await storage.addRoomMessage({
       roomId: Number(req.params.id),
       agentId: agentId ?? null,
@@ -653,8 +648,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/warroom/message", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { agentName, content, agentColor, isDecision, roomName } = req.body;
-    if (!content || !agentName) return res.status(400).json({ error: "agentName and content required" });
+    const { agentName, content, agentColor, isDecision, roomName } = validateBody(warRoomMessageSchema, req.body);
 
     // Find or create the target room
     const targetRoomName = roomName || "War Room";
@@ -716,15 +710,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Waitlist ──────────────────────────────────────────────────
   app.post("/api/waitlist", async (req, res) => {
-    const { email, name, company, useCase } = req.body;
-    if (!email) return res.status(400).json({ error: "Email required" });
+    const { email, name, company, useCase } = validateBody(waitlistSchema, req.body);
     // Store as a user (reuse magic-link flow — already handles duplicates)
     let user = await storage.getUserByEmail(email);
     if (!user) {
       user = await storage.createUser({
         email,
         name: name || email.split("@")[0],
-        company: company || null,
+        company: company || undefined,
       });
     }
     // Send confirmation email via Brevo
@@ -766,8 +759,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
 
-    const { email, name, plan } = req.body;
-    if (!email) return res.status(400).json({ error: "Email required", code: "BAD_REQUEST", status: 400 });
+    const { email, name, plan } = validateBody(registerSchema, req.body);
 
     // Check if user already exists
     const existing = await storage.getUserByEmail(email);
@@ -868,8 +860,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/billing/plan", async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { plan, billingCycle } = req.body;
-    if (!plan || !billingCycle) return res.status(400).json({ error: "plan and billingCycle required" });
+    const { plan, billingCycle } = validateBody(updatePlanSchema, req.body);
     const updated = await storage.updateUserPlan(userId, plan, billingCycle);
     res.json(updated);
   });
@@ -884,8 +875,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Verify room belongs to user
     const roomCheck = await storage.getRoom(roomId, userId);
     if (!roomCheck) return res.status(404).json({ error: "Not found" });
-    const { topic, model, debateRounds } = req.body;
-    if (!topic) return res.status(400).json({ error: "topic is required" });
+    const { topic, model, debateRounds } = validateBody(deliberateSchema, req.body);
     try {
       const session = await runDeliberation(roomId, userId, topic, {
         model: model || undefined,
@@ -934,6 +924,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const consensus = await getLatestConsensus(Number(req.params.id));
     if (!consensus) return res.status(404).json({ error: "No consensus found" });
     res.json(consensus);
+  });
+
+  // ── Global error handler ──────────────────────────────────────
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    if (err instanceof ValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error("[unhandled]", err);
+    res.status(500).json({ error: "Internal server error" });
   });
 
   return httpServer;
