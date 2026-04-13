@@ -584,20 +584,23 @@ export class Storage implements IStorage {
 
   // ── Agent Tokens (external agent auth) ──────────────────────────────
   async createAgentToken(data: { agentId: number; userId: number; name?: string; scopes?: string[]; expiresInDays?: number }) {
-    const token = "kat_" + randomBytes(32).toString("hex");
+    const rawToken = "kat_" + randomBytes(32).toString("hex");
+    const hashedToken = hashToken(rawToken);
     const scopes = JSON.stringify(data.scopes || ["deliberation.respond", "memory.read"]);
     const expiresAt = data.expiresInDays ? Date.now() + data.expiresInDays * 86400000 : null;
     await pool.query(
       `INSERT INTO kioku_agent_tokens (agent_id, user_id, token, name, scopes, expires_at, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [data.agentId, data.userId, token, data.name || "default", scopes, expiresAt, Date.now()]
+      [data.agentId, data.userId, hashedToken, data.name || "default", scopes, expiresAt, Date.now()]
     );
-    return { token, agentId: data.agentId, name: data.name || "default", scopes: data.scopes || ["deliberation.respond", "memory.read"], expiresAt };
+    // Return raw token once — only the hash is stored
+    return { token: rawToken, agentId: data.agentId, name: data.name || "default", scopes: data.scopes || ["deliberation.respond", "memory.read"], expiresAt };
   }
 
   async validateAgentToken(token: string) {
+    const hashedToken = hashToken(token);
     const { rows } = await pool.query(
-      `SELECT * FROM kioku_agent_tokens WHERE token = $1 AND revoked = FALSE`, [token]
+      `SELECT * FROM kioku_agent_tokens WHERE token = $1 AND revoked = FALSE`, [hashedToken]
     );
     if (!rows[0]) return null;
     const row = rows[0];
