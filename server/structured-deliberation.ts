@@ -44,6 +44,17 @@ function isGeminiModel(model: string): boolean {
   return GEMINI_MODELS.includes(model) || model.startsWith("gemini-");
 }
 
+function isOpenAIModel(model: string): boolean {
+  return OPENAI_MODELS.includes(model) || model.startsWith("gpt-");
+}
+
+/** Resolve agent model to a supported one — unsupported models (e.g. claude-*) use DEFAULT_MODEL */
+function resolveModel(model: string): string {
+  if (isGeminiModel(model) || isOpenAIModel(model)) return model;
+  console.warn(`[deliberation] Unsupported model "${model}", falling back to ${DEFAULT_MODEL}`);
+  return DEFAULT_MODEL;
+}
+
 const LLM_TIMEOUT_MS = 45_000; // 45s per LLM call
 
 /**
@@ -109,13 +120,14 @@ const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
  * If the primary provider fails, falls back to the other provider.
  */
 async function callLLM(
-  model: string,
+  requestedModel: string,
   systemPrompt: string,
   userMessage: string,
   options?: { maxTokens?: number; temperature?: number }
 ): Promise<string> {
   const maxTokens = options?.maxTokens ?? 400;
   const temperature = options?.temperature ?? 0.7;
+  const model = resolveModel(requestedModel);
 
   if (isGeminiModel(model)) {
     try {
