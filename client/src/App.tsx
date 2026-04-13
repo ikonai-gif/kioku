@@ -18,6 +18,7 @@ import RoomsPage from "./pages/rooms";
 import RoomDetailPage from "./pages/room-detail";
 import LogsPage from "./pages/logs";
 import BillingPage from "./pages/billing";
+import PricingPage from "./pages/pricing";
 import DocsPage from "./pages/docs";
 import PrivacyPage from "./pages/privacy";
 import TermsPage from "./pages/terms";
@@ -34,6 +35,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/rooms":   "Rooms — KIOKU™",
   "/logs":    "Live Feed — KIOKU™",
   "/billing": "Billing — KIOKU™",
+  "/pricing": "Pricing — KIOKU™",
   "/docs":    "API Docs — KIOKU™",
   "/privacy": "Privacy Policy — KIOKU™",
   "/terms":   "Terms of Service — KIOKU™",
@@ -191,6 +193,7 @@ export default function App() {
             ) : !user ? (
               <Switch>
                 <Route path="/verify" component={VerifyPage} />
+                <Route path="/pricing" component={PricingPage} />
                 <Route path="/privacy" component={PrivacyPage} />
                 <Route path="/terms" component={TermsPage} />
                 <Route component={LoginPage} />
@@ -206,6 +209,7 @@ export default function App() {
                   <Route path="/rooms/:id" component={RoomDetailPage} />
                   <Route path="/logs" component={LogsPage} />
                   <Route path="/billing" component={BillingPage} />
+                  <Route path="/pricing" component={PricingPage} />
                   <Route path="/docs" component={DocsPage} />
                   <Route path="/privacy" component={PrivacyPage} />
                   <Route path="/terms" component={TermsPage} />

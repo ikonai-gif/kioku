@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare } from "lucide-react";
+import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare, ArrowUpRight, CreditCard } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── KIOKU™ backend (Railway) — real Stripe ─────────────────────────────────
@@ -11,46 +11,18 @@ const KIOKU_API = "https://kioku-production.up.railway.app";
 
 // Stripe price IDs (test mode) — monthly
 const PRICE_IDS: Record<string, string> = {
-  starter:  "price_1TJVhRRy5PevHQSskLkwUrZM",
-  team:     "price_1TJVhSRy5PevHQSstibtGqmq",
-  business: "price_1TJVhSRy5PevHQSsxafV0Z9M",
+  starter:      "price_1TLsO4Ry5PevHQSsMRKOzNz2",
+  professional: "price_1TLsO5Ry5PevHQSsNAopQP4h",
+  team:         "price_1TLsO6Ry5PevHQSsvQzAL8Zb",
 };
 
-const PLANS = [
-  {
-    id: "dev",
-    name: "DEV",
-    monthlyPrice: 0,
-    yearlyPrice: 0,
-    color: "text-muted-foreground",
-    features: ["20 req/min", "1,000 memories", "Hybrid search", "Auto-deduplication"],
-  },
-  {
-    id: "starter",
-    name: "STARTER",
-    monthlyPrice: 9,
-    yearlyPrice: 86,
-    color: "text-blue-400",
-    features: ["60 req/min", "10,000 memories", "Redis cache", "Usage analytics"],
-  },
-  {
-    id: "team",
-    name: "TEAM",
-    monthlyPrice: 49,
-    yearlyPrice: 470,
-    color: "text-yellow-400",
-    popular: true,
-    features: ["200 req/min", "100,000 memories", "Deliberation Room", "Multi-agent namespaces"],
-  },
-  {
-    id: "business",
-    name: "BUSINESS",
-    monthlyPrice: 199,
-    yearlyPrice: 1910,
-    color: "text-purple-400",
-    features: ["600 req/min", "Unlimited memories", "Priority support", "SLA 99.9%"],
-  },
-];
+const PLAN_DISPLAY: Record<string, { name: string; color: string; price: number }> = {
+  dev:          { name: "Free",         color: "text-muted-foreground", price: 0 },
+  free:         { name: "Free",         color: "text-muted-foreground", price: 0 },
+  starter:      { name: "Starter",      color: "text-blue-400",        price: 29 },
+  professional: { name: "Professional", color: "text-primary",         price: 79 },
+  team:         { name: "Team",         color: "text-purple-400",      price: 199 },
+};
 
 // ── Checkout via KIOKU backend → Stripe ───────────────────────────────────────
 async function createCheckout(apiKey: string, plan: string, billingCycle: string) {
@@ -95,52 +67,15 @@ async function createPortal(apiKey: string) {
 
 export default function BillingPage() {
   const { toast } = useToast();
-  const [cycle, setCycle] = useState<"monthly" | "yearly">("monthly");
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
 
   const { data: user } = useQuery<any>({ queryKey: ["/api/auth/me"] });
 
-  // Fallback downgrade (DEV plan — no Stripe needed)
-  const downgradeMutation = useMutation({
-    mutationFn: ({ plan, billingCycle }: { plan: string; billingCycle: string }) =>
-      apiRequest("PATCH", "/api/billing/plan", { plan, billingCycle }).then(r => r.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      toast({ title: "Plan updated to DEV" });
-    },
-    onError: () => toast({ title: "Update failed", variant: "destructive" }),
-  });
-
   const currentPlan = user?.plan ?? "dev";
   const currentCycle = user?.billingCycle ?? "monthly";
-  // API key from authenticated user session
   const apiKey = user?.apiKey ?? "";
-
-  const savings = (plan: typeof PLANS[0]) => {
-    if (plan.monthlyPrice === 0) return null;
-    return (plan.monthlyPrice * 12) - plan.yearlyPrice;
-  };
-
-  async function handleUpgrade(planId: string) {
-    if (planId === "dev") {
-      downgradeMutation.mutate({ plan: "dev", billingCycle: cycle });
-      return;
-    }
-    setLoadingPlan(planId);
-    try {
-      const { checkout_url } = await createCheckout(apiKey, planId, cycle);
-      // Redirect to Stripe Checkout
-      window.location.href = checkout_url;
-    } catch (err: any) {
-      toast({
-        title: "Checkout error",
-        description: err?.message ?? "Could not open payment page",
-        variant: "destructive",
-      });
-      setLoadingPlan(null);
-    }
-  }
+  const planInfo = PLAN_DISPLAY[currentPlan] ?? PLAN_DISPLAY.dev;
 
   async function handleManageBilling() {
     setPortalLoading(true);
@@ -159,139 +94,84 @@ export default function BillingPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-foreground">Billing</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            KIOKU™ by IKONBAI™, Inc. &nbsp;·&nbsp; Current plan:{" "}
-            <span className="font-semibold text-foreground capitalize">{currentPlan}</span>
-            {" · "}{currentCycle === "yearly" ? "Billed annually" : "Billed monthly"}
-          </p>
-        </div>
-        {currentPlan !== "dev" && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs gap-1.5"
-            onClick={handleManageBilling}
-            disabled={portalLoading}
-            data-testid="button-manage-billing"
-          >
-            <Settings className="w-3.5 h-3.5" />
-            {portalLoading ? "Loading…" : "Manage Billing"}
-            <ExternalLink className="w-3 h-3 opacity-50" />
-          </Button>
-        )}
-      </div>
-
-      {/* Billing cycle toggle */}
-      <div className="flex items-center gap-1 bg-muted p-1 rounded-lg w-fit">
-        <button
-          className={cn(
-            "px-4 py-1.5 rounded-md text-sm font-medium transition-all",
-            cycle === "monthly" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-          )}
-          onClick={() => setCycle("monthly")}
-          data-testid="button-billing-monthly"
-        >
-          Monthly
-        </button>
-        <button
-          className={cn(
-            "px-4 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5",
-            cycle === "yearly" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-          )}
-          onClick={() => setCycle("yearly")}
-          data-testid="button-billing-yearly"
-        >
-          Yearly
-          <span className="text-[10px] text-green-400 font-semibold">-20%</span>
-        </button>
-      </div>
-
-      {/* Plans grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {PLANS.map(plan => {
-          const isActive = currentPlan === plan.id;
-          const price = cycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
-          const saved = savings(plan);
-          const isLoading = loadingPlan === plan.id;
-
-          return (
-            <div
-              key={plan.id}
-              className={cn(
-                "bg-card border rounded-xl p-5 flex flex-col transition-all",
-                isActive ? "border-primary gold-glow" : "border-card-border hover:border-muted-foreground/30",
-                plan.popular && !isActive && "border-yellow-400/30"
-              )}
-              data-testid={`card-plan-${plan.id}`}
+    <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-6">
+      {/* Plan Overview Card */}
+      <div className="bg-card border border-card-border rounded-xl p-5 sm:p-6">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-lg font-semibold text-foreground">Billing</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              KIOKU™ by IKONBAI™, Inc.
+            </p>
+          </div>
+          {currentPlan !== "dev" && currentPlan !== "free" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1.5"
+              onClick={handleManageBilling}
+              disabled={portalLoading}
+              data-testid="button-manage-billing"
             >
-              {plan.popular && (
-                <div className="flex items-center gap-1 text-[10px] text-yellow-400 font-semibold mb-2">
-                  <Zap className="w-3 h-3" /> Most Popular
-                </div>
-              )}
+              <Settings className="w-3.5 h-3.5" />
+              {portalLoading ? "Loading…" : "Manage Subscription"}
+              <ExternalLink className="w-3 h-3 opacity-50" />
+            </Button>
+          )}
+        </div>
 
-              <div className={cn("text-xs font-bold tracking-widest mb-1", plan.color)}>{plan.name}</div>
-
-              <div className="mb-4">
-                {plan.monthlyPrice === 0 ? (
-                  <div className="text-2xl font-bold text-foreground">Free</div>
-                ) : (
-                  <>
-                    <div className="text-2xl font-bold text-foreground tabular-nums">
-                      ${price}
-                      <span className="text-sm font-normal text-muted-foreground">/{cycle === "yearly" ? "yr" : "mo"}</span>
-                    </div>
-                    {cycle === "yearly" ? (
-                      saved ? <div className="text-[10px] text-green-400 font-medium mt-0.5">Save ${saved}/yr</div> : null
-                    ) : (
-                      <div className="text-[10px] text-muted-foreground mt-0.5">${plan.yearlyPrice}/yr billed annually</div>
-                    )}
-                  </>
-                )}
-              </div>
-
-              <ul className="space-y-1.5 flex-1 mb-4">
-                {plan.features.map(f => (
-                  <li key={f} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                    <Check className="w-3 h-3 text-green-400 mt-0.5 flex-shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-
-              {isActive ? (
-                <div className="text-center text-xs font-medium text-primary py-2">Current Plan</div>
-              ) : (
-                <Button
-                  size="sm"
-                  className="w-full h-8 text-xs gap-1"
-                  variant={plan.id === "dev" ? "outline" : "default"}
-                  style={plan.id !== "dev" ? { background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" } : {}}
-                  onClick={() => handleUpgrade(plan.id)}
-                  disabled={isLoading || downgradeMutation.isPending}
-                  data-testid={`button-select-plan-${plan.id}`}
-                >
-                  {isLoading ? "Opening…" : plan.monthlyPrice === 0 ? "Downgrade" : (
-                    <>{`Upgrade`} <ExternalLink className="w-3 h-3 opacity-60" /></>
-                  )}
-                </Button>
-              )}
+        {/* Current Plan Display */}
+        <div className="mt-5 flex flex-col sm:flex-row gap-4">
+          <div className="flex-1 bg-muted/50 rounded-lg p-4">
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Current Plan</div>
+            <div className={cn("text-xl font-bold", planInfo.color)}>{planInfo.name}</div>
+            <div className="text-sm text-muted-foreground mt-0.5">
+              {planInfo.price === 0 ? "Free forever" : `$${planInfo.price}/mo · ${currentCycle === "yearly" ? "Billed annually" : "Billed monthly"}`}
             </div>
-          );
-        })}
+          </div>
+          <div className="flex-1 bg-muted/50 rounded-lg p-4">
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Status</div>
+            <div className="flex items-center gap-2 mt-1">
+              <div className="w-2 h-2 rounded-full bg-green-500" />
+              <span className="text-sm font-medium text-foreground">Active</span>
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {currentPlan === "dev" || currentPlan === "free"
+                ? "No billing account"
+                : "Managed via Stripe"}
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="mt-5 flex flex-wrap gap-3">
+          <Button
+            size="sm"
+            className="h-9 text-xs gap-1.5 font-semibold"
+            style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
+            onClick={() => { window.location.hash = "#/pricing"; }}
+            data-testid="button-upgrade"
+          >
+            <ArrowUpRight className="w-3.5 h-3.5" />
+            {currentPlan === "dev" || currentPlan === "free" ? "Upgrade Plan" : "Change Plan"}
+          </Button>
+          {currentPlan !== "dev" && currentPlan !== "free" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 text-xs gap-1.5"
+              onClick={handleManageBilling}
+              disabled={portalLoading}
+            >
+              <CreditCard className="w-3.5 h-3.5" />
+              {portalLoading ? "Loading…" : "Manage Subscription"}
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* Usage stats */}
+      {/* Usage Stats */}
       <UsageCard plan={currentPlan} />
-
-      {/* Stripe badge */}
-      <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
-        <span>🔒 Payments secured by Stripe. IKONBAI™, Inc. does not store card details.</span>
-      </div>
 
       {/* Per-op pricing */}
       <div className="bg-card border border-card-border rounded-xl p-5">
@@ -314,6 +194,11 @@ export default function BillingPage() {
         </div>
       </div>
 
+      {/* Stripe badge */}
+      <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
+        <span>Payments secured by Stripe. IKONBAI, Inc. does not store card details.</span>
+      </div>
+
       {/* Legal */}
       <p className="text-[10px] text-muted-foreground/40 leading-relaxed">
         © {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending ·{" "}
@@ -325,18 +210,19 @@ export default function BillingPage() {
   );
 }
 
-// ── Plan limit definitions (mirror ratelimit.ts) ──────────────────────────
-const PLAN_LIMITS: Record<string, { daily: number; memories: number; agents: number; rooms: number }> = {
-  dev:        { daily:      1_000, memories:   500, agents:  3, rooms: 1 },
-  starter:    { daily:     10_000, memories: 10_000, agents: 10, rooms: 5 },
-  growth:     { daily:    100_000, memories: 999_999, agents: 99, rooms: 99 },
-  enterprise: { daily: 99_999_999, memories: 999_999, agents: 99, rooms: 99 },
+// ── Plan limit definitions (mirror server/limits.ts) ──────────────────────────
+const PLAN_LIMITS: Record<string, { daily: number; memories: number; agents: number; rooms: number; deliberations: number }> = {
+  dev:          { daily:   1_000, memories:   100,   agents: 2,  rooms: 5,   deliberations: 5 },
+  free:         { daily:   1_000, memories:   100,   agents: 2,  rooms: 5,   deliberations: 5 },
+  starter:      { daily:  10_000, memories: 1_000,   agents: 5,  rooms: 25,  deliberations: 25 },
+  professional: { daily: 100_000, memories: 10_000,  agents: 15, rooms: 100, deliberations: 100 },
+  team:         { daily: 999_999, memories: 50_000,  agents: 50, rooms: 200, deliberations: 999_999 },
 };
 
 function UsageBar({ label, used, limit, icon: Icon }: { label: string; used: number; limit: number; icon: any }) {
   const pct = limit >= 99_999 ? 0 : Math.min(100, Math.round((used / limit) * 100));
   const unlimited = limit >= 99_999;
-  const color = pct > 90 ? "bg-red-400" : pct > 70 ? "bg-yellow-400" : "bg-green-400";
+  const color = pct > 90 ? "bg-red-400" : pct > 70 ? "bg-yellow-400" : "bg-primary";
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
@@ -366,17 +252,18 @@ function UsageCard({ plan }: { plan: string }) {
   return (
     <div className="bg-card border border-card-border rounded-xl p-5">
       <div className="mb-4">
-        <h2 className="text-sm font-semibold text-foreground">Current Usage</h2>
-        <p className="text-xs text-muted-foreground mt-0.5 capitalize">{plan} plan limits</p>
+        <h2 className="text-sm font-semibold text-foreground">Usage This Month</h2>
+        <p className="text-xs text-muted-foreground mt-0.5 capitalize">{plan === "dev" ? "Free" : plan} plan limits</p>
       </div>
       <div className="space-y-4">
-        <UsageBar label="Memories" used={(stats as any)?.totalMemories ?? 0} limit={limits.memories} icon={Brain} />
         <UsageBar label="Agents" used={(agents as any[]).length} limit={limits.agents} icon={Bot} />
-        <UsageBar label="Rooms" used={(rooms as any[]).length} limit={limits.rooms} icon={MessageSquare} />
+        <UsageBar label="Memories" used={(stats as any)?.totalMemories ?? 0} limit={limits.memories} icon={Brain} />
+        <UsageBar label="Deliberation Rooms" used={(rooms as any[]).length} limit={limits.rooms} icon={MessageSquare} />
+        <UsageBar label="Deliberations / mo" used={(stats as any)?.totalDeliberations ?? 0} limit={limits.deliberations} icon={Zap} />
         <div className="pt-1 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between">
           <span>API requests / day</span>
           <span className="font-mono text-foreground">
-            {limits.daily >= 99_999_999 ? "Unlimited" : limits.daily.toLocaleString()}
+            {limits.daily >= 99_999 ? "Unlimited" : limits.daily.toLocaleString()}
           </span>
         </div>
       </div>

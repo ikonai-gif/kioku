@@ -29,14 +29,14 @@ if (STRIPE_SECRET_KEY) {
 // ── Plan → Price ID map (test mode) ──────────────────────────────────────────
 const PRICE_IDS: Record<string, Record<string, string>> = {
   monthly: {
-    starter:  "price_1TJVhRRy5PevHQSskLkwUrZM",
-    team:     "price_1TJVhSRy5PevHQSstibtGqmq",
-    business: "price_1TJVhSRy5PevHQSsxafV0Z9M",
+    starter:      "price_1TLsO4Ry5PevHQSsMRKOzNz2",
+    professional: "price_1TLsO5Ry5PevHQSsNAopQP4h",
+    team:         "price_1TLsO6Ry5PevHQSsvQzAL8Zb",
   },
   yearly: {
-    starter:  "price_1TJVhRRy5PevHQSskLkwUrZM",
-    team:     "price_1TJVhSRy5PevHQSstibtGqmq",
-    business: "price_1TJVhSRy5PevHQSsxafV0Z9M",
+    starter:      "price_1TLsO5Ry5PevHQSsxIovn9t1",
+    professional: "price_1TLsO5Ry5PevHQSs5VJpr6LQ",
+    team:         "price_1TLsO6Ry5PevHQSsGudO6chq",
   },
 };
 
@@ -96,8 +96,8 @@ export function registerBilling(app: Express) {
 
     const { plan, billing_cycle = "monthly", success_url, cancel_url } = req.body;
 
-    if (!plan || !["starter", "team", "business"].includes(plan)) {
-      return res.status(400).json({ error: "Invalid plan. Must be: starter | team | business" });
+    if (!plan || !["starter", "professional", "team"].includes(plan)) {
+      return res.status(400).json({ error: "Invalid plan. Must be: starter | professional | team" });
     }
 
     const priceId = PRICE_IDS[billing_cycle]?.[plan] ?? PRICE_IDS.monthly[plan];

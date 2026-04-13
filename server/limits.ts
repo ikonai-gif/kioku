@@ -3,14 +3,14 @@
  * Plan-based limits for resource creation and AI usage
  */
 
-export const PLAN_LIMITS: Record<string, { agents: number; memories: number; rooms: number; flows: number }> = {
-  dev:          { agents: 5,    memories: 500,   rooms: 10,   flows: 5 },
-  free:         { agents: 5,    memories: 500,   rooms: 10,   flows: 5 },
-  starter:      { agents: 20,   memories: 5000,  rooms: 50,   flows: 20 },
-  professional: { agents: 100,  memories: 50000, rooms: 200,  flows: 100 },
-  team:         { agents: 100,  memories: 50000, rooms: 200,  flows: 100 },
-  business:     { agents: 100,  memories: 50000, rooms: 200,  flows: 100 },
-  enterprise:   { agents: 9999, memories: 999999, rooms: 9999, flows: 9999 },
+export const PLAN_LIMITS: Record<string, { agents: number; memories: number; rooms: number; flows: number; deliberations: number }> = {
+  dev:          { agents: 2,    memories: 100,    rooms: 5,    flows: 2,    deliberations: 5 },
+  free:         { agents: 2,    memories: 100,    rooms: 5,    flows: 2,    deliberations: 5 },
+  starter:      { agents: 5,    memories: 1000,   rooms: 25,   flows: 10,   deliberations: 25 },
+  professional: { agents: 15,   memories: 10000,  rooms: 100,  flows: 50,   deliberations: 100 },
+  team:         { agents: 50,   memories: 50000,  rooms: 200,  flows: 100,  deliberations: 999999 },
+  business:     { agents: 50,   memories: 50000,  rooms: 200,  flows: 100,  deliberations: 999999 },
+  enterprise:   { agents: 9999, memories: 999999, rooms: 9999, flows: 9999, deliberations: 999999 },
 };
 
 export function getLimits(plan: string) {
