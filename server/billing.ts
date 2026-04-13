@@ -62,9 +62,8 @@ async function resolveUser(req: Request): Promise<number | null> {
     }
   }
 
-  // x-session-token header (JWT or demo-session)
+  // x-session-token header (JWT)
   const sessionToken = req.headers["x-session-token"] as string | undefined;
-  if (sessionToken === "demo-session") return 1; // demo user
   if (sessionToken) {
     try {
       const jwt = await import("jsonwebtoken");

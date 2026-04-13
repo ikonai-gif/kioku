@@ -63,7 +63,6 @@ async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
-const DEMO_USER_ID = 1;
 
 const COOKIE_NAME = "kioku_session";
 const COOKIE_OPTS = {
@@ -78,7 +77,6 @@ function getSessionUser(req: any): number | null {
   // 1. x-session-token header (legacy + API clients)
   const headerAuth = req.headers["x-session-token"] as string;
   if (headerAuth) {
-    if (headerAuth === "demo-session") return DEMO_USER_ID;
     try {
       const payload = jwt.verify(headerAuth, JWT_SECRET) as { userId: number };
       return payload.userId ?? null;

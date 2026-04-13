@@ -112,8 +112,9 @@ async function resolveUserId(req: Request): Promise<number | null> {
     (req.query.api_key as string) ||
     (req.headers["x-session-token"] as string);
   if (!key) return null;
-  // demo shortcut
-  if (key === "demo-session" || key === "kioku_master_ikonbai_2026_secret") return 1;
+  // Master key from env
+  const masterKey = process.env.KIOKU_MASTER_KEY;
+  if (masterKey && key === masterKey) return 1;
   // lookup by API key
   const user = await storage.getUserByApiKey(key);
   return user?.id ?? null;

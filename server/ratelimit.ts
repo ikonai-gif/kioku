@@ -198,8 +198,6 @@ setInterval(() => {
 }, 300_000);
 
 async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<string> {
-  if (sessionToken === "demo-session") return "dev";
-
   // Try API key lookup
   if (apiKey && apiKey.startsWith("kk_")) {
     try {
@@ -209,7 +207,7 @@ async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<
   }
 
   // Try JWT session
-  if (sessionToken && sessionToken !== "demo-session") {
+  if (sessionToken) {
     try {
       const jwt = await import("jsonwebtoken");
       const JWT_SECRET = process.env.JWT_SECRET || "kioku_jwt_secret_ikonbai_2026";
