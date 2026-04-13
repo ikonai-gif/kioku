@@ -3,6 +3,7 @@
  * When a user posts a message to a room, online agents in that room
  * automatically generate AI responses via OpenAI gpt-4o-mini.
  * Each agent has its own "persona" derived from name + description + memories.
+ * Supports per-agent API keys (Phase C-1).
  */
 
 import OpenAI from "openai";
@@ -19,8 +20,23 @@ function sanitizeForPrompt(input: string): string {
 }
 
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || null;
 
-export const deliberationEnabled = !!openai;
+export const deliberationEnabled = !!openai || !!GEMINI_API_KEY;
+
+/** Get an OpenAI client for a given agent — uses per-agent key if set, else shared */
+function getOpenAIClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): OpenAI | null {
+  if (agent.llmApiKey && agent.llmProvider === "openai") return new OpenAI({ apiKey: agent.llmApiKey });
+  return openai;
+}
+
+/** Get Gemini API key for a given agent — uses per-agent key if set, else shared */
+function getGeminiKey(agent: { llmApiKey?: string | null; llmProvider?: string | null }): string | null {
+  if (agent.llmApiKey && agent.llmProvider === "gemini") return agent.llmApiKey;
+  return GEMINI_API_KEY;
+}
+
+const LLM_TIMEOUT_MS = 45_000;
 
 // Prevent simultaneous agent responses for same room (simple lock)
 const roomLocks = new Set<number>();
@@ -37,7 +53,7 @@ export async function triggerAgentResponses(
   triggerContent: string,
   roomAgentIds: number[]
 ): Promise<void> {
-  if (!openai) return;
+  if (!openai && !GEMINI_API_KEY) return; // no shared provider — per-agent keys still work below
   if (roomLocks.has(roomId)) return; // already processing
   roomLocks.add(roomId);
 
@@ -84,21 +100,55 @@ export async function triggerAgentResponses(
       );
 
       try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          max_tokens: 256,
-          temperature: 0.75,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...chatHistory,
-            {
-              role: "user",
-              content: `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
-            },
-          ],
-        });
+        // Determine model & provider: prefer per-agent llmModel, then agent.model, then gpt-4o-mini
+        const chatModel = (agent as any).llmModel || (agent as any).model || "gpt-4o-mini";
+        const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
+        let reply: string | undefined;
 
-        const reply = completion.choices[0]?.message?.content?.trim();
+        if (isGemini) {
+          const geminiKey = getGeminiKey(agent as any);
+          if (geminiKey) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${chatModel}:generateContent?key=${geminiKey}`;
+            // Build a single prompt combining system + history for Gemini
+            const historyText = chatHistory.map(h => h.content).join("\n");
+            const userMsg = `${historyText}\n[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
+            const resp = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                contents: [{ role: "user", parts: [{ text: userMsg }] }],
+                generationConfig: { maxOutputTokens: 256, temperature: 0.75 },
+              }),
+            });
+            if (resp.ok) {
+              const data = await resp.json() as any;
+              reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            }
+          }
+        }
+
+        if (!reply) {
+          // OpenAI path (default or fallback)
+          const oaiClient = getOpenAIClient(agent as any);
+          if (!oaiClient) continue;
+          const completion = await oaiClient.chat.completions.create({
+            model: chatModel.startsWith("gemini-") ? "gpt-4o-mini" : chatModel,
+            max_tokens: 256,
+            temperature: 0.75,
+            messages: [
+              { role: "system", content: systemPrompt },
+              ...chatHistory,
+              {
+                role: "user",
+                content: `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
+              },
+            ],
+          });
+          reply = completion.choices[0]?.message?.content?.trim();
+        }
+
         if (!reply) continue;
 
         // Stagger: first agent responds after 800ms, each subsequent +600ms

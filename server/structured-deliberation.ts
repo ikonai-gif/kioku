@@ -59,16 +59,21 @@ const LLM_TIMEOUT_MS = 45_000; // 45s per LLM call
 
 /**
  * Call OpenAI LLM directly.
+ * @param customApiKey — per-agent API key override (falls back to shared env key)
  */
 async function callOpenAI(
   model: string,
   systemPrompt: string,
   userMessage: string,
   maxTokens: number,
-  temperature: number
+  temperature: number,
+  customApiKey?: string | null
 ): Promise<string> {
-  if (!openai) throw new Error("OPENAI_API_KEY not configured");
-  const completion = await openai.chat.completions.create(
+  const client = customApiKey
+    ? new OpenAI({ apiKey: customApiKey })
+    : openai;
+  if (!client) throw new Error("OPENAI_API_KEY not configured");
+  const completion = await client.chat.completions.create(
     {
       model,
       max_tokens: maxTokens,
@@ -85,16 +90,19 @@ async function callOpenAI(
 
 /**
  * Call Gemini LLM directly.
+ * @param customApiKey — per-agent API key override (falls back to shared env key)
  */
 async function callGemini(
   model: string,
   systemPrompt: string,
   userMessage: string,
   maxTokens: number,
-  temperature: number
+  temperature: number,
+  customApiKey?: string | null
 ): Promise<string> {
-  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+  const apiKey = customApiKey || GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -118,27 +126,34 @@ const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 /**
  * Call appropriate LLM based on model name, with provider fallback.
  * If the primary provider fails, falls back to the other provider.
+ * Supports per-agent API keys via agentLlm option.
  */
 async function callLLM(
   requestedModel: string,
   systemPrompt: string,
   userMessage: string,
-  options?: { maxTokens?: number; temperature?: number }
+  options?: { maxTokens?: number; temperature?: number; agentLlm?: { provider?: string | null; apiKey?: string | null } }
 ): Promise<string> {
   const maxTokens = options?.maxTokens ?? 400;
   const temperature = options?.temperature ?? 0.7;
   const model = resolveModel(requestedModel);
+  const agentApiKey = options?.agentLlm?.apiKey || null;
+  const agentProvider = options?.agentLlm?.provider || null;
+
+  // Determine which API key to use for each provider
+  const openaiKey = (agentProvider === "openai" && agentApiKey) ? agentApiKey : null;
+  const geminiKey = (agentProvider === "gemini" && agentApiKey) ? agentApiKey : null;
 
   if (isGeminiModel(model)) {
     try {
-      return await callGemini(model, systemPrompt, userMessage, maxTokens, temperature);
+      return await callGemini(model, systemPrompt, userMessage, maxTokens, temperature, geminiKey);
     } catch (err: any) {
-      if (!openai) {
+      if (!openai && !openaiKey) {
         throw new Error(`All AI providers failed. Gemini: ${err.message}`);
       }
       console.warn(`[deliberation] Gemini failed, falling back to OpenAI:`, err.message);
       try {
-        return await callOpenAI(DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature);
+        return await callOpenAI(DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, openaiKey);
       } catch (openaiErr: any) {
         throw new Error(`All AI providers failed. Gemini: ${err.message}, OpenAI: ${openaiErr.message}`);
       }
@@ -147,14 +162,14 @@ async function callLLM(
 
   // OpenAI models — try OpenAI first, fall back to Gemini
   try {
-    return await callOpenAI(model, systemPrompt, userMessage, maxTokens, temperature);
+    return await callOpenAI(model, systemPrompt, userMessage, maxTokens, temperature, openaiKey);
   } catch (err: any) {
-    if (!GEMINI_API_KEY) {
+    if (!GEMINI_API_KEY && !geminiKey) {
       throw new Error(`All AI providers failed. OpenAI: ${err.message}`);
     }
     console.warn(`[deliberation] OpenAI failed, falling back to Gemini:`, err.message);
     try {
-      return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature);
+      return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature, geminiKey);
     } catch (geminiErr: any) {
       throw new Error(`All AI providers failed. OpenAI: ${err.message}, Gemini: ${geminiErr.message}`);
     }
@@ -378,7 +393,7 @@ export async function runDeliberation(
     await postSystemMessage(roomId, `✅ Deliberation complete. Consensus confidence: ${(consensus.confidence * 100).toFixed(0)}%`);
 
     // Collect unique models used
-    session.modelsUsed = Array.from(new Set(agents.map((a) => a.model || fallbackModel)));
+    session.modelsUsed = Array.from(new Set(agents.map((a) => a.llmModel || a.model || fallbackModel)));
     session.status = "completed";
     session.completedAt = Date.now();
     await persistSession(session, userId);
@@ -410,7 +425,7 @@ export async function runDeliberation(
 async function collectPositions(
   roomId: number,
   userId: number,
-  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null }>,
+  agents: Array<{ id: number; name: string; description: string | null; color: string; model: string | null; role: string | null; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null }>,
   topic: string,
   phase: "position" | "debate" | "final",
   round: number,
@@ -446,7 +461,8 @@ async function collectPositions(
       agent.role
     );
 
-    const agentModel = agent.model || fallbackModel;
+    // Per-agent model: prefer llmModel > model > fallback
+    const agentModel = agent.llmModel || agent.model || fallbackModel;
 
     // Check if agent has an external webhook registered
     const webhook = await storage.getWebhook(agent.id);
@@ -469,7 +485,11 @@ async function collectPositions(
         agentModel,
         systemPrompt,
         `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`,
-        { maxTokens: 400, temperature: phase === "debate" ? 0.8 : 0.6 }
+        {
+          maxTokens: 400,
+          temperature: phase === "debate" ? 0.8 : 0.6,
+          agentLlm: (agent.llmApiKey) ? { provider: agent.llmProvider, apiKey: agent.llmApiKey } : undefined,
+        }
       );
       parsed = parseAgentResponse(raw, agent.name);
     }
@@ -484,7 +504,7 @@ async function collectPositions(
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
     const agent = agents[i];
-    const agentModel = agent.model || fallbackModel;
+    const agentModel = agent.llmModel || agent.model || fallbackModel;
 
     if (result.status === "fulfilled") {
       const { parsed, webhook } = result.value;

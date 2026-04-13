@@ -129,6 +129,12 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE agents ADD COLUMN IF NOT EXISTS role TEXT;
   `);
+  // Phase C-1: per-agent LLM API key support (agent adapter)
+  await pool.query(`
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_provider TEXT;
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_api_key TEXT;
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_model TEXT;
+  `);
   // Phase A: request logging table
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kioku_request_logs (
@@ -256,7 +262,7 @@ export interface IStorage {
   getAgents(userId: number): Promise<Agent[]>;
   getAgent(id: number): Promise<Agent | undefined>;
   createAgent(data: InsertAgent): Promise<Agent>;
-  updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string }>): Promise<boolean>;
+  updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null }>): Promise<boolean>;
   updateAgentStatus(id: number, userId: number, status: string): Promise<boolean>;
   toggleAgent(id: number, userId: number, enabled: boolean): Promise<boolean>;
   deleteAgent(id: number, userId: number): Promise<boolean>;
@@ -365,7 +371,7 @@ export class Storage implements IStorage {
     const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
     return result;
   }
-  async updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string }>): Promise<boolean> {
+  async updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null }>): Promise<boolean> {
     const result = await db.update(agents).set(data).where(sql`${agents.id} = ${id} AND ${agents.userId} = ${userId}`).returning();
     return result.length > 0;
   }

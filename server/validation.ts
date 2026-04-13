@@ -32,6 +32,9 @@ export const createAgentSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional().nullable(),
   color: z.string().max(20).optional(),
+  llmProvider: z.enum(["openai", "gemini"]).optional().nullable(),
+  llmApiKey: z.string().max(256).optional().nullable(),
+  llmModel: z.string().max(50).optional().nullable(),
 });
 
 export const updateAgentSchema = z.object({
@@ -40,6 +43,9 @@ export const updateAgentSchema = z.object({
   color: z.string().max(20).optional(),
   model: z.string().max(50).optional(),
   role: z.string().max(50).optional(),
+  llmProvider: z.enum(["openai", "gemini"]).optional().nullable(),
+  llmApiKey: z.string().max(256).optional().nullable(),
+  llmModel: z.string().max(50).optional().nullable(),
 });
 
 export const toggleAgentSchema = z.object({

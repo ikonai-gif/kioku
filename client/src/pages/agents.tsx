@@ -5,12 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff } from "lucide-react";
+import { Plus, Trash2, Bot, Clock, Key, Copy, Check, ShieldOff, Settings2, Eye, EyeOff } from "lucide-react";
 import { AgentAvatar } from "@/lib/agent-icon";
 import { cn } from "@/lib/utils";
 
 const AGENT_COLORS = ["#D4AF37", "#3B82F6", "#A855F7", "#10B981", "#F97316", "#EF4444"];
+
+const PROVIDER_MODELS: Record<string, string[]> = {
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+  gemini: ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.1-pro"],
+};
 
 function timeAgo(ts: number | null): string {
   if (!ts) return "Never";
@@ -152,10 +158,158 @@ function AgentTokenSection({ agentId }: { agentId: number }) {
   );
 }
 
+function AgentLlmSection({ agent }: { agent: any }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [provider, setProvider] = useState<string>(agent.llmProvider || "");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState<string>(agent.llmModel || "");
+  const [showKey, setShowKey] = useState(false);
+  const hasKey = !!agent.llmApiKey;
+
+  const updateMutation = useMutation({
+    mutationFn: (data: any) =>
+      apiRequest("PATCH", `/api/agents/${agent.id}`, data).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      toast({ title: "LLM config updated" });
+      setApiKey("");
+      setOpen(false);
+    },
+    onError: () => toast({ title: "Failed to update LLM config", variant: "destructive" }),
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("PATCH", `/api/agents/${agent.id}`, { llmProvider: null, llmApiKey: null, llmModel: null }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      setProvider("");
+      setApiKey("");
+      setModel("");
+      toast({ title: "Reverted to shared API key" });
+    },
+    onError: () => toast({ title: "Failed to clear LLM config", variant: "destructive" }),
+  });
+
+  const handleSave = () => {
+    const updates: any = {};
+    if (provider) updates.llmProvider = provider;
+    if (apiKey) updates.llmApiKey = apiKey;
+    if (model) updates.llmModel = model;
+    else if (provider && PROVIDER_MODELS[provider]) updates.llmModel = PROVIDER_MODELS[provider][0];
+    if (Object.keys(updates).length === 0) return;
+    updateMutation.mutate(updates);
+  };
+
+  const availableModels = provider ? (PROVIDER_MODELS[provider] || []) : [];
+
+  if (!open) {
+    return (
+      <button
+        className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/70 hover:text-[#D4AF37] transition-colors"
+        onClick={() => setOpen(true)}
+      >
+        <Settings2 className="w-3 h-3" />
+        {hasKey ? `Custom key (${agent.llmProvider || "?"}) · ${agent.llmModel || "default"}` : "LLM Settings"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-[#D4AF37]/20 bg-[#0A1628]/60 p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-medium text-[#D4AF37] flex items-center gap-1.5">
+          <Settings2 className="w-3 h-3" /> LLM Configuration
+        </span>
+        <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={() => setOpen(false)}>Close</button>
+      </div>
+
+      {/* Provider */}
+      <div className="space-y-1">
+        <label className="text-[10px] text-muted-foreground">Provider</label>
+        <Select value={provider} onValueChange={(v) => { setProvider(v); setModel(""); }}>
+          <SelectTrigger className="h-7 text-[11px] bg-background/30 border-border/40">
+            <SelectValue placeholder="Default (shared key)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="openai">OpenAI</SelectItem>
+            <SelectItem value="gemini">Gemini</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* API Key */}
+      {provider && (
+        <div className="space-y-1">
+          <label className="text-[10px] text-muted-foreground">API Key {hasKey && <span className="text-[#D4AF37]">(set: {agent.llmApiKey})</span>}</label>
+          <div className="relative">
+            <Input
+              type={showKey ? "text" : "password"}
+              placeholder={hasKey ? "Enter new key to replace" : `${provider === "openai" ? "sk-..." : "AIza..."}`}
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              className="h-7 text-[11px] pr-8 bg-background/30 border-border/40 font-mono"
+            />
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              onClick={() => setShowKey(!showKey)}
+            >
+              {showKey ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Model */}
+      {provider && availableModels.length > 0 && (
+        <div className="space-y-1">
+          <label className="text-[10px] text-muted-foreground">Model</label>
+          <Select value={model} onValueChange={setModel}>
+            <SelectTrigger className="h-7 text-[11px] bg-background/30 border-border/40">
+              <SelectValue placeholder={availableModels[0]} />
+            </SelectTrigger>
+            <SelectContent>
+              {availableModels.map(m => (
+                <SelectItem key={m} value={m}>{m}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 pt-1">
+        <Button
+          size="sm"
+          className="h-6 text-[10px] px-3"
+          style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
+          onClick={handleSave}
+          disabled={updateMutation.isPending || (!apiKey && !model && !provider)}
+        >
+          {updateMutation.isPending ? "Saving…" : "Save"}
+        </Button>
+        {hasKey && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 text-[10px] px-2 text-muted-foreground hover:text-red-400"
+            onClick={() => clearMutation.mutate()}
+            disabled={clearMutation.isPending}
+          >
+            {clearMutation.isPending ? "Clearing…" : "Use Shared Key"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AgentsPage() {
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "", color: "#D4AF37" });
+  const [form, setForm] = useState({ name: "", description: "", color: "#D4AF37", llmProvider: "", llmApiKey: "", llmModel: "" });
 
   const { data: agents = [], isLoading } = useQuery<any[]>({ queryKey: ["/api/agents"] });
 
@@ -168,7 +322,7 @@ export default function AgentsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       setCreating(false);
-      setForm({ name: "", description: "", color: "#D4AF37" });
+      setForm({ name: "", description: "", color: "#D4AF37", llmProvider: "", llmApiKey: "", llmModel: "" });
       toast({ title: "Agent created" });
     },
   });
@@ -275,6 +429,9 @@ export default function AgentsPage() {
             {/* Token */}
             <AgentTokenSection agentId={agent.id} />
 
+            {/* LLM Config */}
+            <AgentLlmSection agent={agent} />
+
             {/* Delete */}
             <button
               className="mt-2 text-[10px] text-muted-foreground/50 hover:text-red-400 flex items-center gap-1 transition-colors"
@@ -328,10 +485,50 @@ export default function AgentsPage() {
                 ))}
               </div>
             </div>
+            {/* LLM Config (optional) */}
+            <div className="space-y-1.5 pt-1 border-t border-border/30">
+              <label className="text-[10px] font-medium text-muted-foreground">LLM Configuration (optional)</label>
+              <Select value={form.llmProvider} onValueChange={(v) => setForm(f => ({ ...f, llmProvider: v, llmModel: "" }))}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="Default (shared key)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="gemini">Gemini</SelectItem>
+                </SelectContent>
+              </Select>
+              {form.llmProvider && (
+                <>
+                  <Input
+                    type="password"
+                    placeholder={form.llmProvider === "openai" ? "sk-..." : "AIza..."}
+                    value={form.llmApiKey}
+                    onChange={e => setForm(f => ({ ...f, llmApiKey: e.target.value }))}
+                    className="h-8 text-xs font-mono"
+                  />
+                  <Select value={form.llmModel} onValueChange={(v) => setForm(f => ({ ...f, llmModel: v }))}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder={(PROVIDER_MODELS[form.llmProvider] || [])[0] || "Select model"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(PROVIDER_MODELS[form.llmProvider] || []).map(m => (
+                        <SelectItem key={m} value={m}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              )}
+            </div>
             <Button
               className="w-full h-9 text-sm"
               style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
-              onClick={() => createMutation.mutate({ ...form, name: form.name || nextAgentName })}
+              onClick={() => {
+                const payload: any = { name: form.name || nextAgentName, description: form.description, color: form.color };
+                if (form.llmProvider) payload.llmProvider = form.llmProvider;
+                if (form.llmApiKey) payload.llmApiKey = form.llmApiKey;
+                if (form.llmModel) payload.llmModel = form.llmModel;
+                createMutation.mutate(payload);
+              }}
               disabled={createMutation.isPending}
               data-testid="button-create-agent-submit"
             >

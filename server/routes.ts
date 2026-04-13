@@ -41,6 +41,16 @@ function stripEmbedding(mem: any, include: boolean) {
   return rest;
 }
 
+/** Mask per-agent API key in responses — only show last 4 chars */
+function maskAgentApiKey(agent: any): any {
+  if (!agent) return agent;
+  if (agent.llmApiKey) {
+    const key = agent.llmApiKey;
+    agent = { ...agent, llmApiKey: key.length > 4 ? "••••" + key.slice(-4) : "••••" };
+  }
+  return agent;
+}
+
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
 const SENDERS = {
@@ -310,7 +320,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/agents", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    res.json(await storage.getAgents(userId));
+    const agentList = await storage.getAgents(userId);
+    res.json(agentList.map(maskAgentApiKey));
   }));
 
   app.post("/api/agents", asyncHandler(async (req, res) => {
@@ -324,7 +335,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (counts.agents >= limits.agents) {
       return res.status(429).json({ error: `Plan limit reached: ${limits.agents} agents (${plan} plan)` });
     }
-    const { name, description, color } = validateBody(createAgentSchema, req.body);
+    const { name, description, color, llmProvider, llmApiKey, llmModel } = validateBody(createAgentSchema, req.body);
     const agent = await storage.createAgent({
       userId,
       name,
@@ -334,8 +345,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       memoriesCount: 0,
       lastActiveAt: null,
       enabled: true,
+      llmProvider: llmProvider || null,
+      llmApiKey: llmApiKey || null,
+      llmModel: llmModel || null,
     });
-    res.json(agent);
+    // Mask API key in response
+    res.json(maskAgentApiKey(agent));
   }));
 
   // Update agent fields (name, description, color, model)
@@ -343,18 +358,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
-    const { name, description, color, model, role } = validateBody(updateAgentSchema, req.body);
+    const { name, description, color, model, role, llmProvider, llmApiKey, llmModel } = validateBody(updateAgentSchema, req.body);
     const updates: Record<string, any> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (color !== undefined) updates.color = color;
     if (model !== undefined) updates.model = model;
     if (role !== undefined) updates.role = role;
+    if (llmProvider !== undefined) updates.llmProvider = llmProvider;
+    if (llmApiKey !== undefined) updates.llmApiKey = llmApiKey;
+    if (llmModel !== undefined) updates.llmModel = llmModel;
     if (Object.keys(updates).length === 0) return res.status(400).json({ error: "No fields to update" });
     const ok = await storage.updateAgent(agentId, userId, updates);
     if (!ok) return res.status(404).json({ error: "Not found" });
     const agent = await storage.getAgent(agentId);
-    res.json(agent);
+    res.json(maskAgentApiKey(agent));
   }));
 
   app.patch("/api/agents/:id/toggle", asyncHandler(async (req, res) => {
