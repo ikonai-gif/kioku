@@ -32,6 +32,11 @@ export const pool = new Pool({
   ...sslConfig,
 });
 
+pool.on('error', (err) => {
+  console.error('[db] Unexpected pool error:', err.message);
+  // Don't crash — pool will auto-reconnect on next query
+});
+
 export const db = drizzle(pool);
 
 // ── Schema init (idempotent) ──────────────────────────────────────────────────

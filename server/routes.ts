@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage, pool } from "./storage";
 import jwt from "jsonwebtoken";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
@@ -214,8 +214,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerBilling(app);
 
   // ── Health ────────────────────────────────────────────────────
-  app.get("/health", (_req, res) => {
-    res.json({ status: "ok", ts: new Date().toISOString() });
+  app.get("/health", async (_req, res) => {
+    try {
+      await pool.query("SELECT 1");
+      res.json({
+        status: "ok",
+        version: "1.0.0",
+        uptime: Math.floor(process.uptime()),
+        database: "connected",
+        timestamp: new Date().toISOString()
+      });
+    } catch (err) {
+      res.status(503).json({
+        status: "down",
+        database: "disconnected",
+        error: (err as Error).message
+      });
+    }
   });
 
   // ── Auth ──────────────────────────────────────────────────────

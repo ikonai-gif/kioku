@@ -13,6 +13,24 @@
 
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
+import Redis from "ioredis";
+
+// ── Redis connection (primary rate-limit store) ──────────────────────────────
+let redis: Redis | null = null;
+if (process.env.REDIS_URL) {
+  redis = new Redis(process.env.REDIS_URL, {
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    lazyConnect: true,
+  });
+  redis.connect().catch((err) => {
+    console.error("[ratelimit] Redis connection failed, falling back to in-memory:", err.message);
+    redis = null;
+  });
+  redis.on("error", (err) => {
+    console.error("[ratelimit] Redis error:", err.message);
+  });
+}
 
 const PLANS: Record<string, { daily: number; perMin: number }> = {
   dev:        { daily:     5_000, perMin: 60 },
@@ -61,6 +79,26 @@ function incrementWindow(
   };
 }
 
+// ── Redis-backed sliding window ──────────────────────────────────────────────
+async function incrementWindowRedis(
+  key: string,
+  windowMs: number
+): Promise<{ count: number; resetAt: number }> {
+  const windowSec = Math.ceil(windowMs / 1000);
+  const windowId = Math.floor(Date.now() / windowMs);
+  const redisKey = `rl:${key}:${windowId}`;
+
+  const count = await redis!.incr(redisKey);
+  if (count === 1) {
+    await redis!.expire(redisKey, windowSec);
+  }
+
+  return {
+    count,
+    resetAt: Math.ceil(((windowId + 1) * windowMs) / 1000),
+  };
+}
+
 // Cleanup stale entries every 5 minutes
 setInterval(() => {
   const now = Date.now();
@@ -99,16 +137,38 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
   // Global IP-based rate limit for unauthenticated requests
   if (!isAuthenticated) {
     const ipKey = `ip:${clientIp}`;
-    const ipResult = incrementWindow(minuteWindows, ipKey, 60_000);
-    if (ipResult.count > UNAUTHENTICATED_PER_MIN) {
-      const retryAfter = Math.max(1, 60 - Math.floor((Date.now() - minuteWindows.get(ipKey)!.windowStart) / 1000));
-      res.setHeader("Retry-After", String(retryAfter));
-      return res.status(429).json({
-        error: "Rate limit exceeded",
-        code: "RATE_LIMITED",
-        status: 429,
-        detail: `Unauthenticated limit: ${UNAUTHENTICATED_PER_MIN} requests/min. Retry after ${retryAfter}s`,
-      });
+
+    if (redis) {
+      try {
+        const r = await incrementWindowRedis(ipKey, 60_000);
+        if (r.count > UNAUTHENTICATED_PER_MIN) {
+          const retryAfter = Math.max(1, r.resetAt - Math.floor(Date.now() / 1000));
+          res.setHeader("Retry-After", String(retryAfter));
+          return res.status(429).json({
+            error: "Rate limit exceeded",
+            code: "RATE_LIMITED",
+            status: 429,
+            detail: `Unauthenticated limit: ${UNAUTHENTICATED_PER_MIN} requests/min. Retry after ${retryAfter}s`,
+          });
+        }
+      } catch {
+        // Redis failed — fall through to in-memory
+      }
+    }
+
+    // In-memory fallback (or primary when no Redis)
+    if (!redis) {
+      const ipResult = incrementWindow(minuteWindows, ipKey, 60_000);
+      if (ipResult.count > UNAUTHENTICATED_PER_MIN) {
+        const retryAfter = Math.max(1, 60 - Math.floor((Date.now() - minuteWindows.get(ipKey)!.windowStart) / 1000));
+        res.setHeader("Retry-After", String(retryAfter));
+        return res.status(429).json({
+          error: "Rate limit exceeded",
+          code: "RATE_LIMITED",
+          status: 429,
+          detail: `Unauthenticated limit: ${UNAUTHENTICATED_PER_MIN} requests/min. Retry after ${retryAfter}s`,
+        });
+      }
     }
   }
 
@@ -119,24 +179,53 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
     const minKey = `min:${identityKey}`;
     const dayKey = `day:${identityKey}`;
 
-    const minResult = incrementWindow(minuteWindows, minKey, 60_000);
-    const dayResult = incrementWindow(dayWindows, dayKey, 86_400_000);
+    let minCount: number;
+    let minRemaining: number;
+    let minResetAt: number;
+    let dayCount: number;
+    let dayRemaining: number;
+    let dayResetAt: number;
 
-    minResult.limit = limits.perMin;
-    minResult.remaining = Math.max(0, limits.perMin - minResult.count);
+    let usedRedis = false;
+    if (redis) {
+      try {
+        const minR = await incrementWindowRedis(minKey, 60_000);
+        const dayR = await incrementWindowRedis(dayKey, 86_400_000);
+        minCount = minR.count;
+        minResetAt = minR.resetAt;
+        minRemaining = Math.max(0, limits.perMin - minCount);
+        dayCount = dayR.count;
+        dayResetAt = dayR.resetAt;
+        dayRemaining = Math.max(0, limits.daily - dayCount);
+        usedRedis = true;
+      } catch {
+        // Redis failed — fall through to in-memory
+        usedRedis = false;
+      }
+    }
 
-    dayResult.limit = limits.daily;
-    dayResult.remaining = Math.max(0, limits.daily - dayResult.count);
+    if (!usedRedis) {
+      const minResult = incrementWindow(minuteWindows, minKey, 60_000);
+      const dayResult = incrementWindow(dayWindows, dayKey, 86_400_000);
+      minCount = minResult.count;
+      minResetAt = minResult.resetAt;
+      minRemaining = Math.max(0, limits.perMin - minCount);
+      dayCount = dayResult.count;
+      dayResetAt = dayResult.resetAt;
+      dayRemaining = Math.max(0, limits.daily - dayCount);
+    }
 
     // Set rate limit headers
     res.setHeader("X-RateLimit-Limit", limits.perMin);
-    res.setHeader("X-RateLimit-Remaining", minResult.remaining);
-    res.setHeader("X-RateLimit-Reset", minResult.resetAt);
+    res.setHeader("X-RateLimit-Remaining", minRemaining!);
+    res.setHeader("X-RateLimit-Reset", minResetAt!);
     res.setHeader("X-RateLimit-Plan", plan);
 
     // Check per-minute limit first
-    if (minResult.count > limits.perMin) {
-      const retryAfter = Math.max(1, 60 - Math.floor((Date.now() - minuteWindows.get(minKey)!.windowStart) / 1000));
+    if (minCount! > limits.perMin) {
+      const retryAfter = usedRedis
+        ? Math.max(1, minResetAt! - Math.floor(Date.now() / 1000))
+        : Math.max(1, 60 - Math.floor((Date.now() - minuteWindows.get(minKey)!.windowStart) / 1000));
       res.setHeader("Retry-After", String(retryAfter));
       return res.status(429).json({
         error: "Rate limit exceeded",
@@ -149,15 +238,14 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
     }
 
     // Check daily limit
-    if (dayResult.count > limits.daily) {
-      const resetAt = dayResult.resetAt;
-      const retryAfter = Math.max(1, resetAt - Math.floor(Date.now() / 1000));
+    if (dayCount! > limits.daily) {
+      const retryAfter = Math.max(1, dayResetAt! - Math.floor(Date.now() / 1000));
       res.setHeader("Retry-After", String(retryAfter));
       return res.status(429).json({
         error: "Daily rate limit exceeded",
         code: "DAILY_RATE_LIMITED",
         status: 429,
-        detail: `Plan '${plan}' allows ${limits.daily.toLocaleString()} requests/day. Resets at ${new Date(resetAt * 1000).toISOString()}`,
+        detail: `Plan '${plan}' allows ${limits.daily.toLocaleString()} requests/day. Resets at ${new Date(dayResetAt! * 1000).toISOString()}`,
         plan,
         upgradeUrl: "https://usekioku.com/#pricing",
       });
