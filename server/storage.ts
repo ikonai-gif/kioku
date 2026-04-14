@@ -1186,6 +1186,12 @@ export class Storage implements IStorage {
         expires_at: m.expires_at,
         cause_id: m.cause_id,
         context_trigger: m.context_trigger,
+        deliberation_references: m.context_trigger?.startsWith('deliberation:')
+          ? [{
+              session_id: m.context_trigger.replace('deliberation:', ''),
+              role: m.namespace === 'decisions' ? 'consensus_output' : 'agent_position',
+            }]
+          : [],
         created_at: m.created_at,
       })),
       memory_links: memoryLinksData.rows.map((l: any) => ({

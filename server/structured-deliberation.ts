@@ -16,7 +16,7 @@ import OpenAI from "openai";
 import { createHmac } from "crypto";
 import { storage } from "./storage";
 import { broadcastToRoom, broadcastHumanTurn } from "./ws";
-import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
+import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type InjectedMemory } from "./memory-injection";
 import { allocateBudget, countTokens } from "./token-budget";
 import {
   classifyLLMError, classifyWebhookError,
@@ -423,39 +423,45 @@ export async function runDeliberation(
     const participantLabel = includeHuman ? `${agents.length} agents + 1 human` : `${agents.length} agents`;
     await postSystemMessage(roomId, `⚡ Structured deliberation started: "${topic}" — ${participantLabel}, ${debateRounds} debate rounds`);
 
+    // Accumulate all injected memories across all rounds for post-consensus reinforcement
+    const allInjectedMemories: InjectedMemory[] = [];
+
     // ── Phase 1: Initial Positions ──
-    const initialPositions = await collectPositions(
+    const initialResult = await collectPositions(
       roomId, userId, agents, topic, "position", 1, fallbackModel, [], sessionId,
       includeHuman, humanName
     );
-    session.rounds.push(initialPositions);
+    session.rounds.push(initialResult.round);
+    allInjectedMemories.push(...initialResult.injectedMemories);
     await persistSession(session, userId);
 
     // ── Phase 2: Debate Rounds ──
-    let previousPositions = initialPositions.positions;
+    let previousPositions = initialResult.round.positions;
     for (let r = 1; r <= debateRounds; r++) {
       const debateResult = await collectPositions(
         roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions, sessionId,
         includeHuman, humanName
       );
-      session.rounds.push(debateResult);
-      previousPositions = debateResult.positions;
+      session.rounds.push(debateResult.round);
+      allInjectedMemories.push(...debateResult.injectedMemories);
+      previousPositions = debateResult.round.positions;
       await persistSession(session, userId);
     }
 
     // ── Phase 3: Final Positions ──
     const allPriorPositions = session.rounds.flatMap((r) => r.positions);
-    const finalPositions = await collectPositions(
+    const finalResult = await collectPositions(
       roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions, sessionId,
       includeHuman, humanName
     );
-    session.rounds.push(finalPositions);
+    session.rounds.push(finalResult.round);
+    allInjectedMemories.push(...finalResult.injectedMemories);
     await persistSession(session, userId);
 
     // ── Phase 4: Consensus ──
     const consensus = buildConsensus(
-      initialPositions.positions,
-      finalPositions.positions,
+      initialResult.round.positions,
+      finalResult.round.positions,
       topic
     );
     session.consensus = consensus;
@@ -472,7 +478,7 @@ export async function runDeliberation(
     });
     if (decisionMsg) broadcastToRoom(roomId, decisionMsg);
 
-    // Save decision to memories
+    // Save decision to memories (with deliberation session link)
     await storage.createMemory({
       userId,
       agentId: null,
@@ -481,7 +487,38 @@ export async function runDeliberation(
       type: "procedural",
       importance: 0.95,
       namespace: "decisions",
+      contextTrigger: `deliberation:${sessionId}`,
     });
+
+    // Save per-agent position memories
+    for (const vote of consensus.votes) {
+      const agent = agents.find(a => a.name === vote.agentName);
+      if (!agent) continue;
+      await storage.createMemory({
+        userId,
+        agentId: agent.id,
+        agentName: vote.agentName,
+        content: `[My Position on "${topic.slice(0, 60)}"] ${vote.position}`,
+        type: "episodic",
+        importance: vote.confidence * 0.8,
+        namespace: "deliberation_positions",
+        contextTrigger: `deliberation:${sessionId}`,
+      });
+    }
+
+    // Consensus-referenced memory reinforcement: boost memories whose keywords appear in the decision
+    const decisionLower = consensus.decision.toLowerCase();
+    // Deduplicate injected memories by id
+    const seenMemIds = new Set<number>();
+    for (const mem of allInjectedMemories) {
+      if (seenMemIds.has(mem.id)) continue;
+      seenMemIds.add(mem.id);
+      const keywords = mem.content.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+      const matches = keywords.filter(k => decisionLower.includes(k));
+      if (matches.length >= 2) {
+        await storage.reinforceMemory(mem.id, userId);
+      }
+    }
 
     // Log dissent if any
     if (consensus.dissent.length > 0) {
@@ -532,7 +569,7 @@ async function collectPositions(
   sessionId: string,
   includeHuman: boolean = false,
   humanName: string = "Human Participant"
-): Promise<DeliberationRound> {
+): Promise<{ round: DeliberationRound; injectedMemories: InjectedMemory[] }> {
   const phaseLabel =
     phase === "position" ? "📍 Phase 1 — Initial Positions" :
     phase === "debate" ? `💬 Debate Round ${round}` :
@@ -540,10 +577,14 @@ async function collectPositions(
 
   await postSystemMessage(roomId, phaseLabel);
 
+  // Collect all injected memories across agents in this round
+  const roundInjectedMemories: InjectedMemory[] = [];
+
   // Run all agents in parallel using Promise.allSettled for resilience
   const agentPromises = agents.map(async (agent) => {
     // Fetch topic-relevant memories for this agent (per-agent + shared, confidence > 0.3)
     const injectedMemories = await fetchRelevantMemories(userId, agent.id, topic, 10);
+    roundInjectedMemories.push(...injectedMemories);
     const memoryContext = formatMemoryContext(injectedMemories);
 
     // Reinforce accessed memories (fire-and-forget)
@@ -851,7 +892,7 @@ async function collectPositions(
   if (roundErrors.length > 0) {
     roundResult.errors = roundErrors;
   }
-  return roundResult;
+  return { round: roundResult, injectedMemories: roundInjectedMemories };
 }
 
 // ── Prompt Builder ────────────────────────────────────────────────
