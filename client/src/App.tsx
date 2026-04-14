@@ -64,8 +64,8 @@ function CookieBanner() {
       bg-sidebar border border-sidebar-border rounded-t-2xl md:rounded-2xl shadow-2xl p-4 space-y-3">
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs text-muted-foreground leading-relaxed">
-          KIOKU™ uses session cookies for authentication and analytics.
-          By continuing, you agree to our{" "}
+          We use essential cookies for authentication. No tracking cookies.{" "}
+          See our{" "}
           <a href="#/privacy" className="text-primary underline underline-offset-2">Privacy Policy</a>{" "}and{" "}
           <a href="#/terms" className="text-primary underline underline-offset-2">Terms of Service</a>.
         </p>
