@@ -1685,7 +1685,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         active_api_keys: parseInt(totalApiKeys.rows[0]?.cnt ?? "0"),
       },
       recent_activity: {
-        api_calls: recentLogs.map((l: any) => ({
+        api_calls: (Array.isArray(recentLogs) ? recentLogs : (recentLogs as any)?.logs ?? []).map((l: any) => ({
           timestamp: l.timestamp,
           method: l.method,
           path: l.path,
