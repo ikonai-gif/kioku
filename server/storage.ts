@@ -304,6 +304,19 @@ export async function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_tracking_user_period ON usage_tracking(user_id, period_start);
     CREATE INDEX IF NOT EXISTS idx_usage_tracking_user ON usage_tracking(user_id);
   `);
+
+  // Phase 6: Stripe webhook idempotency — prevent duplicate event processing
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      id SERIAL PRIMARY KEY,
+      stripe_event_id VARCHAR(255) UNIQUE NOT NULL,
+      type VARCHAR(100) NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'processing',
+      error TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_stripe_events_stripe_id ON stripe_events(stripe_event_id);
+  `);
 }
 
 function generateApiKey(): string {
@@ -1508,6 +1521,29 @@ export class Storage implements IStorage {
       startedAt: Number(row.started_at),
       completedAt: row.completed_at ? Number(row.completed_at) : null,
     };
+  }
+
+  // ── Stripe Event Idempotency ─────────────────────────────────────────────
+  async checkStripeEventExists(stripeEventId: string): Promise<boolean> {
+    const result = await pool.query(
+      'SELECT 1 FROM stripe_events WHERE stripe_event_id = $1 LIMIT 1',
+      [stripeEventId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async insertStripeEvent(stripeEventId: string, type: string): Promise<void> {
+    await pool.query(
+      'INSERT INTO stripe_events (stripe_event_id, type, status) VALUES ($1, $2, $3) ON CONFLICT (stripe_event_id) DO NOTHING',
+      [stripeEventId, type, 'processing']
+    );
+  }
+
+  async updateStripeEventStatus(stripeEventId: string, status: string, error?: string): Promise<void> {
+    await pool.query(
+      'UPDATE stripe_events SET status = $1, error = $2 WHERE stripe_event_id = $3',
+      [status, error || null, stripeEventId]
+    );
   }
 }
 

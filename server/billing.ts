@@ -204,6 +204,16 @@ export function registerBilling(app: Express) {
         return res.status(400).json({ error: `Webhook Error: ${err.message}` });
       }
 
+      // Idempotency check — skip already-processed events
+      const alreadyProcessed = await storage.checkStripeEventExists(event.id);
+      if (alreadyProcessed) {
+        logger.info({ source: "billing", eventId: event.id }, "duplicate webhook event skipped");
+        return res.json({ received: true, skipped: "already_processed" });
+      }
+
+      // Record event as processing
+      await storage.insertStripeEvent(event.id, event.type);
+
       try {
         switch (event.type) {
           case "checkout.session.completed": {
@@ -252,7 +262,10 @@ export function registerBilling(app: Express) {
             // Unhandled event type — ignore
             break;
         }
+
+        await storage.updateStripeEventStatus(event.id, "completed");
       } catch (err: any) {
+        await storage.updateStripeEventStatus(event.id, "failed", err.message);
         logger.error({ source: "billing", err: err.message }, "webhook handler error");
         // Still return 200 so Stripe doesn't retry
       }
