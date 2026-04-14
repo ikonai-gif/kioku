@@ -13,6 +13,7 @@ export const users = pgTable("users", {
   stripeCustomerId: text("stripe_customer_id"),
   apiKey:           text("api_key").notNull().unique(),
   createdAt:    bigint("created_at", { mode: "number" }).notNull(),
+  role:             text("role").notNull().default("user"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
