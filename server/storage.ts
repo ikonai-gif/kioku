@@ -280,6 +280,13 @@ export async function initDb() {
     ALTER TABLE agents ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE agents ADD COLUMN IF NOT EXISTS error_message TEXT;
   `);
+  // Phase 5: Role-based access control
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+  `);
+  // Set owner role for user ID 10 (idempotent)
+  await pool.query(`UPDATE users SET role = 'owner' WHERE id = 10 AND role != 'owner'`);
+
   // Phase 3: Usage metering — per-user per-month tracking
   await pool.query(`
     CREATE TABLE IF NOT EXISTS usage_tracking (

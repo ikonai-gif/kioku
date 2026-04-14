@@ -75,6 +75,15 @@ function sanitizeHtml(input: string): string {
     .replace(/'/g, "&#x27;");
 }
 
+// Internal namespaces hidden from non-owner users
+const INTERNAL_NAMESPACES = ['_system', '_audit', '_internal'];
+
+/** Check if a user has the 'owner' role */
+async function isOwner(userId: number): Promise<boolean> {
+  const user = await storage.getUserById(userId);
+  return user?.role === 'owner';
+}
+
 const BREVO_API_KEY = process.env.BREVO_API_KEY || null;
 
 const SENDERS = {
@@ -692,11 +701,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const q = req.query.q as string;
     const namespace = req.query.namespace as string | undefined;
     const includeEmbedding = req.query.include_embedding === "true";
+    const ownerUser = await isOwner(userId);
+    const filterInternal = (mems: any[]) =>
+      ownerUser ? mems : mems.filter((m: any) => !m.namespace || !m.namespace.startsWith('_'));
 
     if (q) {
       const queryEmbedding = await embedText(q);
       const results = await storage.searchMemories(userId, q, queryEmbedding ?? undefined, namespace);
-      res.json(results.map((m: any) => stripEmbedding(m, includeEmbedding)));
+      res.json(filterInternal(results).map((m: any) => stripEmbedding(m, includeEmbedding)));
     } else {
       const page = Math.max(1, parseInt(req.query.page as string) || 1);
       const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
@@ -705,8 +717,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         storage.getMemories(userId, limit, offset),
         storage.getMemoriesCount(userId),
       ]);
+      const filtered = filterInternal(results);
       res.json({
-        data: results.map((m: any) => stripEmbedding(m, includeEmbedding)),
+        data: filtered.map((m: any) => stripEmbedding(m, includeEmbedding)),
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
       });
     }
@@ -1583,6 +1596,102 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       error_rate_pct: errorRate,
       errors_last_hour: errorsLastHour,
       timestamp: new Date().toISOString(),
+    });
+  }));
+
+  // ── Boss Board: Admin Status (owner-only) ─────────────────────
+  app.get("/api/admin/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+
+    const user = await storage.getUserById(userId);
+
+    // Health check
+    let dbStatus = "connected";
+    try { await pool.query("SELECT 1"); } catch { dbStatus = "disconnected"; }
+
+    // Redis status (check if rate limiter module exists)
+    let redisStatus = "not configured";
+    try {
+      const { getRedisStatus } = await import("./ratelimit");
+      if (typeof getRedisStatus === "function") redisStatus = await getRedisStatus();
+    } catch { /* no redis */ }
+
+    // Usage data
+    const [memoriesCount, agentsList, roomsList, flowsList, currentUsage, resourceCounts] = await Promise.all([
+      storage.getMemoriesCount(userId),
+      storage.getAgents(userId),
+      storage.getRooms(userId),
+      storage.getFlows(userId),
+      storage.getCurrentUsage(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+
+    // Request logs
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const [todayRequests, recentLogs, recentSessions, totalUsers, totalApiKeys] = await Promise.all([
+      pool.query("SELECT COUNT(*) as cnt FROM kioku_request_logs WHERE timestamp >= $1", [todayStart.getTime()]),
+      storage.getRequestLogs({ limit: 10 }),
+      pool.query(
+        `SELECT id, room_id, topic, status, model, started_at, completed_at
+         FROM kioku_deliberation_sessions
+         WHERE user_id = $1 ORDER BY started_at DESC LIMIT 5`, [userId]
+      ),
+      pool.query("SELECT COUNT(*) as cnt FROM users"),
+      pool.query("SELECT COUNT(*) as cnt FROM kioku_agent_tokens WHERE revoked = false"),
+    ]);
+
+    res.json({
+      health: {
+        status: dbStatus === "connected" ? "ok" : "degraded",
+        database: dbStatus,
+        redis: redisStatus,
+        uptime: Math.floor(process.uptime()),
+        version: "1.0.0",
+        timestamp: new Date().toISOString(),
+        active_ws_connections: getActiveWsConnectionCount(),
+        active_deliberations: getActiveDeliberationCount(),
+      },
+      usage: {
+        memories: { count: memoriesCount, limit: resourceCounts.memories },
+        agents: { count: agentsList.length, limit: resourceCounts.agents },
+        rooms: { count: roomsList.length, limit: resourceCounts.rooms },
+        flows: { count: flowsList.length, limit: resourceCounts.flows },
+        requests_today: parseInt(todayRequests.rows[0]?.cnt ?? "0"),
+        metered: {
+          deliberations: currentUsage.deliberations,
+          rounds: currentUsage.rounds,
+          api_calls: currentUsage.apiCalls,
+          tokens_used: currentUsage.tokensUsed,
+        },
+      },
+      account: {
+        plan: user?.plan ?? "dev",
+        email: user?.email,
+        total_users: parseInt(totalUsers.rows[0]?.cnt ?? "0"),
+      },
+      security: {
+        active_api_keys: parseInt(totalApiKeys.rows[0]?.cnt ?? "0"),
+      },
+      recent_activity: {
+        api_calls: recentLogs.map((l: any) => ({
+          timestamp: l.timestamp,
+          method: l.method,
+          path: l.path,
+          status: l.statusCode,
+          latency_ms: l.latencyMs,
+        })),
+        deliberations: recentSessions.rows.map((s: any) => ({
+          id: s.id,
+          topic: s.topic,
+          status: s.status,
+          model: s.model,
+          started_at: s.started_at,
+          completed_at: s.completed_at,
+        })),
+      },
     });
   }));
 

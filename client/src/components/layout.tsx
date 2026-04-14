@@ -4,7 +4,7 @@ import { useAuth, useTheme } from "../App";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
-  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X
+  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -21,7 +21,7 @@ function KiokuLogo({ size = 32 }: { size?: number }) {
   );
 }
 
-const navItems = [
+const baseNavItems = [
   { href: "/",        icon: LayoutDashboard, label: "Dashboard" },
   { href: "/agents",  icon: Bot,             label: "Agents"    },
   { href: "/memory",  icon: Brain,           label: "Memory"    },
@@ -32,14 +32,16 @@ const navItems = [
   { href: "/billing", icon: CreditCard,      label: "Billing"   },
 ];
 
-// All 7 items in mobile tab bar
-const mobileNav = navItems;
+const bossNavItem = { href: "/boss", icon: Crown, label: "Boss Board" };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const { dark, toggle } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const isOwnerUser = user?.role === "owner";
+  const navItems = isOwnerUser ? [bossNavItem, ...baseNavItems] : baseNavItems;
+  const mobileNav = navItems;
 
   const planColors: Record<string, string> = {
     dev:      "text-muted-foreground",
