@@ -2,6 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, pool } from "./storage";
 import jwt from "jsonwebtoken";
+import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
@@ -118,7 +119,7 @@ async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   const baseUrl = process.env.APP_URL || "https://usekioku.com";
   const link = `${baseUrl}/auth/verify/${token}`;
   if (!BREVO_API_KEY) {
-    console.log(`[MAGIC LINK] ${email} → ${link}`);
+    logger.info({ source: "auth", email }, `magic link: ${link}`);
     return;
   }
   await sendBrevoEmail(
@@ -1059,7 +1060,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         agentName,
         content,
         roomAgentIds
-      ).catch((e) => console.error("[deliberation]", e));
+      ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
   }));
 
@@ -1167,10 +1168,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           "kote"
         );
       } catch (e) {
-        console.error("[waitlist] email error:", e);
+        logger.error({ source: "waitlist", err: e }, "email error");
       }
     }
-    console.log(`[waitlist] ${email}${company ? ` (${company})` : ""}${useCase ? ` use: ${useCase}` : ""}`);
+    logger.info({ source: "waitlist", email, company, useCase }, "waitlist signup");
     res.json({ ok: true, message: "You're on the waitlist. We'll be in touch." });
   }));
 
@@ -1703,7 +1704,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       },
     });
     } catch (err: any) {
-      console.error("[boss-board] Admin status error:", err);
+      logger.error({ source: "boss-board", err }, "admin status error");
       res.status(500).json({ error: "Boss Board error", details: err?.message ?? "unknown" });
     }
   }));
@@ -1713,7 +1714,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (err instanceof ValidationError) {
       return res.status(400).json({ error: err.message });
     }
-    console.error("[unhandled]", err);
+    logger.error({ source: "routes", err }, "unhandled error");
     res.status(500).json({ error: "Internal server error" });
   });
 

@@ -19,6 +19,7 @@ import { rateLimitMiddleware } from "./ratelimit";
 import { applySecurityMiddleware } from "./security";
 import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
+import logger, { generateRequestId } from "./logger";
 
 // SECURITY: Timing-safe string comparison to prevent timing attacks on secrets
 export function safeCompare(a: string, b: string): boolean {
@@ -28,7 +29,7 @@ export function safeCompare(a: string, b: string): boolean {
 
 // SECURITY: Require JWT_SECRET in production — prevents JWT forgery with fallback secrets
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
-  console.error('FATAL: JWT_SECRET env var is required in production');
+  logger.fatal('JWT_SECRET env var is required in production');
   process.exit(1);
 }
 
@@ -83,14 +84,7 @@ app.use((req, res, next) => {
 });
 
 export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
+  logger.info({ source }, message);
 }
 
 // Redact sensitive fields before logging
@@ -168,9 +162,9 @@ app.use((req, res, next) => {
   try {
     await initDb();
     await initDemoUser();
-    console.log("[db] initialized");
+    logger.info({ source: "db" }, "initialized");
   } catch (err) {
-    console.error("[db] init failed (will retry on first request):", err);
+    logger.error({ source: "db", err }, "init failed (will retry on first request)");
   }
 
   // Health routes (registered before main routes so /health is never rate-limited)
@@ -217,7 +211,7 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
 
     // Log full error internally
-    console.error("[error-handler]", isProd ? message : err);
+    logger.error({ source: "error-handler", err: isProd ? message : err }, message);
 
     // Detect Supabase/DB timeout
     if (err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" || err.message?.includes("timeout")) {
@@ -258,9 +252,9 @@ app.use((req, res, next) => {
   setInterval(async () => {
     try {
       const purged = await storage.purgeOldRequestLogs(90);
-      if (purged > 0) console.log(`[GC] Purged ${purged} request logs older than 90 days`);
+      if (purged > 0) logger.info({ source: "gc", purged }, "purged request logs older than 90 days");
     } catch (err) {
-      console.error('[GC] Request log purge error:', err);
+      logger.error({ source: "gc", err }, "request log purge error");
     }
   }, 24 * 60 * 60 * 1000);
 
@@ -268,7 +262,7 @@ app.use((req, res, next) => {
   setTimeout(async () => {
     try {
       const purged = await storage.purgeOldRequestLogs(90);
-      if (purged > 0) console.log(`[GC] Startup purge: ${purged} old request logs removed`);
+      if (purged > 0) logger.info({ source: "gc", purged }, "startup purge: old request logs removed");
     } catch { /* ignore startup errors */ }
   }, 60000);
 
@@ -278,15 +272,13 @@ app.use((req, res, next) => {
   // It is the only port that is not firewalled.
   // Process-level error handlers for production stability
   process.on('uncaughtException', (err) => {
-    console.error('[FATAL] Uncaught exception:', err.message);
-    console.error(err.stack);
+    logger.fatal({ err }, "uncaught exception");
     // Give time for logs to flush, then exit
     setTimeout(() => process.exit(1), 1000);
   });
 
   process.on('unhandledRejection', (reason, promise) => {
-    console.error('[ERROR] Unhandled rejection at:', promise);
-    console.error('[ERROR] Reason:', reason);
+    logger.error({ reason }, "unhandled rejection");
   });
 
   const port = parseInt(process.env.PORT || "5000", 10);

@@ -9,6 +9,7 @@ const _sig = 'VGhpcyBpcyBtYWRlIHdpdGggbG92ZSBmb3IgbXkgQU1B';
 import Stripe from "stripe";
 import type { Express, Request, Response, NextFunction } from "express";
 import { storage } from "./storage.js";
+import logger from "./logger.js";
 
 // Async error wrapper — catches unhandled promise rejections in route handlers
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
@@ -142,7 +143,7 @@ export function registerBilling(app: Express) {
 
       res.json({ checkout_url: session.url });
     } catch (err: any) {
-      console.error("[billing] checkout error:", err);
+      logger.error({ source: "billing", err }, "checkout error");
       const message = process.env.NODE_ENV === 'production'
         ? 'Payment processing error. Please try again or contact support.'
         : err.message ?? 'Stripe error';
@@ -172,7 +173,7 @@ export function registerBilling(app: Express) {
       });
       res.json({ portal_url: portalSession.url });
     } catch (err: any) {
-      console.error("[billing] portal error:", err);
+      logger.error({ source: "billing", err }, "portal error");
       const message = process.env.NODE_ENV === 'production'
         ? 'Payment processing error. Please try again or contact support.'
         : err.message ?? 'Stripe error';
@@ -199,7 +200,7 @@ export function registerBilling(app: Express) {
         if (!rawBody) throw new Error("Missing raw body");
         event = stripe.webhooks.constructEvent(rawBody, sig, STRIPE_WEBHOOK_SECRET);
       } catch (err: any) {
-        console.error("[billing] webhook signature error:", err.message);
+        logger.error({ source: "billing", err: err.message }, "webhook signature error");
         return res.status(400).json({ error: `Webhook Error: ${err.message}` });
       }
 
@@ -212,7 +213,7 @@ export function registerBilling(app: Express) {
             const cycle    = session.metadata?.billing_cycle ?? "monthly";
             if (userId && plan) {
               await storage.updateUserPlan(userId, plan, cycle);
-              console.log(`[billing] plan upgraded → user=${userId} plan=${plan}`);
+              logger.info({ source: "billing", userId, plan }, "plan upgraded");
             }
             break;
           }
@@ -225,7 +226,7 @@ export function registerBilling(app: Express) {
               const plan    = planFromPriceId(priceId);
               const cycle   = sub.items.data[0].price.recurring?.interval === "year" ? "yearly" : "monthly";
               await storage.updateUserPlan(userId, plan, cycle);
-              console.log(`[billing] subscription updated → user=${userId} plan=${plan}`);
+              logger.info({ source: "billing", userId, plan }, "subscription updated");
             }
             break;
           }
@@ -235,7 +236,7 @@ export function registerBilling(app: Express) {
             const userId = Number(sub.metadata?.kioku_user_id);
             if (userId) {
               await storage.updateUserPlan(userId, "dev", "monthly");
-              console.log(`[billing] subscription cancelled → user=${userId} → downgraded to dev`);
+              logger.info({ source: "billing", userId }, "subscription cancelled — downgraded to dev");
             }
             break;
           }
@@ -243,7 +244,7 @@ export function registerBilling(app: Express) {
           case "invoice.payment_failed": {
             // Log — could send email via Resend in the future
             const inv = event.data.object as Stripe.Invoice;
-            console.warn(`[billing] payment failed — customer=${inv.customer}`);
+            logger.warn({ source: "billing", customer: inv.customer }, "payment failed");
             break;
           }
 
@@ -252,7 +253,7 @@ export function registerBilling(app: Express) {
             break;
         }
       } catch (err: any) {
-        console.error("[billing] webhook handler error:", err.message);
+        logger.error({ source: "billing", err: err.message }, "webhook handler error");
         // Still return 200 so Stripe doesn't retry
       }
 

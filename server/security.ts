@@ -6,6 +6,7 @@
 import helmet from "helmet";
 import cors from "cors";
 import type { Request, Response, NextFunction, Express } from "express";
+import logger from "./logger";
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
@@ -98,7 +99,7 @@ export function recordAuthFailure(ip: string): void {
   entry.count += 1;
   if (entry.count >= BRUTE_MAX_FAILS) {
     entry.blockedUntil = now + BRUTE_BLOCK_MS;
-    console.warn(`[security] IP ${ip} BLOCKED — ${entry.count} auth failures in window`);
+    logger.warn({ source: "security", ip, failures: entry.count }, "IP blocked — auth failures in window");
   }
 }
 

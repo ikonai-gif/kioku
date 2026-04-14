@@ -14,6 +14,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 import Redis from "ioredis";
+import logger from "./logger";
 
 // ── Redis connection (primary rate-limit store) ──────────────────────────────
 let redis: Redis | null = null;
@@ -24,11 +25,11 @@ if (process.env.REDIS_URL) {
     lazyConnect: true,
   });
   redis.connect().catch((err) => {
-    console.error("[ratelimit] Redis connection failed, falling back to in-memory:", err.message);
+    logger.error({ source: "ratelimit", err: err.message }, "Redis connection failed, falling back to in-memory");
     redis = null;
   });
   redis.on("error", (err) => {
-    console.error("[ratelimit] Redis error:", err.message);
+    logger.error({ source: "ratelimit", err: err.message }, "Redis error");
   });
 }
 
@@ -254,7 +255,7 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
     next();
   } catch (err) {
     // Fail closed — reject request on rate limit resolution error
-    console.error('Rate limit resolution error:', err);
+    logger.error({ source: "ratelimit", err }, "rate limit resolution error");
     res.status(429).json({ error: 'Rate limit error, please retry' });
   }
 }
