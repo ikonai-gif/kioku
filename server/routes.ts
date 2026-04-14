@@ -1605,43 +1605,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
 
+    try {
     const user = await storage.getUserById(userId);
 
     // Health check
     let dbStatus = "connected";
     try { await pool.query("SELECT 1"); } catch { dbStatus = "disconnected"; }
 
-    // Redis status (check if rate limiter module exists)
+    // Redis status
     let redisStatus = "not configured";
     try {
-      const { getRedisStatus } = await import("./ratelimit");
-      if (typeof getRedisStatus === "function") redisStatus = await getRedisStatus();
-    } catch { /* no redis */ }
+      const mod = await import("./ratelimit");
+      if (typeof mod.getRedisStatus === "function") redisStatus = await mod.getRedisStatus();
+    } catch { /* no redis module */ }
 
-    // Usage data
-    const [memoriesCount, agentsList, roomsList, flowsList, currentUsage, resourceCounts] = await Promise.all([
-      storage.getMemoriesCount(userId),
-      storage.getAgents(userId),
-      storage.getRooms(userId),
-      storage.getFlows(userId),
-      storage.getCurrentUsage(userId),
-      storage.getUserResourceCounts(userId),
-    ]);
+    // Usage data — each wrapped to avoid single failure breaking all
+    let memoriesCount = 0, agentsList: any[] = [], roomsList: any[] = [], flowsList: any[] = [];
+    let currentUsage = { deliberations: 0, rounds: 0, apiCalls: 0, tokensUsed: 0 };
+    let resourceCounts = { agents: 0, memories: 0, rooms: 0, flows: 0 };
+    try { memoriesCount = await storage.getMemoriesCount(userId); } catch {}
+    try { agentsList = await storage.getAgents(userId); } catch {}
+    try { roomsList = await storage.getRooms(userId); } catch {}
+    try { flowsList = await storage.getFlows(userId); } catch {}
+    try { currentUsage = await storage.getCurrentUsage(userId) as any; } catch {}
+    try { resourceCounts = await storage.getUserResourceCounts(userId); } catch {}
 
     // Request logs
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    const [todayRequests, recentLogs, recentSessions, totalUsers, totalApiKeys] = await Promise.all([
-      pool.query("SELECT COUNT(*) as cnt FROM kioku_request_logs WHERE timestamp >= $1", [todayStart.getTime()]),
-      storage.getRequestLogs({ limit: 10 }),
-      pool.query(
-        `SELECT id, room_id, topic, status, model, started_at, completed_at
-         FROM kioku_deliberation_sessions
-         WHERE user_id = $1 ORDER BY started_at DESC LIMIT 5`, [userId]
-      ),
-      pool.query("SELECT COUNT(*) as cnt FROM users"),
-      pool.query("SELECT COUNT(*) as cnt FROM kioku_agent_tokens WHERE revoked = false"),
-    ]);
+    let todayRequests = { rows: [{ cnt: "0" }] };
+    let recentLogs: any[] = [];
+    let recentSessions = { rows: [] as any[] };
+    let totalUsers = { rows: [{ cnt: "0" }] };
+    let totalApiKeys = { rows: [{ cnt: "0" }] };
+    try {
+      [todayRequests, recentLogs, recentSessions, totalUsers, totalApiKeys] = await Promise.all([
+        pool.query("SELECT COUNT(*) as cnt FROM kioku_request_logs WHERE timestamp >= $1", [todayStart.getTime()]),
+        storage.getRequestLogs({ limit: 10 }),
+        pool.query(
+          `SELECT id, room_id, topic, status, model, started_at, completed_at
+           FROM kioku_deliberation_sessions
+           WHERE user_id = $1 ORDER BY started_at DESC LIMIT 5`, [userId]
+        ),
+        pool.query("SELECT COUNT(*) as cnt FROM users"),
+        pool.query("SELECT COUNT(*) as cnt FROM kioku_agent_tokens WHERE revoked = false"),
+      ]);
+    } catch {}
 
     res.json({
       health: {
@@ -1693,6 +1702,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         })),
       },
     });
+    } catch (err: any) {
+      console.error("[boss-board] Admin status error:", err);
+      res.status(500).json({ error: "Boss Board error", details: err?.message ?? "unknown" });
+    }
   }));
 
   // ── Global error handler ──────────────────────────────────────
