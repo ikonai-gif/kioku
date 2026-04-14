@@ -29,6 +29,43 @@ import {
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
   createMemoryLinkSchema,
 } from "./validation";
+import { body, validationResult } from "express-validator";
+
+// express-validator middleware: validate → check errors → proceed
+function handleValidationErrors(req: Request, res: Response, next: NextFunction) {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: "Validation failed", details: errors.array() });
+  }
+  next();
+}
+
+// Validation rules for critical endpoints
+const validateMemory = [
+  body("content").isString().isLength({ min: 1, max: 50000 }).withMessage("content must be 1-50000 chars"),
+  body("type").optional().isString().withMessage("type must be a string"),
+  body("namespace").optional().isString().isLength({ max: 100 }).withMessage("namespace max 100 chars"),
+  body("importance").optional().isFloat({ min: 0, max: 1 }).withMessage("importance must be 0-1"),
+  handleValidationErrors,
+];
+
+const validateRoom = [
+  body("name").isString().isLength({ min: 1, max: 200 }).withMessage("name must be 1-200 chars"),
+  body("topic").optional().isString().isLength({ max: 1000 }).withMessage("topic max 1000 chars"),
+  handleValidationErrors,
+];
+
+const validateAgent = [
+  body("name").isString().isLength({ min: 1, max: 100 }).withMessage("name must be 1-100 chars"),
+  body("description").optional().isString().isLength({ max: 1000 }).withMessage("description max 1000 chars"),
+  body("model").optional().isString().withMessage("model must be a string"),
+  handleValidationErrors,
+];
+
+const validateMagicLink = [
+  body("email").isEmail().withMessage("must be a valid email"),
+  handleValidationErrors,
+];
 
 // Async error wrapper — catches unhandled promise rejections in route handlers
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
@@ -245,7 +282,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── Auth ──────────────────────────────────────────────────────
   // alias for frontend
-  app.post("/api/auth/magic-link", asyncHandler(async (req, res) => {
+  app.post("/api/auth/magic-link", ...validateMagicLink, asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
     if (email && !checkAuthRateLimit(`magic:${email}`, 15, 3600000)) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
@@ -392,7 +429,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(agentList.map(maskAgentApiKey));
   }));
 
-  app.post("/api/agents", asyncHandler(async (req, res) => {
+  app.post("/api/agents", ...validateAgent, asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const [plan, counts] = await Promise.all([
@@ -726,7 +763,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
-  app.post("/api/memories", asyncHandler(async (req, res) => {
+  app.post("/api/memories", ...validateMemory, asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const [memPlan, memCounts] = await Promise.all([
@@ -955,7 +992,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(await storage.getRooms(userId));
   }));
 
-  app.post("/api/rooms", asyncHandler(async (req, res) => {
+  app.post("/api/rooms", ...validateRoom, asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const [roomPlan, roomCounts] = await Promise.all([
