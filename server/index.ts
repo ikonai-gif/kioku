@@ -1,3 +1,13 @@
+import * as Sentry from "@sentry/node";
+
+// Initialize Sentry EARLY — before Express app creation
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || "",
+  enabled: !!process.env.SENTRY_DSN,
+  tracesSampleRate: 0.1,
+  environment: process.env.NODE_ENV || "development",
+});
+
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
@@ -192,6 +202,9 @@ app.use((req, res, next) => {
   });
 
   await registerRoutes(httpServer, app);
+
+  // Sentry error handler — must be AFTER all routes, BEFORE custom error handler
+  Sentry.setupExpressErrorHandler(app);
 
   // ── Global Error Handler — structured JSON, no stack traces in prod ────
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
