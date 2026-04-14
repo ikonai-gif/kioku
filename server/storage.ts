@@ -1105,6 +1105,210 @@ export class Storage implements IStorage {
     };
   }
 
+  // ── KMEF v1.0: Full data export (KIOKU Memory Exchange Format) ─────────────
+  async exportKMEF(userId: number): Promise<any> {
+    const [
+      userData, memoriesData, agentsData, roomsData, messagesData,
+      flowsData, deliberationsData, memoryLinksData, usageData, usageHistoryData,
+      webhooksData, tokensData,
+    ] = await Promise.all([
+      pool.query('SELECT id, email, name, company, plan, billing_cycle, created_at FROM users WHERE id = $1', [userId]),
+      pool.query(`SELECT id, content, type, importance, confidence, decay_rate, strength,
+        emotional_valence, agent_id, agent_name, namespace, access_count,
+        last_accessed_at, last_reinforced_at, reinforcements,
+        expires_at, cause_id, context_trigger, created_at
+        FROM memories WHERE user_id = $1 ORDER BY created_at DESC`, [userId]),
+      pool.query(`SELECT id, name, description, role, model, llm_provider, agent_type,
+        status, memories_count, enabled, created_at
+        FROM agents WHERE user_id = $1`, [userId]),
+      pool.query('SELECT id, name, description, status, agent_ids, created_at FROM rooms WHERE user_id = $1', [userId]),
+      pool.query(`SELECT rm.id, rm.content, rm.agent_id, rm.agent_name, rm.is_decision, rm.created_at, rm.room_id
+        FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1 ORDER BY rm.created_at`, [userId]),
+      pool.query('SELECT id, name, description, agent_ids, created_at FROM flows WHERE user_id = $1', [userId]),
+      pool.query(`SELECT id, room_id, topic, status, model, models_used, rounds, consensus,
+        started_at, completed_at FROM kioku_deliberation_sessions WHERE user_id = $1 ORDER BY started_at DESC`, [userId]),
+      pool.query(`SELECT ml.* FROM memory_links ml WHERE ml.user_id = $1`, [userId]),
+      pool.query(`SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT 1`, [userId]),
+      pool.query(`SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT 12`, [userId]),
+      pool.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
+      pool.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
+    ]);
+
+    const user = userData.rows[0];
+    const currentUsage = usageData.rows[0];
+
+    return {
+      kmef_version: "1.0",
+      exported_at: new Date().toISOString(),
+      platform: "kioku",
+      platform_version: "1.0.0",
+      account: user ? {
+        email: user.email,
+        name: user.name,
+        company: user.company,
+        plan: user.plan,
+        billing_cycle: user.billing_cycle,
+        created_at: user.created_at,
+      } : null,
+      agents: agentsData.rows.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        role: a.role,
+        model: a.model,
+        llm_provider: a.llm_provider,
+        description: a.description,
+        agent_type: a.agent_type,
+        status: a.status,
+        memories_count: a.memories_count,
+        enabled: a.enabled,
+        created_at: a.created_at,
+      })),
+      memories: memoriesData.rows.map((m: any) => ({
+        id: m.id,
+        content: m.content,
+        type: m.type,
+        importance: m.importance,
+        confidence: m.confidence,
+        confidence_history: this.buildConfidenceHistory(m),
+        decay_parameters: {
+          rate: m.decay_rate,
+          last_reinforced_at: m.last_reinforced_at,
+          reinforcements: m.reinforcements,
+        },
+        strength: m.strength,
+        emotional_valence: m.emotional_valence,
+        agent_id: m.agent_id,
+        agent_name: m.agent_name,
+        namespace: m.namespace,
+        access_count: m.access_count,
+        last_accessed_at: m.last_accessed_at,
+        tags: [],
+        expires_at: m.expires_at,
+        cause_id: m.cause_id,
+        context_trigger: m.context_trigger,
+        created_at: m.created_at,
+      })),
+      memory_links: memoryLinksData.rows.map((l: any) => ({
+        id: l.id,
+        source_memory_id: l.source_memory_id,
+        target_memory_id: l.target_memory_id,
+        link_type: l.link_type,
+        strength: l.strength,
+        created_at: l.created_at,
+      })),
+      rooms: roomsData.rows.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        description: r.description,
+        status: r.status,
+        agent_ids: typeof r.agent_ids === 'string' ? JSON.parse(r.agent_ids) : r.agent_ids,
+        created_at: r.created_at,
+      })),
+      deliberations: deliberationsData.rows.map((d: any) => ({
+        session_id: d.id,
+        room_id: d.room_id,
+        topic: d.topic,
+        status: d.status,
+        model: d.model,
+        models_used: typeof d.models_used === 'string' ? JSON.parse(d.models_used) : d.models_used,
+        rounds: typeof d.rounds === 'string' ? JSON.parse(d.rounds) : d.rounds,
+        consensus: typeof d.consensus === 'string' ? JSON.parse(d.consensus) : d.consensus,
+        started_at: d.started_at,
+        completed_at: d.completed_at,
+      })),
+      flows: flowsData.rows.map((f: any) => ({
+        id: f.id,
+        name: f.name,
+        description: f.description,
+        agent_ids: typeof f.agent_ids === 'string' ? JSON.parse(f.agent_ids) : f.agent_ids,
+        created_at: f.created_at,
+      })),
+      room_messages: messagesData.rows.map((m: any) => ({
+        id: m.id,
+        room_id: m.room_id,
+        agent_id: m.agent_id,
+        agent_name: m.agent_name,
+        content: m.content,
+        is_decision: m.is_decision,
+        created_at: m.created_at,
+      })),
+      webhooks: webhooksData.rows,
+      agent_tokens: tokensData.rows.map((t: any) => ({
+        id: t.id,
+        name: t.name,
+        scopes: t.scopes,
+        expires_at: t.expires_at,
+        created_at: t.created_at,
+      })),
+      usage: {
+        current_period: currentUsage ? {
+          period_start: currentUsage.period_start,
+          period_end: currentUsage.period_end,
+          deliberations: currentUsage.deliberations,
+          rounds: currentUsage.rounds,
+          api_calls: currentUsage.api_calls,
+          webhook_calls: currentUsage.webhook_calls,
+          tokens_used: currentUsage.tokens_used,
+        } : null,
+        history: usageHistoryData.rows.map((u: any) => ({
+          period_start: u.period_start,
+          period_end: u.period_end,
+          deliberations: u.deliberations,
+          rounds: u.rounds,
+          api_calls: u.api_calls,
+          webhook_calls: u.webhook_calls,
+          tokens_used: u.tokens_used,
+        })),
+      },
+    };
+  }
+
+  private buildConfidenceHistory(memory: any): any[] {
+    const history: any[] = [];
+    if (memory.created_at) {
+      history.push({ timestamp: memory.created_at, value: 1.0, event: "created" });
+    }
+    if (memory.confidence !== null && memory.confidence < 1.0) {
+      history.push({ timestamp: memory.last_accessed_at ?? memory.created_at, value: memory.confidence, event: "decay" });
+    }
+    if (memory.last_reinforced_at && memory.reinforcements > 0) {
+      history.push({ timestamp: memory.last_reinforced_at, value: memory.confidence, event: "reinforced" });
+    }
+    return history;
+  }
+
+  // ── CSV export for memories ─────────────────────────────────────────────────
+  async exportMemoriesCSV(userId: number): Promise<string> {
+    const { rows } = await pool.query(
+      `SELECT id, content, type, importance, confidence, strength, emotional_valence,
+        agent_id, agent_name, namespace, access_count, decay_rate,
+        reinforcements, expires_at, cause_id, context_trigger, created_at
+        FROM memories WHERE user_id = $1 ORDER BY created_at DESC`, [userId]
+    );
+
+    const headers = [
+      'id', 'content', 'type', 'importance', 'confidence', 'strength',
+      'emotional_valence', 'agent_id', 'agent_name', 'namespace',
+      'access_count', 'decay_rate', 'reinforcements', 'expires_at',
+      'cause_id', 'context_trigger', 'created_at'
+    ];
+
+    const escapeCSV = (val: any): string => {
+      if (val === null || val === undefined) return '';
+      const str = String(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    };
+
+    const lines = [headers.join(',')];
+    for (const row of rows) {
+      lines.push(headers.map(h => escapeCSV(row[h])).join(','));
+    }
+    return lines.join('\n');
+  }
+
   // ── Request log retention ──────────────────────────────────────────────────
   async purgeOldRequestLogs(retentionDays: number = 90): Promise<number> {
     const cutoff = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);

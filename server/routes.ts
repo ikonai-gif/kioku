@@ -325,7 +325,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    const format = (req.query.format as string)?.toLowerCase() || "json";
+
+    if (format === "kmef") {
+      const data = await storage.exportKMEF(userId);
+      res.setHeader("Content-Disposition", 'attachment; filename="kioku-export-kmef.json"');
+      res.setHeader("Content-Type", "application/json");
+      return res.json(data);
+    }
+
+    if (format === "csv") {
+      const csv = await storage.exportMemoriesCSV(userId);
+      res.setHeader("Content-Disposition", 'attachment; filename="kioku-memories-export.csv"');
+      res.setHeader("Content-Type", "text/csv");
+      return res.send(csv);
+    }
+
+    // Default: JSON (original format)
     const data = await storage.exportAllUserData(userId);
+    res.setHeader("Content-Disposition", 'attachment; filename="kioku-export.json"');
+    res.setHeader("Content-Type", "application/json");
     res.json(data);
   }));
 

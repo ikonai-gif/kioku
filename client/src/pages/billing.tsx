@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare, ArrowUpRight, CreditCard, Activity, Webhook, Coins, AlertTriangle } from "lucide-react";
+import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare, ArrowUpRight, CreditCard, Activity, Webhook, Coins, AlertTriangle, Download, FileJson, FileSpreadsheet, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── KIOKU™ backend (Railway) — real Stripe ─────────────────────────────────
@@ -69,6 +69,7 @@ export default function BillingPage() {
   const { toast } = useToast();
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState<string | null>(null);
 
   const { data: user } = useQuery<any>({ queryKey: ["/api/auth/me"] });
 
@@ -90,6 +91,30 @@ export default function BillingPage() {
       });
     } finally {
       setPortalLoading(false);
+    }
+  }
+
+  async function handleExport(format: "kmef" | "csv" | "json") {
+    setExportLoading(format);
+    try {
+      const res = await apiRequest("GET", `/api/account/export?format=${format}`);
+      const isCSV = format === "csv";
+      const blob = isCSV
+        ? new Blob([await res.text()], { type: "text/csv" })
+        : new Blob([JSON.stringify(await res.json(), null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = isCSV ? "kioku-memories-export.csv" : `kioku-export${format === "kmef" ? "-kmef" : ""}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast({ title: "Export complete", description: `Your data has been exported as ${format.toUpperCase()}.` });
+    } catch (err: any) {
+      toast({ title: "Export failed", description: err?.message ?? "Could not export data.", variant: "destructive" });
+    } finally {
+      setExportLoading(null);
     }
   }
 
@@ -172,6 +197,53 @@ export default function BillingPage() {
 
       {/* Usage Stats */}
       <UsageCard plan={currentPlan} />
+
+      {/* Export My Data */}
+      <div className="bg-card border border-card-border rounded-xl p-5">
+        <div className="mb-3">
+          <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Download className="w-4 h-4" />
+            Export My Data
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">You own your data. Export anytime, no fees.</p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 text-xs gap-1.5"
+            onClick={() => handleExport("kmef")}
+            disabled={!!exportLoading}
+          >
+            <FileJson className="w-3.5 h-3.5" />
+            {exportLoading === "kmef" ? "Exporting…" : "Export (KMEF)"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 text-xs gap-1.5"
+            onClick={() => handleExport("csv")}
+            disabled={!!exportLoading}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            {exportLoading === "csv" ? "Exporting…" : "Export (CSV)"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 text-xs gap-1.5"
+            onClick={() => handleExport("json")}
+            disabled={!!exportLoading}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            {exportLoading === "json" ? "Exporting…" : "Export (JSON)"}
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground/60 mt-3">
+          KMEF = KIOKU Memory Exchange Format (full data with deliberation rounds, confidence history, and usage).
+          CSV = memories only. JSON = standard export.
+        </p>
+      </div>
 
       {/* Per-op pricing */}
       <div className="bg-card border border-card-border rounded-xl p-5">
