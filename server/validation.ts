@@ -142,6 +142,7 @@ export const deliberateSchema = z.object({
   debateRounds: z.number().int().min(1).max(5).optional(),
   includeHuman: z.boolean().optional(),
   humanName: z.string().max(100).optional(),
+  parentDecisionId: z.string().max(200).optional(),
 });
 
 export const humanInputSchema = z.object({

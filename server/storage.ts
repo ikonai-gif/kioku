@@ -892,16 +892,20 @@ export class Storage implements IStorage {
     status: string; model: string; modelsUsed: string[];
     rounds: any[]; consensus: any | null;
     startedAt: number; completedAt: number | null;
+    parentDecisionId?: string | null;
+    provenanceChain?: string[];
   }) {
     await pool.query(
-      `INSERT INTO kioku_deliberation_sessions (id, room_id, user_id, topic, status, model, models_used, rounds, consensus, started_at, completed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      `INSERT INTO kioku_deliberation_sessions (id, room_id, user_id, topic, status, model, models_used, rounds, consensus, started_at, completed_at, parent_decision_id, provenance_chain)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (id) DO UPDATE SET
          status = EXCLUDED.status,
          models_used = EXCLUDED.models_used,
          rounds = EXCLUDED.rounds,
          consensus = EXCLUDED.consensus,
-         completed_at = EXCLUDED.completed_at`,
+         completed_at = EXCLUDED.completed_at,
+         parent_decision_id = EXCLUDED.parent_decision_id,
+         provenance_chain = EXCLUDED.provenance_chain`,
       [
         session.id, session.roomId, session.userId, session.topic,
         session.status, session.model,
@@ -909,6 +913,8 @@ export class Storage implements IStorage {
         JSON.stringify(session.rounds),
         session.consensus ? JSON.stringify(session.consensus) : null,
         session.startedAt, session.completedAt,
+        session.parentDecisionId || null,
+        JSON.stringify(session.provenanceChain || []),
       ]
     );
   }
@@ -1520,7 +1526,59 @@ export class Storage implements IStorage {
       consensus: row.consensus ? JSON.parse(row.consensus) : null,
       startedAt: Number(row.started_at),
       completedAt: row.completed_at ? Number(row.completed_at) : null,
+      parentDecisionId: row.parent_decision_id || null,
+      provenanceChain: JSON.parse(row.provenance_chain || '[]'),
     };
+  }
+
+  // ── Provenance Chain Queries ──────────────────────────────────────────────
+
+  /** Get all descendants (children, grandchildren, etc.) of a decision */
+  async getDecisionDescendants(sessionId: string): Promise<any[]> {
+    const { rows } = await pool.query(
+      `WITH RECURSIVE descendants AS (
+        SELECT * FROM kioku_deliberation_sessions WHERE parent_decision_id = $1
+        UNION ALL
+        SELECT s.* FROM kioku_deliberation_sessions s
+        INNER JOIN descendants d ON s.parent_decision_id = d.id
+      )
+      SELECT * FROM descendants ORDER BY started_at ASC`,
+      [sessionId]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  /** Get all ancestors (parent, grandparent, etc.) of a decision */
+  async getDecisionAncestors(sessionId: string): Promise<any[]> {
+    const session = await this.getDeliberationSession(sessionId);
+    if (!session || !session.provenanceChain || session.provenanceChain.length === 0) return [];
+    const chain: string[] = session.provenanceChain;
+    if (chain.length === 0) return [];
+    const placeholders = chain.map((_: string, i: number) => `$${i + 1}`).join(',');
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions WHERE id IN (${placeholders}) ORDER BY started_at ASC`,
+      chain
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  /** Get direct children of a decision */
+  async getDecisionChildren(sessionId: string): Promise<any[]> {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions WHERE parent_decision_id = $1 ORDER BY started_at ASC`,
+      [sessionId]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  /** Build a provenance chain for a new decision given a parent session ID */
+  async buildProvenanceChain(parentSessionId: string): Promise<string[]> {
+    const parent = await this.getDeliberationSession(parentSessionId);
+    if (!parent) return [];
+    const parentChain: string[] = parent.provenanceChain || [];
+    // Cap chain length at 50 to prevent unbounded growth
+    const chain = [...parentChain, parentSessionId];
+    return chain.slice(-50);
   }
 
   // ── Stripe Event Idempotency ─────────────────────────────────────────────

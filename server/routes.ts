@@ -6,7 +6,7 @@ import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
-import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount } from "./structured-deliberation";
+import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
@@ -1399,13 +1399,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         code: "PLAN_LIMIT_REACHED",
       });
     }
-    const { topic, model, debateRounds, includeHuman, humanName } = validateBody(deliberateSchema, req.body);
+    const { topic, model, debateRounds, includeHuman, humanName, parentDecisionId } = validateBody(deliberateSchema, req.body);
     try {
       const session = await runDeliberation(roomId, userId, topic, {
         model: model || undefined,
         debateRounds: debateRounds ?? 2,
         includeHuman: includeHuman ?? false,
         humanName: humanName || undefined,
+        parentDecisionId: parentDecisionId || undefined,
       });
       // Meter deliberation usage (non-blocking)
       const roundCount = (session as any).rounds?.length ?? (debateRounds ?? 2) + 2; // position + debate rounds + final
@@ -1477,6 +1478,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const consensus = await getLatestConsensus(Number(req.params.id));
     if (!consensus) return res.status(404).json({ error: "No consensus found" });
     res.json(consensus);
+  }));
+
+  // ── Decision Provenance Chain ─────────────────────────────────
+
+  // Get full provenance chain for a decision (ancestors + descendants)
+  app.get("/api/deliberation/provenance/:decisionId", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const decisionId = String(req.params.decisionId);
+    const result = await getProvenanceChain(decisionId);
+    if (!result) return res.status(404).json({ error: "Decision not found" });
+    // Verify the decision belongs to the user
+    if (result.decision.userId !== userId) return res.status(404).json({ error: "Decision not found" });
+    res.json(result);
+  }));
+
+  // Get provenance tree showing how a decision branched into follow-ups
+  app.get("/api/deliberation/provenance/:decisionId/tree", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const decisionId = String(req.params.decisionId);
+    // First check the decision exists and belongs to user
+    const session = await getSession(decisionId);
+    if (!session) return res.status(404).json({ error: "Decision not found" });
+    if ((session as any).userId !== userId) return res.status(404).json({ error: "Decision not found" });
+    const tree = await getProvenanceTree(decisionId);
+    if (!tree) return res.status(404).json({ error: "Decision not found" });
+    res.json(tree);
   }));
 
   // ── Agent Templates (Onboarding Quick Start) ──────────────────

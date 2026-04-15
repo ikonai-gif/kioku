@@ -355,6 +355,8 @@ export interface DeliberationSession {
   completedAt: number | null;
   model: string; // fallback model
   modelsUsed: string[]; // actual models used by agents
+  parentDecisionId: string | null; // cross-session provenance: ID of the parent decision
+  provenanceChain: string[]; // ordered list of all ancestor decision IDs
 }
 
 export interface ConsensusResult {
@@ -372,13 +374,54 @@ export interface ConsensusResult {
 
 // Sessions now persisted to kioku_deliberation_sessions table (storage.ts CRUD)
 
+// ── Cross-session Provenance Detection ──────────────────────────────
+
+/**
+ * Auto-detect if a deliberation topic references a prior decision.
+ * Checks decision memories (namespace="decisions") for keyword overlap with the topic.
+ * Returns the session ID of the best-matching prior decision, or null.
+ */
+async function autoDetectParentDecision(userId: number, topic: string): Promise<string | null> {
+  try {
+    const topicLower = topic.toLowerCase();
+    const topicWords = topicLower.split(/\s+/).filter(w => w.length > 4);
+    if (topicWords.length === 0) return null;
+
+    // Fetch recent decision memories for this user
+    const { rows } = await (await import("./storage")).pool.query(
+      `SELECT content, context_trigger FROM memories
+       WHERE user_id = $1 AND namespace = 'decisions' AND type = 'procedural'
+       ORDER BY created_at DESC LIMIT 50`,
+      [userId]
+    );
+
+    let bestMatch: { sessionId: string; score: number } | null = null;
+    for (const row of rows) {
+      const trigger = row.context_trigger as string | null;
+      if (!trigger || !trigger.startsWith("deliberation:")) continue;
+      const sessionId = trigger.replace("deliberation:", "");
+      const contentLower = (row.content as string).toLowerCase();
+      const contentWords = contentLower.split(/\s+/).filter((w: string) => w.length > 4);
+      const matches = topicWords.filter(w => contentWords.includes(w));
+      const score = matches.length;
+      // Require at least 3 overlapping meaningful words
+      if (score >= 3 && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { sessionId, score };
+      }
+    }
+    return bestMatch?.sessionId || null;
+  } catch {
+    return null; // Don't break deliberation if auto-detect fails
+  }
+}
+
 // ── Main Entry Point ──────────────────────────────────────────────
 
 export async function runDeliberation(
   roomId: number,
   userId: number,
   topic: string,
-  options?: { model?: string; debateRounds?: number; includeHuman?: boolean; humanName?: string }
+  options?: { model?: string; debateRounds?: number; includeHuman?: boolean; humanName?: string; parentDecisionId?: string }
 ): Promise<DeliberationSession> {
   if (!openai && !GEMINI_API_KEY) throw new Error("No AI provider configured (set OPENAI_API_KEY or GEMINI_API_KEY)");
   if (activeSessions.has(roomId)) throw new Error("Deliberation already running in this room");
@@ -389,6 +432,27 @@ export async function runDeliberation(
   const debateRounds = options?.debateRounds ?? 2;
   const includeHuman = options?.includeHuman ?? false;
   const humanName = options?.humanName || "Human Participant";
+
+  // Build provenance chain if parentDecisionId provided
+  let parentDecisionId: string | null = options?.parentDecisionId || null;
+  let provenanceChain: string[] = [];
+
+  if (parentDecisionId) {
+    // Validate parent exists and belongs to same user
+    const parentSession = await storage.getDeliberationSession(parentDecisionId);
+    if (parentSession && parentSession.userId === userId) {
+      provenanceChain = await storage.buildProvenanceChain(parentDecisionId);
+    } else {
+      // Invalid parent — ignore silently (don't break the deliberation)
+      parentDecisionId = null;
+    }
+  } else {
+    // Auto-detect: check if topic references a prior decision via memory context
+    parentDecisionId = await autoDetectParentDecision(userId, topic);
+    if (parentDecisionId) {
+      provenanceChain = await storage.buildProvenanceChain(parentDecisionId);
+    }
+  }
 
   const session: DeliberationSession = {
     sessionId,
@@ -401,6 +465,8 @@ export async function runDeliberation(
     completedAt: null,
     model: fallbackModel,
     modelsUsed: [],
+    parentDecisionId,
+    provenanceChain,
   };
   // Persist initial session to DB
   await persistSession(session, userId);
@@ -1111,6 +1177,8 @@ async function persistSession(session: DeliberationSession, userId: number) {
     consensus: session.consensus,
     startedAt: session.startedAt,
     completedAt: session.completedAt,
+    parentDecisionId: session.parentDecisionId,
+    provenanceChain: session.provenanceChain,
   });
 }
 
@@ -1126,4 +1194,60 @@ export async function getSessionsByRoom(roomId: number): Promise<DeliberationSes
 
 export async function getLatestConsensus(roomId: number): Promise<ConsensusResult | null> {
   return storage.getLatestConsensus(roomId);
+}
+
+// ── Provenance Chain API ────────────────────────────────────────────
+
+/**
+ * Get the full provenance chain for a decision: all ancestors + all descendants.
+ */
+export async function getProvenanceChain(sessionId: string): Promise<{
+  decision: DeliberationSession;
+  ancestors: DeliberationSession[];
+  descendants: DeliberationSession[];
+} | null> {
+  const decision = await storage.getDeliberationSession(sessionId) as DeliberationSession | undefined;
+  if (!decision) return null;
+
+  const ancestors = await storage.getDecisionAncestors(sessionId) as DeliberationSession[];
+  const descendants = await storage.getDecisionDescendants(sessionId) as DeliberationSession[];
+
+  return { decision, ancestors, descendants };
+}
+
+/**
+ * Get the provenance tree for a decision — shows how it branched into follow-up decisions.
+ */
+export async function getProvenanceTree(sessionId: string): Promise<ProvenanceTreeNode | null> {
+  const decision = await storage.getDeliberationSession(sessionId) as DeliberationSession | undefined;
+  if (!decision) return null;
+
+  return buildProvenanceTree(decision);
+}
+
+export interface ProvenanceTreeNode {
+  sessionId: string;
+  topic: string;
+  status: string;
+  consensus: ConsensusResult | null;
+  startedAt: number;
+  completedAt: number | null;
+  parentDecisionId: string | null;
+  children: ProvenanceTreeNode[];
+}
+
+async function buildProvenanceTree(session: DeliberationSession): Promise<ProvenanceTreeNode> {
+  const children = await storage.getDecisionChildren(session.sessionId) as DeliberationSession[];
+  const childNodes = await Promise.all(children.map(child => buildProvenanceTree(child)));
+
+  return {
+    sessionId: session.sessionId,
+    topic: session.topic,
+    status: session.status,
+    consensus: session.consensus,
+    startedAt: session.startedAt,
+    completedAt: session.completedAt,
+    parentDecisionId: session.parentDecisionId,
+    children: childNodes,
+  };
 }
