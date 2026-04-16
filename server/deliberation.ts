@@ -40,7 +40,7 @@ function getGeminiKey(agent: { llmApiKey?: string | null; llmProvider?: string |
   return GEMINI_API_KEY;
 }
 
-const LLM_TIMEOUT_MS = 45_000;
+const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
 
 // Prevent simultaneous agent responses for same room (simple lock)
 const roomLocks = new Set<number>();
@@ -157,7 +157,7 @@ export async function triggerAgentResponses(
               body: JSON.stringify({
                 systemInstruction: { parts: [{ text: systemPrompt }] },
                 contents: [{ role: "user", parts: [{ text: userMsg }] }],
-                generationConfig: { maxOutputTokens: isPartnerChat ? 600 : 256, temperature: isPartnerChat ? 0.85 : 0.75 },
+                generationConfig: { maxOutputTokens: isPartnerChat ? 800 : 256, temperature: isPartnerChat ? 0.85 : 0.75 },
               }),
             });
             if (resp.ok) {
@@ -174,7 +174,9 @@ export async function triggerAgentResponses(
           const resolvedModel = chatModel.startsWith("gemini-") ? "gpt-4o-mini" : chatModel;
           // gpt-5+ and o-series models have different parameter requirements
           const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
-          const tokenLimit = isPartnerChat ? 600 : 256;
+          // gpt-5-mini uses reasoning tokens (hidden chain-of-thought), so needs higher limit
+          // At 300 tokens, reasoning alone consumes everything leaving no visible reply
+          const tokenLimit = isNewModel ? 2048 : (isPartnerChat ? 600 : 256);
           const completion = await oaiClient.chat.completions.create({
             model: resolvedModel,
             ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
