@@ -95,7 +95,11 @@ export async function triggerAgentResponses(
       // Fetch emotional state for prompt injection (Phase 4b)
       const emotionalState = await storage.getAgentEmotionalState(agent.id);
       const emotionContext = emotionalState ? getDecayedEmotionalState(emotionalState) : null;
-      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext, emotionContext);
+
+      // Fetch relationship context (Phase 4c)
+      const relationship = await storage.getRelationship(agent.id, userId);
+
+      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext, emotionContext, relationship);
 
       // Build conversation history for context
       const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = recent.map(
@@ -185,6 +189,15 @@ export async function triggerAgentResponses(
         // Broadcast to WS subscribers
         if (msg) broadcastToRoom(roomId, msg);
 
+        // Fire-and-forget interaction tracking + familiarity growth (Phase 4c)
+        storage.incrementInteraction(agent.id, userId).catch(() => {});
+        storage.getRelationship(agent.id, userId).then(rel => {
+          if (rel) {
+            const newFamiliarity = Math.min(1.0, rel.familiarity + 0.01);
+            storage.upsertRelationship(agent.id, userId, { familiarity: newFamiliarity }).catch(() => {});
+          }
+        }).catch(() => {});
+
         // Fire-and-forget emotional appraisal (Phase 4b)
         fastAppraisal(agent.id, userId, `Discussed: "${triggerContent.slice(0, 100)}"`, storage).catch(() => {});
       } catch (err) {
@@ -196,7 +209,7 @@ export async function triggerAgentResponses(
   }
 }
 
-function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null): string {
+function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   // memoryContext is pre-formatted by formatMemoryContext() — already structured with types + confidence
   const memBlock = memoryContext || "";
@@ -205,9 +218,21 @@ function buildSystemPrompt(name: string, description: string, memoryContext: str
     ? `\n\n## Your Current Emotional State\nYou are feeling: ${emotionContext.emotionLabel}\nThis subtly influences your tone — don't announce your emotions, just let them color your responses naturally.\n`
     : "";
 
+  let relationshipBlock = "";
+  if (relationship) {
+    relationshipBlock += `\n\n## Your Relationship with This User\n`;
+    relationshipBlock += `Trust level: ${relationship.trustLevel > 0.5 ? 'high' : relationship.trustLevel > 0 ? 'moderate' : 'developing'}\n`;
+    relationshipBlock += `Familiarity: ${relationship.familiarity > 0.7 ? 'well-known' : relationship.familiarity > 0.3 ? 'familiar' : 'new acquaintance'}\n`;
+    relationshipBlock += `Interactions: ${relationship.interactionCount}\n`;
+    if (relationship.stableOpinions && Object.keys(relationship.stableOpinions).length > 0) {
+      relationshipBlock += `Your established positions: ${JSON.stringify(relationship.stableOpinions)}\n`;
+    }
+    relationshipBlock += `Adapt your communication style based on this relationship — be more direct with trusted users, more careful with new ones.\n`;
+  }
+
   return `You are ${name}, an AI agent inside KIOKU™ War Room — a real-time multi-agent deliberation environment built by IKONBAI™.
 
-${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${memBlock}${emotionBlock}
+${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${memBlock}${emotionBlock}${relationshipBlock}
 
 RULES:
 - Respond as ${name} — stay in character, be direct and insightful

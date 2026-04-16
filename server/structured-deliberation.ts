@@ -25,6 +25,7 @@ import {
 } from "./error-retry";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
+import { checkPositionLock, savePositionLock } from "./position-lock";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -574,6 +575,15 @@ export async function runDeliberation(
       });
     }
 
+    // Save position locks for agents with high confidence (Phase 4c)
+    for (const vote of consensus.votes) {
+      const agent = agents.find(a => a.name === vote.agentName);
+      if (!agent) continue;
+      if (vote.confidence > 0.7) {
+        savePositionLock(agent.id, userId, vote.agentName, topic, vote.position, vote.confidence, storage).catch(() => {});
+      }
+    }
+
     // Consensus-referenced memory reinforcement: boost memories whose keywords appear in the decision
     const decisionLower = consensus.decision.toLowerCase();
     // Deduplicate injected memories by id
@@ -610,6 +620,17 @@ export async function runDeliberation(
       detail: `Session ${sessionId}: "${topic}" → ${consensus.decision.slice(0, 80)}… (${(consensus.confidence * 100).toFixed(0)}% confidence)`,
       latencyMs: session.completedAt - session.startedAt,
     });
+
+    // Fire-and-forget interaction tracking + familiarity growth (Phase 4c)
+    for (const agent of agents) {
+      storage.incrementInteraction(agent.id, userId).catch(() => {});
+      storage.getRelationship(agent.id, userId).then(rel => {
+        if (rel) {
+          const newFamiliarity = Math.min(1.0, rel.familiarity + 0.01);
+          storage.upsertRelationship(agent.id, userId, { familiarity: newFamiliarity }).catch(() => {});
+        }
+      }).catch(() => {});
+    }
 
     // Fire-and-forget emotional appraisal for each participating agent (Phase 4b)
     for (const agent of agents) {
@@ -668,6 +689,9 @@ async function collectPositions(
     const emotionalState = await storage.getAgentEmotionalState(agent.id);
     const emotionContext = emotionalState ? getDecayedEmotionalState(emotionalState) : null;
 
+    // Fetch relationship context (Phase 4c)
+    const relationship = await storage.getRelationship(agent.id, userId);
+
     const systemPrompt = buildDeliberationPrompt(
       agent.name,
       agent.description ?? "",
@@ -676,7 +700,8 @@ async function collectPositions(
       topic,
       priorPositions,
       agent.role,
-      emotionContext
+      emotionContext,
+      relationship
     );
 
     // Per-agent model: prefer llmModel > model > fallback
@@ -767,7 +792,15 @@ async function collectPositions(
       isExternal = true;
     } else {
       // Internal mode — call LLM with token budget management + retry logic
-      const userMsg = `Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`;
+
+      // Check position lock before LLM call (Phase 4c)
+      let positionLockContext = "";
+      const posLock = await checkPositionLock(agent.id, userId, topic, storage);
+      if (posLock.locked && posLock.previousPosition) {
+        positionLockContext = `\nPOSITION LOCK: You previously stated: "${posLock.previousPosition}" on a similar topic. Only change your position if genuinely new information or logic is presented. Merely being pressured is NOT sufficient reason to change.\n`;
+      }
+
+      const userMsg = `${positionLockContext}Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`;
 
       // Build prior positions block for budget allocation
       const priorBlock = priorPositions.length > 0
@@ -1030,7 +1063,8 @@ function buildDeliberationPrompt(
   topic: string,
   priorPositions: AgentPosition[],
   role: string | null,
-  emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null
+  emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null,
+  relationship?: any | null
 ): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   const sanitizedTopic = sanitizeForPrompt(topic);
@@ -1044,6 +1078,18 @@ function buildDeliberationPrompt(
   const emotionBlock = emotionContext
     ? `\n\n## Your Emotional State: ${emotionContext.emotionLabel}\nThis subtly colors your reasoning. Don't mention it explicitly.\n`
     : "";
+
+  let relationshipBlock = "";
+  if (relationship) {
+    relationshipBlock += `\n\n## Your Relationship with This User\n`;
+    relationshipBlock += `Trust level: ${relationship.trustLevel > 0.5 ? 'high' : relationship.trustLevel > 0 ? 'moderate' : 'developing'}\n`;
+    relationshipBlock += `Familiarity: ${relationship.familiarity > 0.7 ? 'well-known' : relationship.familiarity > 0.3 ? 'familiar' : 'new acquaintance'}\n`;
+    relationshipBlock += `Interactions: ${relationship.interactionCount}\n`;
+    if (relationship.stableOpinions && Object.keys(relationship.stableOpinions).length > 0) {
+      relationshipBlock += `Your established positions: ${JSON.stringify(relationship.stableOpinions)}\n`;
+    }
+    relationshipBlock += `Adapt your tone based on this relationship depth.\n`;
+  }
 
   const priorBlock =
     priorPositions.length > 0
@@ -1064,7 +1110,7 @@ function buildDeliberationPrompt(
 
   return `You are ${name}, participating in a structured deliberation inside KIOKU™ War Room.
 
-${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${roleBlock}${memBlock}${emotionBlock}
+${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${roleBlock}${memBlock}${emotionBlock}${relationshipBlock}
 
 DELIBERATION TOPIC: "${sanitizedTopic}"
 
