@@ -100,7 +100,27 @@ export async function triggerAgentResponses(
       // Fetch relationship context (Phase 4c)
       const relationship = await storage.getRelationship(agent.id, userId);
 
-      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext, emotionContext, relationship);
+      // Phase 7: Inject knowledge domain context
+      let knowledgeBlock = "";
+      try {
+        const domains = await storage.listKnowledgeDomains(userId);
+        const readyDomains = domains.filter((d: any) => d.status === "ready");
+        if (readyDomains.length > 0) {
+          const knowledgeContext: string[] = [];
+          for (const domain of readyDomains) {
+            const knowledgeMemories = await storage.searchMemories(userId, triggerContent, undefined, `knowledge:${domain.slug}`);
+            const topMemories = knowledgeMemories.slice(0, 3);
+            if (topMemories.length > 0) {
+              knowledgeContext.push(`[${domain.name}]: ${topMemories.map((m: any) => m.content).join(" | ")}`);
+            }
+          }
+          if (knowledgeContext.length > 0) {
+            knowledgeBlock = `\n## Expert Knowledge Available\n${knowledgeContext.join("\n")}\nUse this knowledge to inform your response. Cite specific facts when relevant.\n`;
+          }
+        }
+      } catch { /* knowledge injection is best-effort */ }
+
+      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
       const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = recent.map(

@@ -256,3 +256,23 @@ export const agentRelationships = pgTable("agent_relationships", {
 export const insertAgentRelationshipSchema = createInsertSchema(agentRelationships).omit({ id: true });
 export type InsertAgentRelationship = z.infer<typeof insertAgentRelationshipSchema>;
 export type AgentRelationship = typeof agentRelationships.$inferSelect;
+
+// Phase 7: Knowledge Domains — structured knowledge loaded into memory
+export const knowledgeDomains = pgTable("knowledge_domains", {
+  id:          serial("id").primaryKey(),
+  userId:      integer("user_id").notNull(),
+  name:        text("name").notNull(),
+  slug:        text("slug").notNull(),
+  description: text("description"),
+  category:    text("category").notNull(),              // art, music, fashion, law, construction, beauty, custom
+  chunkCount:  integer("chunk_count").notNull().default(0),
+  status:      text("status").notNull().default("loading"),  // loading, ready, error
+  createdAt:   bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt:   bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => [
+  unique("uq_knowledge_domains_user_slug").on(table.userId, table.slug),
+]);
+
+export const insertKnowledgeDomainSchema = createInsertSchema(knowledgeDomains).omit({ id: true });
+export type InsertKnowledgeDomain = z.infer<typeof insertKnowledgeDomainSchema>;
+export type KnowledgeDomain = typeof knowledgeDomains.$inferSelect;

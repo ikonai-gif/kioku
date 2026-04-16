@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, ilike, or, sql } from "drizzle-orm";
 import {
-  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking,
+  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking, knowledgeDomains,
   type User, type InsertUser,
   type Agent, type InsertAgent,
   type Memory, type InsertMemory,
@@ -13,6 +13,7 @@ import {
   type Log, type InsertLog,
   type MagicToken, type InsertMagicToken,
   type UsageTracking,
+  type KnowledgeDomain, type InsertKnowledgeDomain,
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
@@ -363,6 +364,25 @@ export async function initDb() {
 
   // Phase 4: Emotion vector column on memories
   await pool.query(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS emotion_vector TEXT`);
+
+  // Phase 7: Knowledge Domains — structured knowledge loaded into memory
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS knowledge_domains (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      name        TEXT NOT NULL,
+      slug        TEXT NOT NULL,
+      description TEXT,
+      category    TEXT NOT NULL,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      status      TEXT NOT NULL DEFAULT 'loading',
+      created_at  BIGINT NOT NULL,
+      updated_at  BIGINT NOT NULL,
+      UNIQUE(user_id, slug)
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_domains_user ON knowledge_domains(user_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_domains_user_slug ON knowledge_domains(user_id, slug);
+  `);
 }
 
 function generateApiKey(): string {
@@ -1153,6 +1173,8 @@ export class Storage implements IStorage {
     await pool.query('DELETE FROM kioku_agent_tokens WHERE user_id = $1', [userId]);
     // 10. Webhooks
     await pool.query('DELETE FROM kioku_webhooks WHERE user_id = $1', [userId]);
+    // 10b. Knowledge domains
+    await pool.query('DELETE FROM knowledge_domains WHERE user_id = $1', [userId]);
     // 11. Magic tokens (keyed by email, resolve from user)
     const userRow = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
     if (userRow.rows[0]?.email) {
@@ -1813,6 +1835,101 @@ export class Storage implements IStorage {
         interaction_count = agent_relationships.interaction_count + 1,
         last_interaction_at = $3
     `, [agentId, userId, now]);
+  }
+
+  // ── Phase 7: Knowledge Domains CRUD ──────────────────────────────────────────
+
+  async createKnowledgeDomain(userId: number, data: { name: string; slug: string; category: string; description?: string }): Promise<KnowledgeDomain> {
+    const now = Date.now();
+    const [domain] = await db.insert(knowledgeDomains).values({
+      userId,
+      name: data.name,
+      slug: data.slug,
+      category: data.category,
+      description: data.description || null,
+      chunkCount: 0,
+      status: "loading",
+      createdAt: now,
+      updatedAt: now,
+    }).returning();
+    return domain;
+  }
+
+  async getKnowledgeDomain(userId: number, slug: string): Promise<KnowledgeDomain | undefined> {
+    const result = await pool.query(
+      'SELECT * FROM knowledge_domains WHERE user_id = $1 AND slug = $2 LIMIT 1',
+      [userId, slug]
+    );
+    if (!result.rows[0]) return undefined;
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      userId: r.user_id,
+      name: r.name,
+      slug: r.slug,
+      description: r.description,
+      category: r.category,
+      chunkCount: r.chunk_count,
+      status: r.status,
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
+  }
+
+  async listKnowledgeDomains(userId: number): Promise<KnowledgeDomain[]> {
+    const result = await pool.query(
+      'SELECT * FROM knowledge_domains WHERE user_id = $1 ORDER BY created_at DESC',
+      [userId]
+    );
+    return result.rows.map((r: any) => ({
+      id: r.id,
+      userId: r.user_id,
+      name: r.name,
+      slug: r.slug,
+      description: r.description,
+      category: r.category,
+      chunkCount: r.chunk_count,
+      status: r.status,
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    }));
+  }
+
+  async updateKnowledgeDomain(userId: number, slug: string, updates: { chunkCount?: number; status?: string; updatedAt?: number }): Promise<void> {
+    const sets: string[] = [];
+    const params: any[] = [userId, slug];
+    let idx = 3;
+    if (updates.chunkCount !== undefined) {
+      sets.push(`chunk_count = $${idx++}`);
+      params.push(updates.chunkCount);
+    }
+    if (updates.status !== undefined) {
+      sets.push(`status = $${idx++}`);
+      params.push(updates.status);
+    }
+    if (updates.updatedAt !== undefined) {
+      sets.push(`updated_at = $${idx++}`);
+      params.push(updates.updatedAt);
+    }
+    if (sets.length === 0) return;
+    await pool.query(
+      `UPDATE knowledge_domains SET ${sets.join(', ')} WHERE user_id = $1 AND slug = $2`,
+      params
+    );
+  }
+
+  async deleteKnowledgeDomain(userId: number, slug: string): Promise<boolean> {
+    // Delete all memories in this knowledge namespace
+    await pool.query(
+      `DELETE FROM memories WHERE user_id = $1 AND namespace = $2`,
+      [userId, `knowledge:${slug}`]
+    );
+    // Delete the domain
+    const result = await pool.query(
+      'DELETE FROM knowledge_domains WHERE user_id = $1 AND slug = $2 RETURNING id',
+      [userId, slug]
+    );
+    return result.rows.length > 0;
   }
 }
 

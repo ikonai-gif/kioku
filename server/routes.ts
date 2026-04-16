@@ -2131,6 +2131,269 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(creations);
   }));
 
+  // ── Phase 7: Knowledge Base System ──────────────────────────────
+
+  /** Split text into chunks of ~maxWords, respecting paragraph boundaries */
+  function splitIntoChunks(text: string, maxWords: number = 500): string[] {
+    const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+    const chunks: string[] = [];
+    let current = "";
+
+    for (const para of paragraphs) {
+      const paraWords = para.trim().split(/\s+/).length;
+      const currentWords = current.split(/\s+/).filter(Boolean).length;
+
+      if (currentWords + paraWords > maxWords && current.trim()) {
+        chunks.push(current.trim());
+        current = "";
+      }
+
+      if (paraWords > maxWords) {
+        // Split long paragraphs by sentences
+        if (current.trim()) { chunks.push(current.trim()); current = ""; }
+        const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
+        let sentChunk = "";
+        for (const sent of sentences) {
+          const sentWords = sent.trim().split(/\s+/).length;
+          const chunkWords = sentChunk.split(/\s+/).filter(Boolean).length;
+          if (chunkWords + sentWords > maxWords && sentChunk.trim()) {
+            chunks.push(sentChunk.trim());
+            sentChunk = "";
+          }
+          sentChunk += " " + sent.trim();
+        }
+        if (sentChunk.trim()) current = sentChunk.trim();
+      } else {
+        current += "\n\n" + para.trim();
+      }
+    }
+
+    if (current.trim()) chunks.push(current.trim());
+    return chunks.length > 0 ? chunks : [text.trim()];
+  }
+
+  // POST /api/knowledge/domains — Create a new knowledge domain
+  app.post("/api/knowledge/domains", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { name, slug, category, description } = req.body;
+    if (!name || !slug || !category) return res.status(400).json({ error: "name, slug, and category are required" });
+    if (!/^[a-z0-9_]+$/.test(slug)) return res.status(400).json({ error: "slug must be lowercase alphanumeric with underscores" });
+
+    const validCategories = ["art", "music", "fashion", "law", "construction", "beauty", "custom"];
+    if (!validCategories.includes(category)) return res.status(400).json({ error: `category must be one of: ${validCategories.join(", ")}` });
+
+    try {
+      const domain = await storage.createKnowledgeDomain(userId, { name, slug, category, description });
+      res.status(201).json(domain);
+    } catch (err: any) {
+      if (err.message?.includes("duplicate") || err.code === "23505") {
+        return res.status(409).json({ error: "Domain with this slug already exists" });
+      }
+      throw err;
+    }
+  }));
+
+  // GET /api/knowledge/domains — List all domains for user
+  app.get("/api/knowledge/domains", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const domains = await storage.listKnowledgeDomains(userId);
+    res.json(domains);
+  }));
+
+  // GET /api/knowledge/domains/:slug/status — Get domain loading status
+  app.get("/api/knowledge/domains/:slug/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const domain = await storage.getKnowledgeDomain(userId, req.params.slug);
+    if (!domain) return res.status(404).json({ error: "Domain not found" });
+
+    res.json({ slug: domain.slug, status: domain.status, chunkCount: domain.chunkCount });
+  }));
+
+  // POST /api/knowledge/domains/:slug/load — Load knowledge into a domain
+  app.post("/api/knowledge/domains/:slug/load", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { slug } = req.params;
+    const { content, chunks } = req.body;
+
+    if (!content && !chunks) return res.status(400).json({ error: "content or chunks required" });
+
+    const domain = await storage.getKnowledgeDomain(userId, slug);
+    if (!domain) return res.status(404).json({ error: "Domain not found" });
+
+    // Respond immediately
+    res.json({ status: "loading", message: "Knowledge is being processed" });
+
+    // Find primary agent for memory storage
+    const userAgents = await storage.getAgents(userId);
+    const primaryAgent = userAgents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || userAgents[0];
+
+    // Process in background
+    (async () => {
+      try {
+        const textChunks = chunks || splitIntoChunks(content, 500);
+        let loaded = 0;
+
+        for (const chunk of textChunks) {
+          await storage.createMemory({
+            userId,
+            agentId: primaryAgent?.id || null,
+            content: chunk,
+            type: "semantic",
+            importance: 0.9,
+            namespace: `knowledge:${slug}`,
+          });
+          loaded++;
+        }
+
+        await storage.updateKnowledgeDomain(userId, slug, {
+          chunkCount: loaded,
+          status: "ready",
+          updatedAt: Date.now(),
+        });
+      } catch (error) {
+        logger.error({ source: "knowledge-load", error }, "knowledge loading failed");
+        await storage.updateKnowledgeDomain(userId, slug, {
+          status: "error",
+          updatedAt: Date.now(),
+        });
+      }
+    })();
+  }));
+
+  // POST /api/knowledge/domains/:slug/generate — Generate knowledge from template using LLM
+  app.post("/api/knowledge/domains/:slug/generate", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { slug } = req.params;
+    const domain = await storage.getKnowledgeDomain(userId, slug);
+    if (!domain) return res.status(404).json({ error: "Domain not found" });
+
+    const DOMAIN_TEMPLATES: Record<string, { name: string; generatePrompt: string }> = {
+      art_history: {
+        name: "Art History",
+        generatePrompt: "Generate a comprehensive overview of art history covering: cave paintings, ancient Egyptian, Greek/Roman classical, Byzantine, Renaissance, Baroque, Romanticism, Impressionism, Post-Impressionism, Expressionism, Cubism, Surrealism, Abstract Expressionism, Pop Art, Minimalism, Contemporary, Digital Art. For each: key artists, techniques, cultural context, key works, influence on later movements. ~3000 words total.",
+      },
+      music_history: {
+        name: "Music History",
+        generatePrompt: "Generate a comprehensive overview of music history: Gregorian chant, Renaissance polyphony, Baroque (Bach, Vivaldi), Classical (Mozart, Beethoven), Romantic (Chopin, Wagner), Impressionism (Debussy), Jazz origins and evolution, Blues, Rock and Roll, Soul/Funk, Punk, Hip-Hop, Electronic, Contemporary/AI music. For each: key figures, innovations, cultural context, influence. ~3000 words.",
+      },
+      music_theory: {
+        name: "Music Theory",
+        generatePrompt: "Generate a comprehensive music theory reference: scales (major, minor, modes, pentatonic, blues), intervals, chords (triads, 7ths, extended, altered), chord progressions (common patterns, ii-V-I, circle of fifths), rhythm (time signatures, syncopation, polyrhythm), song structure (verse/chorus/bridge, AABA, 12-bar blues), arrangement basics, harmony vs melody. ~2000 words.",
+      },
+      fashion_history: {
+        name: "Fashion History",
+        generatePrompt: "Generate a comprehensive fashion history: ancient civilizations, Medieval/Renaissance, 18th century (Marie Antoinette), Victorian era, Art Nouveau/Art Deco, 1920s flapper, 1950s New Look (Dior), 1960s mod/hippie, 1970s punk/disco, 1980s power dressing, 1990s grunge/minimalism, 2000s-2020s streetwear/sustainable fashion. Key designers: Chanel, Dior, YSL, Versace, McQueen, Balenciaga, Virgil Abloh. ~3000 words.",
+      },
+      hairstyle_history: {
+        name: "Hairstyle History",
+        generatePrompt: "Generate comprehensive hairstyle history: ancient Egypt (wigs, braids), Greek/Roman, Medieval, Renaissance, Baroque (powdered wigs), Victorian (elaborate updos), 1920s bob, 1950s pompadour/pin curls, 1960s beehive, 1970s afro/disco, 1980s big hair, 1990s grunge, 2000s-2020s trends. Cultural significance of hair in different societies. Techniques evolution. ~2000 words.",
+      },
+      contemporary_art: {
+        name: "Contemporary Art 2020-2026",
+        generatePrompt: "Generate overview of contemporary art 2020-2026: major exhibitions, auction records, emerging artists, NFT art rise and evolution, AI-generated art debate, key galleries (Gagosian, Pace, Hauser & Wirth), art fairs (Art Basel, Frieze), street art evolution, digital art platforms, art market trends, key controversies. ~2000 words.",
+      },
+    };
+
+    const template = DOMAIN_TEMPLATES[slug];
+    if (!template) return res.status(400).json({ error: "No template available for this slug. Available: " + Object.keys(DOMAIN_TEMPLATES).join(", ") });
+
+    // Respond immediately
+    res.json({ status: "generating", message: "Generating knowledge from template..." });
+
+    // Generate in background
+    (async () => {
+      try {
+        const OpenAI = (await import("openai")).default;
+        const openai = new OpenAI();
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "You are a knowledge base generator. Produce comprehensive, well-structured educational content. Use clear headings and paragraphs." },
+            { role: "user", content: template.generatePrompt },
+          ],
+          temperature: 0.7,
+          max_tokens: 4000,
+        });
+
+        const generatedContent = response.choices[0]?.message?.content || "";
+        if (!generatedContent) {
+          await storage.updateKnowledgeDomain(userId, slug, { status: "error", updatedAt: Date.now() });
+          return;
+        }
+
+        // Load generated content as chunks
+        const textChunks = splitIntoChunks(generatedContent, 500);
+        const userAgents = await storage.getAgents(userId);
+        const primaryAgent = userAgents.find((a: any) =>
+          a.name.toLowerCase().includes("agent o") ||
+          a.name.toLowerCase().includes("partner")
+        ) || userAgents[0];
+
+        let loaded = 0;
+        for (const chunk of textChunks) {
+          await storage.createMemory({
+            userId,
+            agentId: primaryAgent?.id || null,
+            content: chunk,
+            type: "semantic",
+            importance: 0.9,
+            namespace: `knowledge:${slug}`,
+          });
+          loaded++;
+        }
+
+        await storage.updateKnowledgeDomain(userId, slug, {
+          chunkCount: loaded,
+          status: "ready",
+          updatedAt: Date.now(),
+        });
+      } catch (error) {
+        logger.error({ source: "knowledge-generate", error }, "knowledge generation failed");
+        await storage.updateKnowledgeDomain(userId, slug, { status: "error", updatedAt: Date.now() });
+      }
+    })();
+  }));
+
+  // DELETE /api/knowledge/domains/:slug — Delete domain and its memories
+  app.delete("/api/knowledge/domains/:slug", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const deleted = await storage.deleteKnowledgeDomain(userId, req.params.slug);
+    if (!deleted) return res.status(404).json({ error: "Domain not found" });
+
+    res.json({ ok: true, message: "Domain and associated knowledge deleted" });
+  }));
+
+  // GET /api/knowledge/templates — List available domain templates
+  app.get("/api/knowledge/templates", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const templates = [
+      { slug: "art_history", name: "Art History", category: "art", description: "Complete history of visual arts from cave paintings to contemporary" },
+      { slug: "music_history", name: "Music History", category: "music", description: "From Gregorian chant to AI-generated music" },
+      { slug: "music_theory", name: "Music Theory", category: "music", description: "Scales, chords, progressions, rhythm, and song structure" },
+      { slug: "fashion_history", name: "Fashion History", category: "fashion", description: "Fashion evolution from ancient civilizations to sustainable fashion" },
+      { slug: "hairstyle_history", name: "Hairstyle History", category: "beauty", description: "Cultural significance and evolution of hairstyles through history" },
+      { slug: "contemporary_art", name: "Contemporary Art 2020-2026", category: "art", description: "NFTs, AI art, major exhibitions, emerging artists" },
+    ];
+    res.json(templates);
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {

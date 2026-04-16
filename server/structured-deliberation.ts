@@ -693,10 +693,30 @@ async function collectPositions(
     // Fetch relationship context (Phase 4c)
     const relationship = await storage.getRelationship(agent.id, userId);
 
+    // Phase 7: Inject knowledge domain context
+    let knowledgeBlock = "";
+    try {
+      const domains = await storage.listKnowledgeDomains(userId);
+      const readyDomains = domains.filter((d: any) => d.status === "ready");
+      if (readyDomains.length > 0) {
+        const knowledgeContext: string[] = [];
+        for (const domain of readyDomains) {
+          const knowledgeMemories = await storage.searchMemories(userId, topic, undefined, `knowledge:${domain.slug}`);
+          const topMemories = knowledgeMemories.slice(0, 3);
+          if (topMemories.length > 0) {
+            knowledgeContext.push(`[${domain.name}]: ${topMemories.map((m: any) => m.content).join(" | ")}`);
+          }
+        }
+        if (knowledgeContext.length > 0) {
+          knowledgeBlock = `\n## Expert Knowledge Available\n${knowledgeContext.join("\n")}\nUse this knowledge to inform your analysis. Cite specific facts when relevant.\n`;
+        }
+      }
+    } catch { /* knowledge injection is best-effort */ }
+
     const systemPrompt = buildDeliberationPrompt(
       agent.name,
       agent.description ?? "",
-      memoryContext,
+      memoryContext + knowledgeBlock,
       phase,
       topic,
       priorPositions,
