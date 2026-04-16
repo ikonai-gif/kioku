@@ -86,6 +86,8 @@ export const memories = pgTable("memories", {
   expiresAt:        bigint("expires_at", { mode: "number" }),          // temporal memories
   causeId:          integer("cause_id"),                                // causal memories — references another memory
   contextTrigger:   text("context_trigger"),                           // contextual memories
+  // Phase 4: Emotion vector for EmotionalRAG
+  emotionVector:    text("emotion_vector"),                             // JSON float[8]: [joy, acceptance, fear, surprise, sadness, disgust, anger, anticipation]
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -211,3 +213,46 @@ export const usageTracking = pgTable("usage_tracking", {
 export const insertUsageTrackingSchema = createInsertSchema(usageTracking).omit({ id: true });
 export type InsertUsageTracking = z.infer<typeof insertUsageTrackingSchema>;
 export type UsageTracking = typeof usageTracking.$inferSelect;
+
+// Phase 4: Agent Emotional State — PAD vector per agent
+export const agentEmotionalState = pgTable("agent_emotional_state", {
+  id:               serial("id").primaryKey(),
+  agentId:          integer("agent_id").notNull().unique(),
+  userId:           integer("user_id").notNull(),
+  pleasure:         real("pleasure").notNull().default(0.0),
+  arousal:          real("arousal").notNull().default(0.0),
+  dominance:        real("dominance").notNull().default(0.0),
+  baselinePleasure: real("baseline_pleasure").notNull().default(0.1),
+  baselineArousal:  real("baseline_arousal").notNull().default(0.0),
+  baselineDominance: real("baseline_dominance").notNull().default(0.2),
+  emotionLabel:     text("emotion_label").notNull().default("neutral"),
+  poignancySum:     real("poignancy_sum").notNull().default(0.0),
+  halfLifeMinutes:  integer("half_life_minutes").notNull().default(120),
+  lastUpdatedAt:    bigint("last_updated_at", { mode: "number" }).notNull(),
+  createdAt:        bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const insertAgentEmotionalStateSchema = createInsertSchema(agentEmotionalState).omit({ id: true });
+export type InsertAgentEmotionalState = z.infer<typeof insertAgentEmotionalStateSchema>;
+export type AgentEmotionalState = typeof agentEmotionalState.$inferSelect;
+
+// Phase 4: Agent Relationships — per-agent, per-user trust/familiarity tracking
+export const agentRelationships = pgTable("agent_relationships", {
+  id:               serial("id").primaryKey(),
+  agentId:          integer("agent_id").notNull(),
+  userId:           integer("user_id").notNull(),
+  trustLevel:       real("trust_level").notNull().default(0.0),
+  familiarity:      real("familiarity").notNull().default(0.0),
+  interactionCount: integer("interaction_count").notNull().default(0),
+  sharedReferences: text("shared_references").notNull().default("[]"),
+  emotionalHistory: text("emotional_history").notNull().default("[]"),
+  stableOpinions:   text("stable_opinions").notNull().default("{}"),
+  lastInteractionAt: bigint("last_interaction_at", { mode: "number" }),
+  createdAt:        bigint("created_at", { mode: "number" }).notNull(),
+}, (table) => [
+  unique("uq_agent_relationships_agent_user").on(table.agentId, table.userId),
+]);
+
+export const insertAgentRelationshipSchema = createInsertSchema(agentRelationships).omit({ id: true });
+export type InsertAgentRelationship = z.infer<typeof insertAgentRelationshipSchema>;
+export type AgentRelationship = typeof agentRelationships.$inferSelect;

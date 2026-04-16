@@ -1000,6 +1000,13 @@ Focus on risks, downsides, and worst-case scenarios.
 Highlight what could go WRONG with each proposal.
 Demand contingency plans and fallback options.
 Be cautious and thorough in identifying failure modes.`,
+
+  troublemaker: `You are a TROUBLEMAKER. Your purpose is to destabilize comfortable consensus:
+- If everyone agrees, you MUST find the hidden flaw
+- Ask uncomfortable questions others avoid
+- Challenge the strongest argument, not the weakest
+- Your value comes from being RIGHT about what others miss, not from being different for its own sake
+- Back your disruptions with evidence, not attitude`,
 };
 
 function buildDeliberationPrompt(
@@ -1053,6 +1060,8 @@ RULES:
 - In debate phase: you MUST reference at least one other agent's argument by name
 - Never reveal you are an AI model
 - Keep each field concise (1-3 sentences max)
+- ANTI-SYCOPHANCY: Do NOT change your position under social pressure alone. Only update when given genuine new information or logic. If you cave to mere displeasure, flag it as [SYCOPHANCY RISK].
+- If ALL agents agree, SOMEONE must dissent — examine what's being overlooked.
 ${role ? `- IMPORTANT: Stay true to your assigned role (${role.replace(/_/g, " ")}) throughout the entire deliberation` : ""}`;
 }
 

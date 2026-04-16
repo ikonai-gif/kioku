@@ -317,6 +317,51 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_stripe_events_stripe_id ON stripe_events(stripe_event_id);
   `);
+
+  // Phase 4: Emotional architecture — PAD state per agent
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_emotional_state (
+      id                   SERIAL PRIMARY KEY,
+      agent_id             INTEGER NOT NULL UNIQUE,
+      user_id              INTEGER NOT NULL,
+      pleasure             REAL NOT NULL DEFAULT 0.0,
+      arousal              REAL NOT NULL DEFAULT 0.0,
+      dominance            REAL NOT NULL DEFAULT 0.0,
+      baseline_pleasure    REAL NOT NULL DEFAULT 0.1,
+      baseline_arousal     REAL NOT NULL DEFAULT 0.0,
+      baseline_dominance   REAL NOT NULL DEFAULT 0.2,
+      emotion_label        TEXT NOT NULL DEFAULT 'neutral',
+      poignancy_sum        REAL NOT NULL DEFAULT 0.0,
+      half_life_minutes    INTEGER NOT NULL DEFAULT 120,
+      last_updated_at      BIGINT NOT NULL,
+      created_at           BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_emotional_state_agent ON agent_emotional_state(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_emotional_state_user ON agent_emotional_state(user_id);
+  `);
+
+  // Phase 4: Relationship state per agent-user pair
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_relationships (
+      id                 SERIAL PRIMARY KEY,
+      agent_id           INTEGER NOT NULL,
+      user_id            INTEGER NOT NULL,
+      trust_level        REAL NOT NULL DEFAULT 0.0,
+      familiarity        REAL NOT NULL DEFAULT 0.0,
+      interaction_count  INTEGER NOT NULL DEFAULT 0,
+      shared_references  TEXT NOT NULL DEFAULT '[]',
+      emotional_history  TEXT NOT NULL DEFAULT '[]',
+      stable_opinions    TEXT NOT NULL DEFAULT '{}',
+      last_interaction_at BIGINT,
+      created_at         BIGINT NOT NULL,
+      UNIQUE(agent_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_relationships_agent_user ON agent_relationships(agent_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_relationships_user ON agent_relationships(user_id);
+  `);
+
+  // Phase 4: Emotion vector column on memories
+  await pool.query(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS emotion_vector TEXT`);
 }
 
 function generateApiKey(): string {
@@ -1079,9 +1124,12 @@ export class Storage implements IStorage {
     // Delete in order respecting foreign key dependencies
     // 1. Memory links (references memories)
     await pool.query('DELETE FROM memory_links WHERE user_id = $1', [userId]);
-    // 2. Memories
+    // 2. Emotional state + relationships (references agents)
+    await pool.query('DELETE FROM agent_emotional_state WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM agent_relationships WHERE user_id = $1', [userId]);
+    // 3. Memories
     await pool.query('DELETE FROM memories WHERE user_id = $1', [userId]);
-    // 3. Room messages (references rooms)
+    // 4. Room messages (references rooms)
     await pool.query('DELETE FROM room_messages WHERE room_id IN (SELECT id FROM rooms WHERE user_id = $1)', [userId]);
     // 4. Rooms
     await pool.query('DELETE FROM rooms WHERE user_id = $1', [userId]);
@@ -1602,6 +1650,161 @@ export class Storage implements IStorage {
       'UPDATE stripe_events SET status = $1, error = $2 WHERE stripe_event_id = $3',
       [status, error || null, stripeEventId]
     );
+  }
+
+  // ── Phase 4: Agent Emotional State CRUD ─────────────────────────────────────
+
+  async getAgentEmotionalState(agentId: number): Promise<any | undefined> {
+    const result = await pool.query(
+      'SELECT * FROM agent_emotional_state WHERE agent_id = $1',
+      [agentId]
+    );
+    if (result.rows.length === 0) return undefined;
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      agentId: r.agent_id,
+      userId: r.user_id,
+      pleasure: r.pleasure,
+      arousal: r.arousal,
+      dominance: r.dominance,
+      baselinePleasure: r.baseline_pleasure,
+      baselineArousal: r.baseline_arousal,
+      baselineDominance: r.baseline_dominance,
+      emotionLabel: r.emotion_label,
+      poignancySum: r.poignancy_sum,
+      halfLifeMinutes: r.half_life_minutes,
+      lastUpdatedAt: Number(r.last_updated_at),
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  async upsertAgentEmotionalState(agentId: number, userId: number, state: {
+    pleasure?: number; arousal?: number; dominance?: number;
+    baselinePleasure?: number; baselineArousal?: number; baselineDominance?: number;
+    emotionLabel?: string; poignancySum?: number; halfLifeMinutes?: number;
+  }): Promise<any> {
+    const now = Date.now();
+    const result = await pool.query(`
+      INSERT INTO agent_emotional_state (agent_id, user_id, pleasure, arousal, dominance,
+        baseline_pleasure, baseline_arousal, baseline_dominance, emotion_label,
+        poignancy_sum, half_life_minutes, last_updated_at, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+      ON CONFLICT (agent_id) DO UPDATE SET
+        pleasure = COALESCE($3, agent_emotional_state.pleasure),
+        arousal = COALESCE($4, agent_emotional_state.arousal),
+        dominance = COALESCE($5, agent_emotional_state.dominance),
+        baseline_pleasure = COALESCE($6, agent_emotional_state.baseline_pleasure),
+        baseline_arousal = COALESCE($7, agent_emotional_state.baseline_arousal),
+        baseline_dominance = COALESCE($8, agent_emotional_state.baseline_dominance),
+        emotion_label = COALESCE($9, agent_emotional_state.emotion_label),
+        poignancy_sum = COALESCE($10, agent_emotional_state.poignancy_sum),
+        half_life_minutes = COALESCE($11, agent_emotional_state.half_life_minutes),
+        last_updated_at = $12
+      RETURNING *
+    `, [
+      agentId, userId,
+      state.pleasure ?? 0.0, state.arousal ?? 0.0, state.dominance ?? 0.0,
+      state.baselinePleasure ?? 0.1, state.baselineArousal ?? 0.0, state.baselineDominance ?? 0.2,
+      state.emotionLabel ?? 'neutral', state.poignancySum ?? 0.0,
+      state.halfLifeMinutes ?? 120, now,
+    ]);
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      agentId: r.agent_id,
+      userId: r.user_id,
+      pleasure: r.pleasure,
+      arousal: r.arousal,
+      dominance: r.dominance,
+      baselinePleasure: r.baseline_pleasure,
+      baselineArousal: r.baseline_arousal,
+      baselineDominance: r.baseline_dominance,
+      emotionLabel: r.emotion_label,
+      poignancySum: r.poignancy_sum,
+      halfLifeMinutes: r.half_life_minutes,
+      lastUpdatedAt: Number(r.last_updated_at),
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  // ── Phase 4: Agent Relationships CRUD ───────────────────────────────────────
+
+  async getRelationship(agentId: number, userId: number): Promise<any | undefined> {
+    const result = await pool.query(
+      'SELECT * FROM agent_relationships WHERE agent_id = $1 AND user_id = $2',
+      [agentId, userId]
+    );
+    if (result.rows.length === 0) return undefined;
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      agentId: r.agent_id,
+      userId: r.user_id,
+      trustLevel: r.trust_level,
+      familiarity: r.familiarity,
+      interactionCount: r.interaction_count,
+      sharedReferences: JSON.parse(r.shared_references || '[]'),
+      emotionalHistory: JSON.parse(r.emotional_history || '[]'),
+      stableOpinions: JSON.parse(r.stable_opinions || '{}'),
+      lastInteractionAt: r.last_interaction_at ? Number(r.last_interaction_at) : null,
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  async upsertRelationship(agentId: number, userId: number, updates: {
+    trustLevel?: number; familiarity?: number; interactionCount?: number;
+    sharedReferences?: any[]; emotionalHistory?: any[]; stableOpinions?: Record<string, any>;
+  }): Promise<any> {
+    const now = Date.now();
+    const result = await pool.query(`
+      INSERT INTO agent_relationships (agent_id, user_id, trust_level, familiarity,
+        interaction_count, shared_references, emotional_history, stable_opinions,
+        last_interaction_at, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+      ON CONFLICT (agent_id, user_id) DO UPDATE SET
+        trust_level = COALESCE($3, agent_relationships.trust_level),
+        familiarity = COALESCE($4, agent_relationships.familiarity),
+        interaction_count = COALESCE($5, agent_relationships.interaction_count),
+        shared_references = COALESCE($6, agent_relationships.shared_references),
+        emotional_history = COALESCE($7, agent_relationships.emotional_history),
+        stable_opinions = COALESCE($8, agent_relationships.stable_opinions),
+        last_interaction_at = $9
+      RETURNING *
+    `, [
+      agentId, userId,
+      updates.trustLevel ?? 0.0, updates.familiarity ?? 0.0,
+      updates.interactionCount ?? 0,
+      JSON.stringify(updates.sharedReferences ?? []),
+      JSON.stringify(updates.emotionalHistory ?? []),
+      JSON.stringify(updates.stableOpinions ?? {}),
+      now,
+    ]);
+    const r = result.rows[0];
+    return {
+      id: r.id,
+      agentId: r.agent_id,
+      userId: r.user_id,
+      trustLevel: r.trust_level,
+      familiarity: r.familiarity,
+      interactionCount: r.interaction_count,
+      sharedReferences: JSON.parse(r.shared_references || '[]'),
+      emotionalHistory: JSON.parse(r.emotional_history || '[]'),
+      stableOpinions: JSON.parse(r.stable_opinions || '{}'),
+      lastInteractionAt: r.last_interaction_at ? Number(r.last_interaction_at) : null,
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  async incrementInteraction(agentId: number, userId: number): Promise<void> {
+    const now = Date.now();
+    await pool.query(`
+      INSERT INTO agent_relationships (agent_id, user_id, interaction_count, last_interaction_at, created_at)
+      VALUES ($1, $2, 1, $3, $3)
+      ON CONFLICT (agent_id, user_id) DO UPDATE SET
+        interaction_count = agent_relationships.interaction_count + 1,
+        last_interaction_at = $3
+    `, [agentId, userId, now]);
   }
 }
 

@@ -359,7 +359,7 @@ describe("sanitizeForPrompt (logic test)", () => {
 });
 
 describe("ROLE_INSTRUCTIONS coverage", () => {
-  // Validate all 6 roles exist and have non-empty instructions
+  // Validate all 7 roles exist and have non-empty instructions
   const ROLE_INSTRUCTIONS: Record<string, string> = {
     devils_advocate: `YOUR ROLE: Devil's Advocate.`,
     contrarian: `YOUR ROLE: Contrarian.`,
@@ -367,16 +367,18 @@ describe("ROLE_INSTRUCTIONS coverage", () => {
     analyst: `YOUR ROLE: Analyst.`,
     optimist: `YOUR ROLE: Optimist.`,
     pessimist: `YOUR ROLE: Pessimist.`,
+    troublemaker: `You are a TROUBLEMAKER.`,
   };
 
-  it("has all 6 deliberation roles defined", () => {
-    expect(Object.keys(ROLE_INSTRUCTIONS)).toHaveLength(6);
+  it("has all 7 deliberation roles defined", () => {
+    expect(Object.keys(ROLE_INSTRUCTIONS)).toHaveLength(7);
     expect(ROLE_INSTRUCTIONS).toHaveProperty("devils_advocate");
     expect(ROLE_INSTRUCTIONS).toHaveProperty("contrarian");
     expect(ROLE_INSTRUCTIONS).toHaveProperty("mediator");
     expect(ROLE_INSTRUCTIONS).toHaveProperty("analyst");
     expect(ROLE_INSTRUCTIONS).toHaveProperty("optimist");
     expect(ROLE_INSTRUCTIONS).toHaveProperty("pessimist");
+    expect(ROLE_INSTRUCTIONS).toHaveProperty("troublemaker");
   });
 
   it("each role has non-empty instructions", () => {
