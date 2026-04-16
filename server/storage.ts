@@ -16,6 +16,7 @@ import {
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
+import { scoreEmotion } from "./emotion-scorer";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const dbUrl = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku";
@@ -670,6 +671,13 @@ export class Storage implements IStorage {
         }
       } catch { /* embedding_vec will be null — text search fallback */ }
     }
+
+    // Fire-and-forget emotion scoring (Phase 4b)
+    scoreEmotion(data.content).then(async (emotionVec) => {
+      if (emotionVec && mem.id) {
+        await pool.query('UPDATE memories SET emotion_vector = $1 WHERE id = $2', [JSON.stringify(emotionVec), mem.id]);
+      }
+    }).catch(() => {});
 
     if (data.agentId) {
       const agent = await this.getAgent(data.agentId);

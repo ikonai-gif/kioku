@@ -10,6 +10,8 @@ import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToRoom } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
+import { fastAppraisal } from "./fast-appraisal";
+import { getDecayedEmotionalState } from "./emotional-state";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -90,7 +92,10 @@ export async function triggerAgentResponses(
       // Reinforce accessed memories (fire-and-forget)
       reinforceAccessedMemories(userId, injectedMemories);
 
-      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext);
+      // Fetch emotional state for prompt injection (Phase 4b)
+      const emotionalState = await storage.getAgentEmotionalState(agent.id);
+      const emotionContext = emotionalState ? getDecayedEmotionalState(emotionalState) : null;
+      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext, emotionContext);
 
       // Build conversation history for context
       const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = recent.map(
@@ -179,6 +184,9 @@ export async function triggerAgentResponses(
 
         // Broadcast to WS subscribers
         if (msg) broadcastToRoom(roomId, msg);
+
+        // Fire-and-forget emotional appraisal (Phase 4b)
+        fastAppraisal(agent.id, userId, `Discussed: "${triggerContent.slice(0, 100)}"`, storage).catch(() => {});
       } catch (err) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
       }
@@ -188,14 +196,18 @@ export async function triggerAgentResponses(
   }
 }
 
-function buildSystemPrompt(name: string, description: string, memoryContext: string): string {
+function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   // memoryContext is pre-formatted by formatMemoryContext() — already structured with types + confidence
   const memBlock = memoryContext || "";
 
+  const emotionBlock = emotionContext
+    ? `\n\n## Your Current Emotional State\nYou are feeling: ${emotionContext.emotionLabel}\nThis subtly influences your tone — don't announce your emotions, just let them color your responses naturally.\n`
+    : "";
+
   return `You are ${name}, an AI agent inside KIOKU™ War Room — a real-time multi-agent deliberation environment built by IKONBAI™.
 
-${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${memBlock}
+${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${memBlock}${emotionBlock}
 
 RULES:
 - Respond as ${name} — stay in character, be direct and insightful

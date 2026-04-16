@@ -23,6 +23,8 @@ import {
   withRetry, checkCircuitBreaker, formatErrorLog,
   type ClassifiedError, type RetryResult, type AgentErrorLog,
 } from "./error-retry";
+import { fastAppraisal } from "./fast-appraisal";
+import { getDecayedEmotionalState } from "./emotional-state";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -609,6 +611,12 @@ export async function runDeliberation(
       latencyMs: session.completedAt - session.startedAt,
     });
 
+    // Fire-and-forget emotional appraisal for each participating agent (Phase 4b)
+    for (const agent of agents) {
+      const vote = consensus.votes.find((v: any) => v.agentName === agent.name);
+      fastAppraisal(agent.id, userId, `Deliberation on "${topic.slice(0, 100)}". Position: "${vote?.position?.slice(0, 100) || 'unknown'}"`, storage).catch(() => {});
+    }
+
     return session;
   } catch (err) {
     session.status = "failed";
@@ -656,6 +664,10 @@ async function collectPositions(
     // Reinforce accessed memories (fire-and-forget)
     reinforceAccessedMemories(userId, injectedMemories);
 
+    // Fetch emotional state for prompt injection (Phase 4b)
+    const emotionalState = await storage.getAgentEmotionalState(agent.id);
+    const emotionContext = emotionalState ? getDecayedEmotionalState(emotionalState) : null;
+
     const systemPrompt = buildDeliberationPrompt(
       agent.name,
       agent.description ?? "",
@@ -663,7 +675,8 @@ async function collectPositions(
       phase,
       topic,
       priorPositions,
-      agent.role
+      agent.role,
+      emotionContext
     );
 
     // Per-agent model: prefer llmModel > model > fallback
@@ -1016,7 +1029,8 @@ function buildDeliberationPrompt(
   phase: "position" | "debate" | "final",
   topic: string,
   priorPositions: AgentPosition[],
-  role: string | null
+  role: string | null,
+  emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null
 ): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   const sanitizedTopic = sanitizeForPrompt(topic);
@@ -1025,6 +1039,10 @@ function buildDeliberationPrompt(
 
   const roleBlock = role && ROLE_INSTRUCTIONS[role]
     ? `\n\n${ROLE_INSTRUCTIONS[role]}`
+    : "";
+
+  const emotionBlock = emotionContext
+    ? `\n\n## Your Emotional State: ${emotionContext.emotionLabel}\nThis subtly colors your reasoning. Don't mention it explicitly.\n`
     : "";
 
   const priorBlock =
@@ -1046,7 +1064,7 @@ function buildDeliberationPrompt(
 
   return `You are ${name}, participating in a structured deliberation inside KIOKU™ War Room.
 
-${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${roleBlock}${memBlock}
+${sanitizedDesc ? `About you: ${sanitizedDesc}` : ""}${roleBlock}${memBlock}${emotionBlock}
 
 DELIBERATION TOPIC: "${sanitizedTopic}"
 

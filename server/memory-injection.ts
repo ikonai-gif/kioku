@@ -15,6 +15,22 @@ export interface InjectedMemory {
   type: string;
   confidence: number;
   expiresAt?: number | null;
+  emotionVector?: string | null;
+}
+
+/**
+ * Cosine similarity between two numeric vectors.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom === 0 ? 0 : dot / denom;
 }
 
 /**
@@ -26,7 +42,8 @@ export async function fetchRelevantMemories(
   userId: number,
   agentId: number,
   topic: string,
-  limit: number = 10
+  limit: number = 10,
+  currentEmotionVector?: number[] | null
 ): Promise<InjectedMemory[]> {
   // Fetch all user memories (includes all agents + shared)
   const allMemories = await storage.getMemories(userId, 500);
@@ -69,7 +86,18 @@ export async function fetchRelevantMemories(
       const nsBoost = m.namespace === "decisions" ? 1.3 : 1.0;
 
       // Combined score: relevance * confidence * importance * boosts
-      const score = textRelevance * currentConfidence * (m.importance ?? 0.5) * typeBoost * nsBoost;
+      let score = textRelevance * currentConfidence * (m.importance ?? 0.5) * typeBoost * nsBoost;
+
+      // Emotional similarity boost (Phase 4b — EmotionalRAG)
+      if (m.emotionVector && currentEmotionVector) {
+        try {
+          const memEmoVec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
+          if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
+            const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
+            score *= (1 + emotionSim * 0.2); // 20% boost for emotionally similar memories
+          }
+        } catch { /* ignore parse errors */ }
+      }
 
       return {
         id: m.id,
@@ -77,6 +105,7 @@ export async function fetchRelevantMemories(
         type: m.type,
         confidence: Math.round(currentConfidence * 100) / 100,
         expiresAt: m.expiresAt,
+        emotionVector: m.emotionVector ?? null,
         score,
       };
     })
@@ -94,11 +123,23 @@ export async function fetchRelevantMemories(
 export function formatMemoryContext(memories: InjectedMemory[]): string {
   if (memories.length === 0) return "";
 
+  const EMOTION_LABELS = ['joy', 'acceptance', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation'];
+
   const lines = memories.map((m, i) => {
     const expiryTag = m.expiresAt
       ? `, expires: ${new Date(m.expiresAt).toISOString().split("T")[0]}`
       : "";
-    return `${i + 1}. [${m.type}, confidence: ${m.confidence}${expiryTag}] "${m.content}"`;
+    let emotionTag = "";
+    if (m.emotionVector) {
+      try {
+        const vec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
+        if (Array.isArray(vec) && vec.length === 8) {
+          const maxIdx = vec.indexOf(Math.max(...vec));
+          if (vec[maxIdx] > 0.3) emotionTag = `, emotion: ${EMOTION_LABELS[maxIdx]}`;
+        }
+      } catch { /* ignore */ }
+    }
+    return `${i + 1}. [${m.type}, confidence: ${m.confidence}${expiryTag}${emotionTag}] "${m.content}"`;
   });
 
   return `\n\n## Your Memories (relevant to this discussion)\n${lines.join("\n")}\n\nUse these memories to inform your position. Reference them when making arguments.`;
