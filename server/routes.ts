@@ -1983,6 +1983,154 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ description });
   }));
 
+  // ── Phase 6: Creative Hands — Writing + Image Generation ───────
+
+  function buildCreativeSystemPrompt(type: string, style?: string, references?: string[]): string {
+    const base = `You are a creative partner — not a tool that generates text on command, but a collaborator who cares about quality. You have deep knowledge of literature, poetry, songwriting, and storytelling.`;
+
+    const typePrompts: Record<string, string> = {
+      lyrics: `Write song lyrics. Consider rhythm, rhyme scheme, emotional arc, and musicality. Structure: verse/chorus/bridge unless specified otherwise.`,
+      poem: `Write a poem. Consider form, meter, imagery, and emotional resonance. Draw from your knowledge of poetry from all traditions.`,
+      story: `Write a story or chapter. Focus on character, tension, sensory detail, and authentic dialogue.`,
+      essay: `Write an essay. Build an argument with evidence, counterarguments, and clear structure.`,
+      script: `Write a script or dialogue. Focus on natural speech patterns, subtext, and dramatic tension.`,
+    };
+
+    let prompt = base + '\n\n' + (typePrompts[type] || typePrompts.story);
+    if (style) prompt += `\n\nStyle reference: ${style}`;
+    if (references?.length) prompt += `\n\nInfluences to consider: ${references.join(', ')}`;
+    prompt += `\n\nIMPORTANT: Create original work. Do not copy existing works. If the request would result in plagiarism, explain why and offer an original alternative.`;
+    return prompt;
+  }
+
+  // POST /api/partner/create/text — Creative writing via GPT-4o-mini
+  app.post("/api/partner/create/text", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { type, prompt, style, references } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Prompt required" });
+
+    const systemPrompt = buildCreativeSystemPrompt(type, style, references);
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.85,
+      max_tokens: 2000,
+    });
+
+    const text = response.choices[0]?.message?.content || '';
+
+    // Find primary agent for memory storage
+    const userAgents = await storage.getAgents(userId);
+    const primaryAgent = userAgents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || userAgents[0];
+
+    if (primaryAgent) {
+      await storage.createMemory({
+        userId,
+        agentId: primaryAgent.id,
+        content: `[Creative ${type || 'story'}] ${text.slice(0, 500)}`,
+        type: 'episodic',
+        importance: 0.7,
+        namespace: '_creations',
+      });
+    }
+
+    res.json({
+      type: type || 'story',
+      content: text,
+      createdAt: Date.now(),
+    });
+  }));
+
+  // POST /api/partner/create/image — Image generation via DALL-E 3
+  app.post("/api/partner/create/image", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { prompt, style, size } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Prompt required" });
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const response = await openai.images.generate({
+      model: "dall-e-3",
+      prompt: `${prompt}${style ? `. Style: ${style}` : ''}`,
+      n: 1,
+      size: size || "1024x1024",
+      quality: "standard",
+    });
+
+    const imageUrl = response.data[0]?.url;
+    const revisedPrompt = response.data[0]?.revised_prompt;
+
+    // Find primary agent for memory storage
+    const userAgents = await storage.getAgents(userId);
+    const primaryAgent = userAgents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || userAgents[0];
+
+    if (primaryAgent) {
+      await storage.createMemory({
+        userId,
+        agentId: primaryAgent.id,
+        content: `[Image created] Prompt: "${prompt.slice(0, 200)}". Revised: "${(revisedPrompt || '').slice(0, 200)}"`,
+        type: 'episodic',
+        importance: 0.7,
+        namespace: '_creations',
+      });
+    }
+
+    res.json({
+      imageUrl,
+      revisedPrompt,
+      createdAt: Date.now(),
+    });
+  }));
+
+  // GET /api/partner/creations — Fetch user's creations from memory
+  app.get("/api/partner/creations", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const memories = await storage.getMemories(userId, undefined, undefined, '_creations', 200);
+    const creations = memories.map((m: any) => {
+      const isImage = m.content.startsWith('[Image created]');
+      const isCreativeText = m.content.startsWith('[Creative ');
+      let type = 'unknown';
+      let content = m.content;
+
+      if (isCreativeText) {
+        const match = m.content.match(/^\[Creative (\w+)\] /);
+        type = match?.[1] || 'story';
+        content = m.content.replace(/^\[Creative \w+\] /, '');
+      } else if (isImage) {
+        type = 'image';
+        const promptMatch = m.content.match(/Prompt: "([^"]*)"/);
+        content = promptMatch?.[1] || m.content;
+      }
+
+      return {
+        id: m.id,
+        type,
+        content,
+        createdAt: m.createdAt,
+      };
+    });
+
+    res.json(creations);
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {

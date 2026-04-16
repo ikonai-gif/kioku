@@ -4,7 +4,7 @@ import { useAuth, useTheme } from "../App";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
-  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart
+  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart, Palette
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -23,6 +23,7 @@ function KiokuLogo({ size = 32 }: { size?: number }) {
 
 const baseNavItems = [
   { href: "/",          icon: Heart,            label: "Partner"   },
+  { href: "/gallery",   icon: Palette,          label: "Gallery"   },
   { href: "/dashboard", icon: LayoutDashboard,  label: "Dashboard" },
   { href: "/agents",    icon: Bot,              label: "Agents"    },
   { href: "/memory",    icon: Brain,            label: "Memory"    },

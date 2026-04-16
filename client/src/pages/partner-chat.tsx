@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2 } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -238,6 +238,179 @@ function ChatBubble({ message, isUser, emotion, voiceMode }: { message: any; isU
   );
 }
 
+// ── Creative Type Badges ────────────────────────────────────────
+const CREATIVE_TYPE_BADGES: Record<string, { label: string; color: string }> = {
+  lyrics: { label: "Lyrics", color: "bg-purple-500/20 text-purple-300 border-purple-500/30" },
+  poem: { label: "Poem", color: "bg-blue-500/20 text-blue-300 border-blue-500/30" },
+  story: { label: "Story", color: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" },
+  essay: { label: "Essay", color: "bg-amber-500/20 text-amber-300 border-amber-500/30" },
+  script: { label: "Script", color: "bg-rose-500/20 text-rose-300 border-rose-500/30" },
+  image: { label: "Image", color: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" },
+};
+
+// ── Creative Response Card in Chat ─────────────────────────────
+function CreativeChatCard({ message }: { message: any }) {
+  const { toast } = useToast();
+  const meta = message.creativeMeta;
+  if (!meta) return null;
+
+  const badge = CREATIVE_TYPE_BADGES[meta.type] || { label: meta.type, color: "bg-gray-500/20 text-gray-300 border-gray-500/30" };
+  const isImage = meta.type === "image";
+
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(meta.content);
+      toast({ title: "Copied to clipboard" });
+    } catch {
+      toast({ title: "Copy failed", variant: "destructive" });
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.3 }}
+      className="flex w-full px-4 py-1 justify-start"
+    >
+      <div className="flex-shrink-0 mr-2 mt-1">
+        <div className="w-7 h-7 rounded-full flex items-center justify-center"
+          style={{ background: "linear-gradient(135deg, #C9A340 0%, #D4AF37 100%)" }}>
+          <Sparkles className="w-3.5 h-3.5 text-[#0a0f1e]" />
+        </div>
+      </div>
+      <div
+        className="max-w-[85%] md:max-w-[70%] rounded-2xl overflow-hidden"
+        style={{
+          background: "rgba(201,163,64,0.06)",
+          border: "1px solid rgba(201,163,64,0.2)",
+        }}
+      >
+        {/* Card Header */}
+        <div className="flex items-center justify-between px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2">
+            <span className={cn("text-[10px] font-medium px-2 py-0.5 rounded-full border", badge.color)}>
+              {badge.label}
+            </span>
+            <Sparkles className="w-3 h-3 text-[#C9A340]/50" />
+          </div>
+          <div className="flex items-center gap-1">
+            {isImage && meta.imageUrl ? (
+              <button onClick={() => window.open(meta.imageUrl, "_blank")}
+                className="text-muted-foreground/40 hover:text-[#C9A340] transition-colors p-1">
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <button onClick={copyText}
+                className="text-muted-foreground/40 hover:text-[#C9A340] transition-colors p-1">
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Card Body */}
+        <div className="px-4 pb-3">
+          {isImage && meta.imageUrl ? (
+            <div className="space-y-2">
+              <img
+                src={meta.imageUrl}
+                alt={meta.content}
+                className="w-full max-w-[300px] rounded-lg object-cover cursor-pointer"
+                onClick={() => window.open(meta.imageUrl, "_blank")}
+              />
+              {meta.revisedPrompt && (
+                <p className="text-[10px] text-muted-foreground/40 italic">{meta.revisedPrompt}</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap">{meta.content}</p>
+          )}
+        </div>
+
+        <div className="px-4 pb-2">
+          <span className="text-[10px] text-muted-foreground/30">
+            {new Date(meta.createdAt || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Creative Menu (bottom sheet) ────────────────────────────────
+const WRITE_TYPES = [
+  { key: "lyrics", label: "Lyrics", icon: "🎵" },
+  { key: "poem", label: "Poem", icon: "📝" },
+  { key: "story", label: "Story", icon: "📖" },
+  { key: "essay", label: "Essay", icon: "📄" },
+  { key: "script", label: "Script", icon: "🎬" },
+];
+
+function CreativeMenu({ onSelect, onClose }: { onSelect: (mode: string, subType?: string) => void; onClose: () => void }) {
+  const [subMenu, setSubMenu] = useState<"main" | "write">("main");
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 20 }}
+      className="absolute bottom-full left-0 right-0 mb-2 mx-2 rounded-xl overflow-hidden"
+      style={{
+        background: "rgba(15,27,61,0.98)",
+        border: "1px solid rgba(201,163,64,0.2)",
+        backdropFilter: "blur(20px)",
+        boxShadow: "0 -8px 32px rgba(0,0,0,0.4)",
+      }}
+    >
+      {subMenu === "main" ? (
+        <div className="p-2 space-y-1">
+          <p className="px-3 py-1.5 text-[10px] font-medium text-[#C9A340]/60 uppercase tracking-wider">Create</p>
+          <button
+            onClick={() => setSubMenu("write")}
+            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+          >
+            <PenLine className="w-4 h-4 text-[#C9A340]" />
+            <div>
+              <div className="text-sm text-foreground">Write</div>
+              <div className="text-[10px] text-muted-foreground/50">Lyrics, poem, story, essay, script</div>
+            </div>
+          </button>
+          <button
+            onClick={() => { onSelect("draw"); onClose(); }}
+            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+          >
+            <Palette className="w-4 h-4 text-[#C9A340]" />
+            <div>
+              <div className="text-sm text-foreground">Draw</div>
+              <div className="text-[10px] text-muted-foreground/50">Generate an image with DALL-E</div>
+            </div>
+          </button>
+        </div>
+      ) : (
+        <div className="p-2 space-y-1">
+          <button
+            onClick={() => setSubMenu("main")}
+            className="flex items-center gap-1 px-3 py-1.5 text-[10px] font-medium text-[#C9A340]/60 hover:text-[#C9A340] transition-colors"
+          >
+            ← Back
+          </button>
+          {WRITE_TYPES.map(({ key, label, icon }) => (
+            <button
+              key={key}
+              onClick={() => { onSelect("write", key); onClose(); }}
+              className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+            >
+              <span className="text-base">{icon}</span>
+              <span className="text-sm text-foreground">{label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 // ── Main Partner Chat Page ───────────────────────────────────────
 export default function PartnerChat() {
   const { user } = useAuth();
@@ -251,6 +424,10 @@ export default function PartnerChat() {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [creativeMenuOpen, setCreativeMenuOpen] = useState(false);
+  const [creativeMode, setCreativeMode] = useState<{ mode: "write" | "draw"; subType?: string } | null>(null);
+  const [creativeResults, setCreativeResults] = useState<any[]>([]);
+  const [isCreating, setIsCreating] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastMessageCountRef = useRef(0);
@@ -429,7 +606,8 @@ export default function PartnerChat() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (creativeMode) sendCreative();
+      else send();
     }
   };
 
@@ -520,6 +698,51 @@ export default function PartnerChat() {
     setImageBase64(null);
   };
 
+  // ── Creative Mode ────────────────────────────────────────────
+  const handleCreativeSelect = (mode: string, subType?: string) => {
+    if (mode === "write") {
+      setCreativeMode({ mode: "write", subType: subType || "story" });
+    } else {
+      setCreativeMode({ mode: "draw" });
+    }
+  };
+
+  const clearCreativeMode = () => {
+    setCreativeMode(null);
+  };
+
+  const sendCreative = useCallback(async () => {
+    if (!input.trim() || !creativeMode) return;
+    setIsCreating(true);
+
+    try {
+      if (creativeMode.mode === "write") {
+        const res = await apiRequest("POST", "/api/partner/create/text", {
+          type: creativeMode.subType || "story",
+          prompt: input.trim(),
+        });
+        if (!res.ok) throw new Error("Creation failed");
+        const data = await res.json();
+        setCreativeResults((prev) => [...prev, { ...data, id: Date.now(), creativeMeta: { type: data.type, content: data.content, createdAt: data.createdAt } }]);
+        queryClient.invalidateQueries({ queryKey: ["/api/partner/creations"] });
+      } else {
+        const res = await apiRequest("POST", "/api/partner/create/image", {
+          prompt: input.trim(),
+        });
+        if (!res.ok) throw new Error("Image generation failed");
+        const data = await res.json();
+        setCreativeResults((prev) => [...prev, { id: Date.now(), type: "image", creativeMeta: { type: "image", content: input.trim(), imageUrl: data.imageUrl, revisedPrompt: data.revisedPrompt, createdAt: data.createdAt } }]);
+        queryClient.invalidateQueries({ queryKey: ["/api/partner/creations"] });
+      }
+      setInput("");
+      setCreativeMode(null);
+    } catch {
+      toast({ title: "Creation failed", variant: "destructive" });
+    } finally {
+      setIsCreating(false);
+    }
+  }, [input, creativeMode, toast]);
+
   const glowColor = getGlowColor(emotion);
 
   // ── Render ────────────────────────────────────────────────────
@@ -605,7 +828,32 @@ export default function PartnerChat() {
           ))
         )}
 
+        {/* Creative results */}
+        {creativeResults.map((cr: any) => (
+          <CreativeChatCard key={cr.id} message={cr} />
+        ))}
+
         <AnimatePresence>{isThinking && <TypingIndicator emotion={emotion} />}</AnimatePresence>
+        <AnimatePresence>
+          {isCreating && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              className="flex items-center gap-2 px-4 py-3"
+            >
+              <div className="w-7 h-7 rounded-full flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, #C9A340 0%, #D4AF37 100%)" }}>
+                <Sparkles className="w-3.5 h-3.5 text-[#0a0f1e] animate-pulse" />
+              </div>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-2xl"
+                style={{ background: "rgba(201,163,64,0.08)", border: "1px solid rgba(201,163,64,0.15)" }}>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C9A340]" />
+                <span className="text-xs text-[#C9A340]/70">Creating...</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <div ref={bottomRef} />
       </div>
 
@@ -661,8 +909,30 @@ export default function PartnerChat() {
           )}
         </AnimatePresence>
 
-        {/* Input Row: [ Mic ] [ Image ] [ Text input ] [ Send ] */}
-        <div className="flex items-end gap-1.5">
+        {/* Creative mode indicator */}
+        <AnimatePresence>
+          {creativeMode && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mb-2 flex items-center gap-2 px-2"
+            >
+              <Sparkles className="w-3 h-3 text-[#C9A340]" />
+              <span className="text-xs text-[#C9A340]/80">
+                {creativeMode.mode === "write"
+                  ? `Writing: ${creativeMode.subType || "story"}`
+                  : "Drawing with DALL-E"}
+              </span>
+              <button onClick={clearCreativeMode} className="text-muted-foreground/40 hover:text-foreground ml-auto">
+                <X className="w-3 h-3" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Input Row: [ Mic ] [ Image ] [ Create ] [ Text input ] [ Send ] */}
+        <div className="flex items-end gap-1.5 relative">
           {/* Mic Button */}
           <button
             onClick={toggleRecording}
@@ -708,13 +978,41 @@ export default function PartnerChat() {
             className="hidden"
           />
 
+          {/* Create Button */}
+          <button
+            onClick={() => setCreativeMenuOpen(!creativeMenuOpen)}
+            className="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-xl transition-colors"
+            style={{
+              background: creativeMenuOpen || creativeMode ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${creativeMenuOpen || creativeMode ? "rgba(201,163,64,0.4)" : "rgba(255,255,255,0.08)"}`,
+              color: creativeMenuOpen || creativeMode ? "#C9A340" : "rgba(255,255,255,0.5)",
+            }}
+            title="Create — write or draw"
+          >
+            <Sparkles className="w-4 h-4" />
+          </button>
+
+          {/* Creative Menu Popover */}
+          <AnimatePresence>
+            {creativeMenuOpen && (
+              <CreativeMenu
+                onSelect={handleCreativeSelect}
+                onClose={() => setCreativeMenuOpen(false)}
+              />
+            )}
+          </AnimatePresence>
+
           {/* Text Input */}
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message Agent O..."
+            placeholder={creativeMode
+              ? creativeMode.mode === "draw"
+                ? "Describe what you'd like me to create..."
+                : "Describe what you'd like me to write..."
+              : "Message Agent O..."}
             rows={1}
             className="flex-1 resize-none rounded-xl px-4 py-2.5 text-sm bg-white/5 border border-white/10 text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-[#C9A340]/40 focus:ring-1 focus:ring-[#C9A340]/20"
             style={{ maxHeight: 120, minHeight: 40 }}
@@ -733,10 +1031,10 @@ export default function PartnerChat() {
               background: (input.trim() || imageBase64) ? "#C9A340" : "rgba(201,163,64,0.2)",
               color: (input.trim() || imageBase64) ? "#0a0f1e" : "rgba(201,163,64,0.5)",
             }}
-            onClick={send}
-            disabled={(!input.trim() && !imageBase64) || !partnerRoomId || sendMutation.isPending}
+            onClick={creativeMode ? sendCreative : send}
+            disabled={(!input.trim() && !imageBase64) || (!partnerRoomId && !creativeMode) || sendMutation.isPending || isCreating}
           >
-            <Send className="w-4 h-4" />
+            {isCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : creativeMode ? <Sparkles className="w-4 h-4" /> : <Send className="w-4 h-4" />}
           </Button>
         </div>
         <div className="flex items-center justify-between px-1 pt-1.5">
