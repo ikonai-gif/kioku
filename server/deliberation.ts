@@ -172,10 +172,15 @@ export async function triggerAgentResponses(
           // OpenAI path (default or fallback)
           const oaiClient = getOpenAIClient(agent as any);
           if (!oaiClient) continue;
+          const resolvedModel = chatModel.startsWith("gemini-") ? "gpt-4o-mini" : chatModel;
+          // gpt-5+ and o-series models have different parameter requirements
+          const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
+          const tokenLimit = isPartnerChat ? 600 : 256;
           const completion = await oaiClient.chat.completions.create({
-            model: chatModel.startsWith("gemini-") ? "gpt-4o-mini" : chatModel,
-            max_tokens: isPartnerChat ? 600 : 256,
-            temperature: isPartnerChat ? 0.85 : 0.75,
+            model: resolvedModel,
+            ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+            // gpt-5-mini only supports temperature=1, so omit for new models
+            ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
             messages: [
               { role: "system", content: systemPrompt },
               ...chatHistory,
