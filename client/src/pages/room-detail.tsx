@@ -964,7 +964,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
     priorPositions: Array<{ agentName: string; position: string; confidence: number; reasoning: string }>;
     timeoutMs: number;
   } | null>(null);
-  const { user } = useAuth();
+  const { user, sessionToken } = useAuth();
 
   const { data: allRooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
   const room = (allRooms as any[]).find((r: any) => r.id === roomId) ?? null;
@@ -1003,7 +1003,8 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
   // ── WebSocket real-time ───────────────────────────────────────
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsUrl = `${protocol}://${window.location.host}/ws`;
+    const tokenParam = sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : "";
+    const wsUrl = `${protocol}://${window.location.host}/ws${tokenParam}`;
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let unmounted = false;

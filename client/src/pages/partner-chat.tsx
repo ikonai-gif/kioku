@@ -707,11 +707,13 @@ export default function PartnerChat() {
   });
 
   // ── WebSocket for real-time updates ───────────────────────────
+  const { sessionToken } = useAuth();
   useEffect(() => {
     if (!partnerRoomId) return;
 
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const wsUrl = `${protocol}://${window.location.host}/ws`;
+    const tokenParam = sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : "";
+    const wsUrl = `${protocol}://${window.location.host}/ws${tokenParam}`;
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let unmounted = false;
@@ -756,7 +758,7 @@ export default function PartnerChat() {
       clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [partnerRoomId]);
+  }, [partnerRoomId, sessionToken]);
 
   // ── Auto-scroll on new messages ───────────────────────────────
   useEffect(() => {
