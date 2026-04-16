@@ -73,18 +73,15 @@ export default function LoginPage() {
 
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: "linear-gradient(180deg, #0a0f1e 0%, #0F1B3D 50%, #0a0f1e 100%)" }}>
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <div className="mb-4">
-            <KiokuLogo size={56} />
+            <KiokuLogo size={72} />
           </div>
-          <h1 className="text-xl font-semibold text-foreground">KIOKU™</h1>
-          <p className="text-sm text-muted-foreground mt-1">Agent Control Center</p>
-          <p className="text-xs text-muted-foreground/80 mt-2 text-center max-w-[260px] leading-relaxed">
-            Complex tasks solved faster with multiple agents working together
-          </p>
+          <h1 className="text-2xl font-semibold text-foreground tracking-tight">KIOKU™</h1>
+          <p className="text-sm mt-2 font-medium" style={{ color: "#C9A340" }}>Meet your AI partner</p>
         </div>
 
         {/* Card */}

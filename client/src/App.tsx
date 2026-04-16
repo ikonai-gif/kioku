@@ -23,13 +23,15 @@ import DocsPage from "./pages/docs";
 import PrivacyPage from "./pages/privacy";
 import TermsPage from "./pages/terms";
 import BossBoardPage from "./pages/boss-board";
+import PartnerChatPage from "./pages/partner-chat";
 import AppLayout from "./components/layout";
 import NotFound from "./pages/not-found";
 import VerifyPage from "./pages/verify";
 
 // ── Page titles ──────────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
-  "/":        "Dashboard — KIOKU™",
+  "/":        "Partner — KIOKU™",
+  "/partner": "Partner — KIOKU™",
   "/agents":  "Agents — KIOKU™",
   "/memory":  "Memory — KIOKU™",
   "/flows":   "Flows — KIOKU™",
@@ -201,25 +203,35 @@ export default function App() {
                 <Route component={LoginPage} />
               </Switch>
             ) : (
-              <AppLayout>
+              <>
                 <Switch>
-                  <Route path="/" component={DashboardPage} />
-                  <Route path="/boss" component={BossBoardPage} />
-                  <Route path="/agents" component={AgentsPage} />
-                  <Route path="/memory" component={MemoryPage} />
-                  <Route path="/flows" component={FlowsPage} />
-                  <Route path="/rooms" component={RoomsPage} />
-                  <Route path="/rooms/:id" component={RoomDetailPage} />
-                  <Route path="/logs" component={LogsPage} />
-                  <Route path="/billing" component={BillingPage} />
-                  <Route path="/pricing" component={PricingPage} />
-                  <Route path="/docs" component={DocsPage} />
-                  <Route path="/privacy" component={PrivacyPage} />
-                  <Route path="/terms" component={TermsPage} />
-                  <Route component={NotFound} />
+                  {/* Partner chat: full-screen, no sidebar layout */}
+                  <Route path="/" component={PartnerChatPage} />
+                  <Route path="/partner" component={PartnerChatPage} />
+                  {/* All other pages wrapped in AppLayout */}
+                  <Route>{() => (
+                    <AppLayout>
+                      <Switch>
+                        <Route path="/dashboard" component={DashboardPage} />
+                        <Route path="/boss" component={BossBoardPage} />
+                        <Route path="/agents" component={AgentsPage} />
+                        <Route path="/memory" component={MemoryPage} />
+                        <Route path="/flows" component={FlowsPage} />
+                        <Route path="/rooms" component={RoomsPage} />
+                        <Route path="/rooms/:id" component={RoomDetailPage} />
+                        <Route path="/logs" component={LogsPage} />
+                        <Route path="/billing" component={BillingPage} />
+                        <Route path="/pricing" component={PricingPage} />
+                        <Route path="/docs" component={DocsPage} />
+                        <Route path="/privacy" component={PrivacyPage} />
+                        <Route path="/terms" component={TermsPage} />
+                        <Route component={NotFound} />
+                      </Switch>
+                      <OnboardingOverlay />
+                    </AppLayout>
+                  )}</Route>
                 </Switch>
-                <OnboardingOverlay />
-              </AppLayout>
+              </>
             )}
             <CookieBanner />
           </Router>

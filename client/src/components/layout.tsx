@@ -4,7 +4,7 @@ import { useAuth, useTheme } from "../App";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
-  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown
+  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -22,14 +22,15 @@ function KiokuLogo({ size = 32 }: { size?: number }) {
 }
 
 const baseNavItems = [
-  { href: "/",        icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/agents",  icon: Bot,             label: "Agents"    },
-  { href: "/memory",  icon: Brain,           label: "Memory"    },
-  { href: "/flows",   icon: GitBranch,       label: "Flows"     },
-  { href: "/rooms",   icon: MessageSquare,   label: "Rooms"     },
-  { href: "/logs",    icon: Activity,        label: "Live Feed" },
-  { href: "/docs",    icon: BookOpen,        label: "API Docs"  },
-  { href: "/billing", icon: CreditCard,      label: "Billing"   },
+  { href: "/",          icon: Heart,            label: "Partner"   },
+  { href: "/dashboard", icon: LayoutDashboard,  label: "Dashboard" },
+  { href: "/agents",    icon: Bot,              label: "Agents"    },
+  { href: "/memory",    icon: Brain,            label: "Memory"    },
+  { href: "/flows",     icon: GitBranch,        label: "Flows"     },
+  { href: "/rooms",     icon: MessageSquare,    label: "Rooms"     },
+  { href: "/logs",      icon: Activity,         label: "Live Feed" },
+  { href: "/docs",      icon: BookOpen,         label: "API Docs"  },
+  { href: "/billing",   icon: CreditCard,       label: "Billing"   },
 ];
 
 const bossNavItem = { href: "/boss", icon: Crown, label: "Boss Board" };

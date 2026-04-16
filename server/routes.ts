@@ -1775,6 +1775,135 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Partner / Emotional State API ─────────────────────────────
+
+  // GET /api/agents/:agentId/emotional-state — returns current emotional state with decay applied
+  app.get("/api/agents/:agentId/emotional-state", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const agentId = Number(req.params.agentId);
+    if (isNaN(agentId)) return res.status(400).json({ error: "Invalid agentId" });
+
+    // Verify agent belongs to user
+    const agent = await storage.getAgent(agentId);
+    if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Agent not found" });
+
+    const state = await storage.getAgentEmotionalState(agentId);
+    if (!state) {
+      // Return default state if none exists
+      return res.json({
+        agentId,
+        pleasure: 0.0,
+        arousal: 0.0,
+        dominance: 0.0,
+        emotionLabel: "neutral",
+        poignancySum: 0,
+        lastUpdatedAt: Date.now(),
+      });
+    }
+
+    const { getDecayedEmotionalState: getDecayed } = await import("./emotional-state");
+    const decayed = getDecayed(state);
+    res.json({
+      agentId: state.agentId,
+      pleasure: decayed.pleasure,
+      arousal: decayed.arousal,
+      dominance: decayed.dominance,
+      emotionLabel: decayed.emotionLabel,
+      poignancySum: state.poignancySum,
+      lastUpdatedAt: state.lastUpdatedAt,
+    });
+  }));
+
+  // GET /api/agents/:agentId/relationship/:userId — returns relationship data
+  app.get("/api/agents/:agentId/relationship/:targetUserId", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const agentId = Number(req.params.agentId);
+    const targetUserId = Number(req.params.targetUserId);
+    if (isNaN(agentId) || isNaN(targetUserId)) return res.status(400).json({ error: "Invalid IDs" });
+
+    // Verify agent belongs to user
+    const agent = await storage.getAgent(agentId);
+    if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Agent not found" });
+
+    const rel = await storage.getRelationship(agentId, targetUserId);
+    if (!rel) {
+      return res.json({
+        trustLevel: 0,
+        familiarity: 0,
+        interactionCount: 0,
+        sharedReferences: [],
+        emotionalHistory: [],
+      });
+    }
+
+    res.json({
+      trustLevel: rel.trustLevel,
+      familiarity: rel.familiarity,
+      interactionCount: rel.interactionCount,
+      sharedReferences: rel.sharedReferences,
+      emotionalHistory: rel.emotionalHistory,
+    });
+  }));
+
+  // GET /api/partner/status — combined emotional state + relationship for logged-in user's primary agent
+  app.get("/api/partner/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    // Find user's first agent (Agent O / primary partner)
+    const agents = await storage.getAgents(userId);
+    const primaryAgent = agents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || agents[0];
+
+    if (!primaryAgent) {
+      return res.json({
+        emotion: "neutral",
+        pad: { p: 0, a: 0, d: 0 },
+        trust: "new",
+        familiarity: "stranger",
+        interactions: 0,
+        personality: "honest, direct, slightly playful",
+      });
+    }
+
+    // Get emotional state with decay
+    const state = await storage.getAgentEmotionalState(primaryAgent.id);
+    let emotion = "neutral";
+    let pad = { p: 0, a: 0, d: 0 };
+
+    if (state) {
+      const { getDecayedEmotionalState: getDecayed } = await import("./emotional-state");
+      const decayed = getDecayed(state);
+      emotion = decayed.emotionLabel;
+      pad = { p: decayed.pleasure, a: decayed.arousal, d: decayed.dominance };
+    }
+
+    // Get relationship
+    const rel = await storage.getRelationship(primaryAgent.id, userId);
+    const trustLevel = rel?.trustLevel ?? 0;
+    const familiarityLevel = rel?.familiarity ?? 0;
+    const interactions = rel?.interactionCount ?? 0;
+
+    // Map trust/familiarity to human-readable labels
+    const trustLabel = trustLevel > 0.7 ? "high" : trustLevel > 0.3 ? "moderate" : "new";
+    const familiarityLabel = familiarityLevel > 0.7 ? "close" : familiarityLevel > 0.3 ? "familiar" : "stranger";
+
+    res.json({
+      emotion,
+      pad,
+      trust: trustLabel,
+      familiarity: familiarityLabel,
+      interactions,
+      personality: "honest, direct, slightly playful",
+    });
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {
