@@ -2144,13 +2144,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const memories = await storage.getMemories(userId, undefined, undefined, '_creations', 200);
-    const creations = memories.map((m: any) => {
+    const creations: any[] = [];
+    for (const m of memories) {
       const isImage = m.content.startsWith('[Image created]');
-      const isCreativeText = m.content.startsWith('[Creative ');
-      let type = 'unknown';
+      const isDeliberation = m.content.startsWith('[Creative Deliberation]');
+      const isCreativeText = !isDeliberation && m.content.startsWith('[Creative ');
+      let type = 'story';
       let content = m.content;
 
-      if (isCreativeText) {
+      if (isDeliberation) {
+        // Deliberation results are metadata, not user-facing creations
+        continue;
+      } else if (isCreativeText) {
         const match = m.content.match(/^\[Creative (\w+)\] /);
         type = match?.[1] || 'story';
         content = m.content.replace(/^\[Creative \w+\] /, '');
@@ -2160,13 +2165,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         content = promptMatch?.[1] || m.content;
       }
 
-      return {
+      creations.push({
         id: m.id,
         type,
         content,
         createdAt: m.createdAt,
-      };
-    });
+      });
+    }
 
     res.json(creations);
   }));

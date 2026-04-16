@@ -683,7 +683,7 @@ export default function PartnerChat() {
 
   // Auto-find or create partner room
   useEffect(() => {
-    if (!rooms || rooms.length === 0) return;
+    if (!rooms) return;
     const existing = rooms.find(
       (r: any) => r.name === "Partner" || r.name?.toLowerCase().includes("partner")
     );
