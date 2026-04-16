@@ -136,8 +136,7 @@ export async function triggerAgentResponses(
 
       try {
         // Determine model & provider: prefer per-agent llmModel, then agent.model, then default
-        // Partner chat uses gpt-5-mini for richer personality; War Room uses gpt-4o-mini for speed
-        const defaultModel = isPartnerChat ? "gpt-5-mini" : "gpt-4o-mini";
+        const defaultModel = "gpt-4o-mini";
         const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         let reply: string | undefined;
