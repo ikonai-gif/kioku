@@ -1015,12 +1015,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!isPartnerRoom && roomCounts.rooms >= roomLimits.rooms) {
       return res.status(429).json({ error: `Plan limit reached: ${roomLimits.rooms} rooms (${roomPlan} plan)` });
     }
+    // For Partner room, auto-assign primary agent (Agent O) so it responds
+    let finalAgentIds = agentIds ?? [];
+    if (isPartnerRoom && finalAgentIds.length === 0) {
+      const userAgents = await storage.getAgents(userId);
+      const primaryAgent = userAgents.find((a: any) =>
+        a.name.toLowerCase().includes("agent o") ||
+        a.name.toLowerCase().includes("partner")
+      ) || userAgents[0];
+      if (primaryAgent) {
+        finalAgentIds = [primaryAgent.id];
+        // Ensure primary agent is online so it can respond
+        if (primaryAgent.status !== "online") {
+          await storage.updateAgent(primaryAgent.id, { status: "online" });
+        }
+      }
+    }
     const room = await storage.createRoom({
       userId,
       name: sanitizeHtml(rawName),
       description: rawDesc ? sanitizeHtml(rawDesc) : null,
       status: "standby",
-      agentIds: JSON.stringify(agentIds ?? []),
+      agentIds: JSON.stringify(finalAgentIds),
     });
     res.json(room);
   }));
