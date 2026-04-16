@@ -276,3 +276,20 @@ export const knowledgeDomains = pgTable("knowledge_domains", {
 export const insertKnowledgeDomainSchema = createInsertSchema(knowledgeDomains).omit({ id: true });
 export type InsertKnowledgeDomain = z.infer<typeof insertKnowledgeDomainSchema>;
 export type KnowledgeDomain = typeof knowledgeDomains.$inferSelect;
+
+// Phase 8: Aesthetic Preferences — taste & style tracking
+export const aestheticPreferences = pgTable("aesthetic_preferences", {
+  id:        serial("id").primaryKey(),
+  userId:    integer("user_id").notNull(),
+  agentId:   integer("agent_id").notNull(),
+  category:  text("category").notNull(),          // visual, music, writing, fashion, general
+  item:      text("item").notNull(),               // what was evaluated
+  reaction:  text("reaction").notNull(),           // love, like, neutral, dislike, hate
+  context:   text("context"),                      // why (if provided)
+  tags:      text("tags").notNull().default("[]"), // JSON array of style tags
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const insertAestheticPreferenceSchema = createInsertSchema(aestheticPreferences).omit({ id: true, createdAt: true });
+export type InsertAestheticPreference = z.infer<typeof insertAestheticPreferenceSchema>;
+export type AestheticPreference = typeof aestheticPreferences.$inferSelect;

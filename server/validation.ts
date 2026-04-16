@@ -64,7 +64,7 @@ export const createMemorySchema = z.object({
   content: z.string().min(1).max(50000),
   agentId: z.number().nullable().optional(),
   agentName: z.string().max(100).nullable().optional(),
-  type: z.enum(["semantic", "episodic", "procedural", "emotional", "temporal", "causal", "contextual"]).optional(),
+  type: z.enum(["semantic", "episodic", "procedural", "emotional", "temporal", "causal", "contextual", "aesthetic"]).optional(),
   importance: z.number().min(0).max(1).optional(),
   namespace: z.string().max(100).optional(),
   room_id: z.union([z.string(), z.number()]).optional(),
@@ -208,4 +208,34 @@ export const waitlistSchema = z.object({
   name: z.string().max(100).optional(),
   company: z.string().max(200).optional(),
   useCase: z.string().max(2000).optional(),
+});
+
+// ── Phase 8: Aesthetic Preference schemas ─────────────────────────────────────
+export const savePreferenceSchema = z.object({
+  category: z.enum(["visual", "music", "writing", "fashion", "general"]),
+  item: z.string().min(1).max(500),
+  reaction: z.enum(["love", "like", "neutral", "dislike", "hate"]),
+  context: z.string().max(2000).optional(),
+  tags: z.array(z.string().max(50)).max(10).optional(),
+});
+
+export const feedbackReactionSchema = z.object({
+  memoryId: z.number().int().optional(),
+  content: z.string().min(1).max(5000),
+  reaction: z.enum(["love", "like", "neutral", "dislike", "hate"]),
+  creationType: z.string().max(50).optional(),
+});
+
+export const creativeDeliberateSchema = z.object({
+  content: z.string().min(1).max(10000),
+  type: z.string().min(1).max(50),
+  question: z.string().max(2000).optional(),
+});
+
+export const creativeTextExtendedSchema = z.object({
+  type: z.string().max(50).optional(),
+  prompt: z.string().min(1).max(5000),
+  style: z.string().max(500).optional(),
+  references: z.array(z.string().max(200)).optional(),
+  quality_check: z.boolean().optional(),
 });

@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, ilike, or, sql } from "drizzle-orm";
 import {
-  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking, knowledgeDomains,
+  users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking, knowledgeDomains, aestheticPreferences,
   type User, type InsertUser,
   type Agent, type InsertAgent,
   type Memory, type InsertMemory,
@@ -14,6 +14,7 @@ import {
   type MagicToken, type InsertMagicToken,
   type UsageTracking,
   type KnowledgeDomain, type InsertKnowledgeDomain,
+  type AestheticPreference, type InsertAestheticPreference,
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
@@ -382,6 +383,23 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_knowledge_domains_user ON knowledge_domains(user_id);
     CREATE INDEX IF NOT EXISTS idx_knowledge_domains_user_slug ON knowledge_domains(user_id, slug);
+  `);
+
+  // Phase 8: Aesthetic Preferences — taste & style tracking
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS aesthetic_preferences (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      agent_id    INTEGER NOT NULL,
+      category    TEXT NOT NULL,
+      item        TEXT NOT NULL,
+      reaction    TEXT NOT NULL,
+      context     TEXT,
+      tags        TEXT NOT NULL DEFAULT '[]',
+      created_at  BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_aesthetic_prefs_user ON aesthetic_preferences(user_id, category);
+    CREATE INDEX IF NOT EXISTS idx_aesthetic_prefs_agent ON aesthetic_preferences(agent_id);
   `);
 }
 
@@ -1175,6 +1193,8 @@ export class Storage implements IStorage {
     await pool.query('DELETE FROM kioku_webhooks WHERE user_id = $1', [userId]);
     // 10b. Knowledge domains
     await pool.query('DELETE FROM knowledge_domains WHERE user_id = $1', [userId]);
+    // 10c. Aesthetic preferences
+    await pool.query('DELETE FROM aesthetic_preferences WHERE user_id = $1', [userId]);
     // 11. Magic tokens (keyed by email, resolve from user)
     const userRow = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
     if (userRow.rows[0]?.email) {
@@ -1916,6 +1936,98 @@ export class Storage implements IStorage {
       `UPDATE knowledge_domains SET ${sets.join(', ')} WHERE user_id = $1 AND slug = $2`,
       params
     );
+  }
+
+  // ── Phase 8: Aesthetic Preferences CRUD ───────────────────────────────────────
+
+  async savePreference(userId: number, agentId: number, data: {
+    category: string; item: string; reaction: string; context?: string; tags?: string[];
+  }): Promise<any> {
+    const now = Date.now();
+    const tagsJson = JSON.stringify(data.tags || []);
+    const { rows } = await pool.query(
+      `INSERT INTO aesthetic_preferences (user_id, agent_id, category, item, reaction, context, tags, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [userId, agentId, data.category, data.item, data.reaction, data.context || null, tagsJson, now]
+    );
+    const r = rows[0];
+    return {
+      id: r.id,
+      userId: r.user_id,
+      agentId: r.agent_id,
+      category: r.category,
+      item: r.item,
+      reaction: r.reaction,
+      context: r.context,
+      tags: JSON.parse(r.tags || '[]'),
+      createdAt: Number(r.created_at),
+    };
+  }
+
+  async getPreferences(userId: number, category?: string, limit: number = 50): Promise<any[]> {
+    let query = 'SELECT * FROM aesthetic_preferences WHERE user_id = $1';
+    const params: any[] = [userId];
+    let idx = 2;
+    if (category) {
+      query += ` AND category = $${idx++}`;
+      params.push(category);
+    }
+    query += ` ORDER BY created_at DESC LIMIT $${idx}`;
+    params.push(limit);
+    const { rows } = await pool.query(query, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      userId: r.user_id,
+      agentId: r.agent_id,
+      category: r.category,
+      item: r.item,
+      reaction: r.reaction,
+      context: r.context,
+      tags: JSON.parse(r.tags || '[]'),
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  async getPreferenceProfile(userId: number): Promise<any> {
+    const { rows } = await pool.query(
+      'SELECT * FROM aesthetic_preferences WHERE user_id = $1 ORDER BY created_at DESC LIMIT 200',
+      [userId]
+    );
+    const categories: Record<string, { loves: string[]; dislikes: string[]; dominantTags: string[] }> = {};
+    const tagCounts: Record<string, number> = {};
+
+    for (const r of rows) {
+      const cat = r.category;
+      if (!categories[cat]) categories[cat] = { loves: [], dislikes: [], dominantTags: [] };
+      const tags: string[] = JSON.parse(r.tags || '[]');
+      for (const t of tags) tagCounts[t] = (tagCounts[t] || 0) + 1;
+
+      if (r.reaction === 'love' || r.reaction === 'like') {
+        categories[cat].loves.push(r.item);
+      } else if (r.reaction === 'dislike' || r.reaction === 'hate') {
+        categories[cat].dislikes.push(r.item);
+      }
+    }
+
+    // Compute dominant tags per category
+    for (const cat of Object.keys(categories)) {
+      const catRows = rows.filter((r: any) => r.category === cat);
+      const catTagCounts: Record<string, number> = {};
+      for (const r of catRows) {
+        const tags: string[] = JSON.parse(r.tags || '[]');
+        for (const t of tags) catTagCounts[t] = (catTagCounts[t] || 0) + 1;
+      }
+      categories[cat].dominantTags = Object.entries(catTagCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([tag]) => tag);
+      // Deduplicate loves/dislikes
+      categories[cat].loves = [...new Set(categories[cat].loves)].slice(0, 10);
+      categories[cat].dislikes = [...new Set(categories[cat].dislikes)].slice(0, 10);
+    }
+
+    return { categories, totalPreferences: rows.length };
   }
 
   async deleteKnowledgeDomain(userId: number, slug: string): Promise<boolean> {

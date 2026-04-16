@@ -17,6 +17,7 @@ const HALF_LIFE_DAYS: Record<string, number> = {
   temporal: 14,
   causal: 14,
   contextual: 14,
+  aesthetic: 365, // Phase 8: very slow decay — taste is persistent
 };
 
 export function computeDecayedStrength(

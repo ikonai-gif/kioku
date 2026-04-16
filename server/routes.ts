@@ -6,7 +6,7 @@ import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
 import { triggerAgentResponses } from "./deliberation";
-import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree } from "./structured-deliberation";
+import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
@@ -28,6 +28,7 @@ import {
   agentTurnResponseSchema,
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
   createMemoryLinkSchema,
+  savePreferenceSchema, feedbackReactionSchema, creativeDeliberateSchema,
 } from "./validation";
 import { body, validationResult } from "express-validator";
 
@@ -2003,15 +2004,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return prompt;
   }
 
+  // Helper: fetch aesthetic profile summary for creative injection
+  async function getAestheticContext(userId: number): Promise<string> {
+    try {
+      const cached = await pool.query(
+        `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile' ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      );
+      if (cached.rows.length > 0) {
+        return `\nUser's aesthetic preferences: ${cached.rows[0].content}\nConsider these preferences when creating, but don't be limited by them.\n`;
+      }
+    } catch { /* best-effort */ }
+    return '';
+  }
+
   // POST /api/partner/create/text — Creative writing via GPT-4o-mini
   app.post("/api/partner/create/text", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { type, prompt, style, references } = req.body;
+    const { type, prompt, style, references, quality_check } = req.body;
     if (!prompt) return res.status(400).json({ error: "Prompt required" });
 
-    const systemPrompt = buildCreativeSystemPrompt(type, style, references);
+    // Phase 8: Inject aesthetic profile into creative prompt
+    const aestheticContext = await getAestheticContext(userId);
+    const systemPrompt = buildCreativeSystemPrompt(type, style, references) + aestheticContext;
 
     const OpenAI = (await import("openai")).default;
     const openai = new OpenAI();
@@ -2025,7 +2042,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       max_tokens: 2000,
     });
 
-    const text = response.choices[0]?.message?.content || '';
+    let text = response.choices[0]?.message?.content || '';
+
+    // Phase 8: Optional auto-deliberation quality check
+    let deliberation = null;
+    if (quality_check && text) {
+      try {
+        deliberation = await runCreativeDeliberation(text, type || 'story', 'Evaluate this work for quality.');
+      } catch { /* deliberation failure shouldn't break creation */ }
+    }
 
     // Find primary agent for memory storage
     const userAgents = await storage.getAgents(userId);
@@ -2049,6 +2074,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       type: type || 'story',
       content: text,
       createdAt: Date.now(),
+      ...(deliberation ? { deliberation } : {}),
     });
   }));
 
@@ -2060,11 +2086,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { prompt, style, size } = req.body;
     if (!prompt) return res.status(400).json({ error: "Prompt required" });
 
+    // Phase 8: Inject aesthetic profile into image prompt
+    const aestheticContext = await getAestheticContext(userId);
+    const enhancedPrompt = aestheticContext
+      ? `${prompt}${style ? `. Style: ${style}` : ''}. ${aestheticContext.trim()}`
+      : `${prompt}${style ? `. Style: ${style}` : ''}`;
+
     const OpenAI = (await import("openai")).default;
     const openai = new OpenAI();
     const response = await openai.images.generate({
       model: "dall-e-3",
-      prompt: `${prompt}${style ? `. Style: ${style}` : ''}`,
+      prompt: enhancedPrompt.slice(0, 4000),
       n: 1,
       size: size || "1024x1024",
       quality: "standard",
@@ -2129,6 +2161,216 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
 
     res.json(creations);
+  }));
+
+  // ── Phase 8: Aesthetic Intelligence — Preference Learning ────────
+
+  // POST /api/partner/preferences — Save an aesthetic preference
+  app.post("/api/partner/preferences", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const data = validateBody(savePreferenceSchema, req.body);
+
+    // Find primary agent
+    const userAgents = await storage.getAgents(userId);
+    const primaryAgent = userAgents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || userAgents[0];
+
+    if (!primaryAgent) return res.status(400).json({ error: "No agent found" });
+
+    const preference = await storage.savePreference(userId, primaryAgent.id, data);
+
+    // Create an aesthetic memory (Phase 8b)
+    const importance = data.reaction === 'love' || data.reaction === 'hate' ? 0.9 : 0.6;
+    await storage.createMemory({
+      userId,
+      agentId: primaryAgent.id,
+      content: `[Aesthetic: ${data.reaction}] ${data.item}. ${data.context || ''}. Tags: ${(data.tags || []).join(', ')}`,
+      type: 'aesthetic',
+      importance,
+      namespace: '_aesthetics',
+    });
+
+    // Invalidate cached aesthetic profile
+    await pool.query(
+      `DELETE FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile'`,
+      [userId]
+    ).catch(() => {});
+
+    res.status(201).json(preference);
+  }));
+
+  // GET /api/partner/preferences — List preferences, optionally filtered by category
+  app.get("/api/partner/preferences", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const category = req.query.category as string | undefined;
+    const limit = Math.min(200, parseInt(req.query.limit as string) || 50);
+    const preferences = await storage.getPreferences(userId, category, limit);
+    res.json(preferences);
+  }));
+
+  // GET /api/partner/preferences/profile — Get aggregated style profile with GPT summary
+  app.get("/api/partner/preferences/profile", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const profile = await storage.getPreferenceProfile(userId);
+
+    // Check for cached summary in memory
+    const cachedSummary = await pool.query(
+      `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile' ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    let summary = '';
+    if (cachedSummary.rows.length > 0) {
+      summary = cachedSummary.rows[0].content;
+    } else if (profile.totalPreferences >= 3) {
+      // Generate summary with GPT-4o-mini
+      try {
+        const OpenAI = (await import("openai")).default;
+        const openaiClient = new OpenAI();
+        const profileText = Object.entries(profile.categories)
+          .map(([cat, data]: [string, any]) =>
+            `${cat}: loves [${data.loves.join(', ')}], dislikes [${data.dislikes.join(', ')}], tags [${data.dominantTags.join(', ')}]`
+          ).join('\n');
+
+        const response = await openaiClient.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{
+            role: "system",
+            content: "Analyze this user's aesthetic preferences and write a concise 2-3 sentence aesthetic profile. Be specific about their taste patterns."
+          }, {
+            role: "user",
+            content: profileText,
+          }],
+          temperature: 0.5,
+          max_tokens: 200,
+        });
+        summary = response.choices[0]?.message?.content?.trim() || '';
+
+        // Cache the summary
+        if (summary) {
+          const userAgents = await storage.getAgents(userId);
+          const primaryAgent = userAgents[0];
+          await storage.createMemory({
+            userId,
+            agentId: primaryAgent?.id || null,
+            content: summary,
+            type: 'aesthetic',
+            importance: 0.8,
+            namespace: '_aesthetic_profile',
+          });
+        }
+      } catch {
+        summary = '';
+      }
+    }
+
+    res.json({ ...profile, summary });
+  }));
+
+  // POST /api/partner/feedback — Reaction to a creation (auto-extract tags)
+  app.post("/api/partner/feedback", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const data = validateBody(feedbackReactionSchema, req.body);
+
+    // Find primary agent
+    const userAgents = await storage.getAgents(userId);
+    const primaryAgent = userAgents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || userAgents[0];
+
+    if (!primaryAgent) return res.status(400).json({ error: "No agent found" });
+
+    // Extract style tags via GPT-4o-mini
+    let tags: string[] = [];
+    try {
+      const OpenAI = (await import("openai")).default;
+      const openaiClient = new OpenAI();
+      const response = await openaiClient.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{
+          role: "system",
+          content: "Extract 3-5 aesthetic/style tags from this creative work. Return ONLY a JSON array of lowercase tag strings."
+        }, {
+          role: "user",
+          content: data.content.slice(0, 1000),
+        }],
+        temperature: 0.2,
+        max_tokens: 80,
+      });
+      const text = response.choices[0]?.message?.content?.trim() || '[]';
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) tags = parsed.slice(0, 5).map((t: any) => String(t).toLowerCase());
+    } catch {
+      tags = [];
+    }
+
+    const category = data.creationType === 'image' ? 'visual' : 'writing';
+    const preference = await storage.savePreference(userId, primaryAgent.id, {
+      category,
+      item: data.content.slice(0, 200),
+      reaction: data.reaction,
+      context: `Feedback on ${data.creationType || 'creation'}`,
+      tags,
+    });
+
+    // Create aesthetic memory
+    const importance = data.reaction === 'love' || data.reaction === 'hate' ? 0.9 : 0.6;
+    await storage.createMemory({
+      userId,
+      agentId: primaryAgent.id,
+      content: `[Aesthetic: ${data.reaction}] ${data.content.slice(0, 200)}. Tags: ${tags.join(', ')}`,
+      type: 'aesthetic',
+      importance,
+      namespace: '_aesthetics',
+    });
+
+    // Invalidate cached profile
+    await pool.query(
+      `DELETE FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile'`,
+      [userId]
+    ).catch(() => {});
+
+    res.status(201).json({ preference, tags });
+  }));
+
+  // POST /api/partner/create/deliberate — Creative deliberation on a piece
+  app.post("/api/partner/create/deliberate", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const data = validateBody(creativeDeliberateSchema, req.body);
+    const result = await runCreativeDeliberation(data.content, data.type, data.question);
+
+    // Store deliberation result as memory
+    const userAgents = await storage.getAgents(userId);
+    const primaryAgent = userAgents.find((a: any) =>
+      a.name.toLowerCase().includes("agent o") ||
+      a.name.toLowerCase().includes("partner")
+    ) || userAgents[0];
+
+    if (primaryAgent) {
+      await storage.createMemory({
+        userId,
+        agentId: primaryAgent.id,
+        content: `[Creative Deliberation] ${data.type}: Score ${result.score}/10. ${result.synthesis.slice(0, 300)}`,
+        type: 'episodic',
+        importance: 0.7,
+        namespace: '_creations',
+      });
+    }
+
+    res.json(result);
   }));
 
   // ── Phase 7: Knowledge Base System ──────────────────────────────

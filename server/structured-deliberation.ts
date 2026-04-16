@@ -1271,6 +1271,103 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ── Phase 8: Creative Deliberation Roles ─────────────────────────
+
+export const CREATIVE_ROLES: Record<string, string> = {
+  critic: `You are an ART CRITIC. Evaluate creative work with:
+- Technical quality (craft, technique, structure)
+- Emotional impact (does it move people?)
+- Originality (is it derivative or fresh?)
+- Historical context (what traditions does it draw from?)
+Be honest but constructive. Point out both strengths and weaknesses.`,
+
+  poet: `You are a POET/LYRICIST. Focus on:
+- Language beauty (word choice, rhythm, sound)
+- Imagery and metaphor
+- Emotional truth
+- The unsaid — what the gaps between words convey
+Advocate for artistic risk and authenticity.`,
+
+  historian: `You are an ART HISTORIAN. Bring context:
+- What movement/tradition does this relate to?
+- Who are the influences, acknowledged or not?
+- How does this fit in the current cultural moment?
+- What historical parallels exist?
+Ground creative choices in knowledge.`,
+
+  provocateur: `You are a CREATIVE PROVOCATEUR. Challenge comfort:
+- Is this too safe? Too predictable?
+- What would happen if the creator took the opposite approach?
+- Where is the artist hiding behind technique instead of truth?
+- What's the most interesting version of this that nobody would expect?
+Push toward the edge without being destructive.`,
+};
+
+/**
+ * Run a creative deliberation — 4 creative roles evaluate a creative piece.
+ * Returns individual perspectives and a synthesized assessment.
+ */
+export async function runCreativeDeliberation(
+  content: string,
+  type: string,
+  question?: string
+): Promise<{
+  perspectives: Array<{ role: string; assessment: string }>;
+  synthesis: string;
+  score: number;
+}> {
+  const userPrompt = `Creative work (${type}):\n\n${content.slice(0, 3000)}\n\n${question || 'Evaluate this work honestly. What works? What could be better?'}`;
+
+  const perspectives: Array<{ role: string; assessment: string }> = [];
+
+  // Run all 4 creative roles in parallel
+  const roleEntries = Object.entries(CREATIVE_ROLES);
+  const results = await Promise.allSettled(
+    roleEntries.map(async ([role, systemPrompt]) => {
+      const response = await callLLM(
+        process.env.DEFAULT_DELIBERATION_MODEL || "gpt-4o",
+        systemPrompt,
+        userPrompt,
+        { maxTokens: 500, temperature: 0.8 }
+      );
+      return { role, assessment: response };
+    })
+  );
+
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      perspectives.push(result.value);
+    }
+  }
+
+  // Synthesize all perspectives into a final assessment
+  const synthesisPrompt = `You are synthesizing multiple expert perspectives on a creative work.
+Given these assessments, produce a final honest evaluation that includes:
+1. An honest overall assessment (not flattery)
+2. Specific improvement suggestions
+3. Historical references that could enrich the work
+4. A score from 1-10 with justification
+
+Format: Start with the assessment, end with "SCORE: X/10"`;
+
+  const perspectivesText = perspectives
+    .map((p) => `[${p.role.toUpperCase()}]: ${p.assessment}`)
+    .join("\n\n");
+
+  const synthesis = await callLLM(
+    process.env.DEFAULT_DELIBERATION_MODEL || "gpt-4o",
+    synthesisPrompt,
+    `Creative work (${type}):\n${content.slice(0, 1000)}\n\nExpert assessments:\n${perspectivesText}`,
+    { maxTokens: 600, temperature: 0.6 }
+  );
+
+  // Extract score from synthesis
+  const scoreMatch = synthesis.match(/SCORE:\s*(\d+)/i);
+  const score = scoreMatch ? Math.min(10, Math.max(1, parseInt(scoreMatch[1]))) : 5;
+
+  return { perspectives, synthesis, score };
+}
+
 // ── DB Persistence Helper ────────────────────────────────────────
 
 async function persistSession(session: DeliberationSession, userId: number) {

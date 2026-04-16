@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -328,10 +328,18 @@ function CreativeChatCard({ message }: { message: any }) {
           )}
         </div>
 
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 flex items-center justify-between">
           <span className="text-[10px] text-muted-foreground/30">
             {new Date(meta.createdAt || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
+        </div>
+
+        {/* Phase 8: Reaction buttons */}
+        <div className="px-4 pb-3 border-t border-white/5 pt-2">
+          <ReactionButtons
+            content={isImage ? (meta.revisedPrompt || meta.content) : meta.content}
+            creationType={meta.type}
+          />
         </div>
       </div>
     </motion.div>
@@ -407,6 +415,218 @@ function CreativeMenu({ onSelect, onClose }: { onSelect: (mode: string, subType?
           ))}
         </div>
       )}
+    </motion.div>
+  );
+}
+
+// ── Reaction Buttons for Creative Cards ────────────────────────
+const REACTIONS = [
+  { key: "love", emoji: "❤️", label: "Love", icon: Heart },
+  { key: "like", emoji: "👍", label: "Like", icon: ThumbsUp },
+  { key: "neutral", emoji: "😐", label: "Neutral", icon: Meh },
+  { key: "dislike", emoji: "👎", label: "Dislike", icon: ThumbsDown },
+  { key: "hate", emoji: "😤", label: "Hate", icon: Angry },
+];
+
+function ReactionButtons({ content, creationType, onReact }: { content: string; creationType: string; onReact?: (reaction: string) => void }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleReact = async (reaction: string) => {
+    if (selected || saving) return;
+    setSaving(true);
+    try {
+      const token = getSessionToken();
+      await fetch(`${API_BASE}/api/partner/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "x-session-token": token } : {}),
+        },
+        credentials: "include",
+        body: JSON.stringify({ content, reaction, creationType }),
+      });
+      setSelected(reaction);
+      onReact?.(reaction);
+    } catch { /* ignore */ }
+    setSaving(false);
+  };
+
+  return (
+    <div className="flex items-center gap-1 mt-2">
+      {REACTIONS.map((r) => (
+        <motion.button
+          key={r.key}
+          onClick={() => handleReact(r.key)}
+          whileTap={{ scale: 0.9 }}
+          className={cn(
+            "text-xs px-1.5 py-1 rounded-md transition-all",
+            selected === r.key
+              ? "bg-[#C9A340]/20 border border-[#C9A340]/40"
+              : selected
+                ? "opacity-30 pointer-events-none"
+                : "hover:bg-white/5 border border-transparent"
+          )}
+          title={r.label}
+          disabled={!!selected || saving}
+        >
+          {r.emoji}
+        </motion.button>
+      ))}
+      {selected && (
+        <motion.span
+          initial={{ opacity: 0, x: -4 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="text-[9px] text-[#C9A340]/60 ml-1"
+        >
+          Saved
+        </motion.span>
+      )}
+    </div>
+  );
+}
+
+// ── Taste Profile Panel ─────────────────────────────────────────
+function TasteProfilePanel() {
+  const [open, setOpen] = useState(false);
+  const { data: profile } = useQuery<any>({
+    queryKey: ["/api/partner/preferences/profile"],
+    enabled: open,
+    staleTime: 60000,
+  });
+  const { data: recentPrefs } = useQuery<any[]>({
+    queryKey: ["/api/partner/preferences", { limit: 10 }],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/partner/preferences?limit=10");
+      return r.json();
+    },
+    enabled: open,
+    staleTime: 60000,
+  });
+
+  if (!open) {
+    return (
+      <motion.button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors"
+        style={{
+          background: "rgba(255,255,255,0.05)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          color: "rgba(255,255,255,0.5)",
+        }}
+        whileTap={{ scale: 0.97 }}
+        title="Taste Profile"
+      >
+        <Heart className="w-3 h-3" />
+        <span className="hidden sm:inline">Taste</span>
+      </motion.button>
+    );
+  }
+
+  const categories = profile?.categories || {};
+  const allTags: Record<string, number> = {};
+  for (const cat of Object.values(categories) as any[]) {
+    for (const tag of (cat.dominantTags || [])) {
+      allTags[tag] = (allTags[tag] || 0) + 1;
+    }
+  }
+  const sortedTags = Object.entries(allTags).sort((a, b) => b[1] - a[1]).slice(0, 12);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      className="rounded-xl overflow-hidden mb-2"
+      style={{
+        background: "rgba(15,27,61,0.95)",
+        border: "1px solid rgba(201,163,64,0.15)",
+        backdropFilter: "blur(12px)",
+      }}
+    >
+      <div className="flex items-center justify-between px-3 py-2">
+        <div className="flex items-center gap-1.5">
+          <Heart className="w-3.5 h-3.5 text-[#C9A340]" />
+          <span className="text-xs font-medium text-foreground/80">Agent O's Taste Profile</span>
+        </div>
+        <button onClick={() => setOpen(false)} className="text-muted-foreground/40 hover:text-foreground">
+          <ChevronUp className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="px-3 pb-3 space-y-3">
+        {/* Summary */}
+        {profile?.summary && (
+          <p className="text-[11px] text-foreground/60 leading-relaxed italic">
+            "{profile.summary}"
+          </p>
+        )}
+
+        {/* Tag Cloud */}
+        {sortedTags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {sortedTags.map(([tag, count]) => (
+              <motion.span
+                key={tag}
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="text-[10px] px-2 py-0.5 rounded-full border"
+                style={{
+                  background: `rgba(201,163,64,${0.05 + count * 0.05})`,
+                  borderColor: `rgba(201,163,64,${0.15 + count * 0.1})`,
+                  color: `rgba(201,163,64,${0.5 + count * 0.15})`,
+                }}
+              >
+                {tag}
+              </motion.span>
+            ))}
+          </div>
+        )}
+
+        {/* Category breakdown */}
+        {Object.entries(categories).length > 0 && (
+          <div className="space-y-2">
+            {Object.entries(categories).slice(0, 3).map(([cat, data]: [string, any]) => (
+              <div key={cat}>
+                <div className="text-[10px] text-muted-foreground/50 uppercase tracking-wider mb-0.5">{cat}</div>
+                <div className="flex flex-wrap gap-1">
+                  {(data.loves || []).slice(0, 3).map((item: string) => (
+                    <span key={item} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300/70 border border-emerald-500/20">
+                      ♥ {item.slice(0, 25)}
+                    </span>
+                  ))}
+                  {(data.dislikes || []).slice(0, 2).map((item: string) => (
+                    <span key={item} className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-300/70 border border-red-500/20">
+                      ✗ {item.slice(0, 25)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Recent reactions */}
+        {recentPrefs && recentPrefs.length > 0 && (
+          <div>
+            <div className="text-[10px] text-muted-foreground/40 mb-1">Recent reactions</div>
+            <div className="space-y-0.5 max-h-20 overflow-y-auto">
+              {recentPrefs.slice(0, 5).map((p: any) => (
+                <div key={p.id} className="flex items-center gap-1.5 text-[10px] text-foreground/50">
+                  <span>{p.reaction === 'love' ? '❤️' : p.reaction === 'like' ? '👍' : p.reaction === 'dislike' ? '👎' : p.reaction === 'hate' ? '😤' : '😐'}</span>
+                  <span className="truncate">{p.item.slice(0, 40)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(!profile || profile.totalPreferences === 0) && (
+          <p className="text-[10px] text-muted-foreground/30 text-center py-2">
+            React to Agent O's creations to build your taste profile
+          </p>
+        )}
+      </div>
     </motion.div>
   );
 }
@@ -796,6 +1016,9 @@ export default function PartnerChat() {
           {voiceMode ? <Volume2 className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
           <span className="hidden sm:inline">{voiceMode ? "Voice" : "Voice"}</span>
         </button>
+
+        {/* Phase 8: Taste Profile */}
+        <TasteProfilePanel />
 
         <Link href="/rooms">
           <a className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-white/5">
