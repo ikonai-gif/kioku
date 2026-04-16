@@ -1009,10 +1009,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       storage.getUserResourceCounts(userId),
     ]);
     const roomLimits = getLimits(roomPlan);
-    if (roomCounts.rooms >= roomLimits.rooms) {
+    const { name: rawName, description: rawDesc, agentIds } = validateBody(createRoomSchema, req.body);
+    // Partner room is exempt from plan limits — it's essential for Agent O
+    const isPartnerRoom = rawName === "Partner";
+    if (!isPartnerRoom && roomCounts.rooms >= roomLimits.rooms) {
       return res.status(429).json({ error: `Plan limit reached: ${roomLimits.rooms} rooms (${roomPlan} plan)` });
     }
-    const { name: rawName, description: rawDesc, agentIds } = validateBody(createRoomSchema, req.body);
     const room = await storage.createRoom({
       userId,
       name: sanitizeHtml(rawName),
