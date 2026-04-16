@@ -12,6 +12,7 @@ import { broadcastToRoom } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
+import { checkSycophancy } from "./sycophancy-checker";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -160,6 +161,12 @@ export async function triggerAgentResponses(
         }
 
         if (!reply) continue;
+
+        // Sycophancy check — revise if score > 6 (Phase 4d)
+        const sycCheck = await checkSycophancy(triggerContent, reply);
+        if (sycCheck.score > 6 && sycCheck.revised) {
+          reply = sycCheck.revised;
+        }
 
         // Stagger: first agent responds after 800ms, each subsequent +600ms
         await sleep(800 + i * 600);

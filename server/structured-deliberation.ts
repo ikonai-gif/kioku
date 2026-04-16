@@ -26,6 +26,7 @@ import {
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { checkPositionLock, savePositionLock } from "./position-lock";
+import { checkSycophancy } from "./sycophancy-checker";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -843,6 +844,21 @@ async function collectPositions(
       if (result.success) {
         const raw = result.value!;
         parsed = parseAgentResponse(raw, agent.name);
+
+        // Sycophancy check — debate/final phases only (Phase 4d)
+        if (phase === "debate" || phase === "final") {
+          // Check if agent's position matches majority (potential sycophancy vector)
+          const majorityPosition = priorPositions.length > 0
+            ? priorPositions.sort((a, b) => b.confidence - a.confidence)[0]?.position
+            : null;
+          if (majorityPosition && parsed.position.toLowerCase().includes(majorityPosition.toLowerCase().slice(0, 30))) {
+            const sycCheck = await checkSycophancy(topic, parsed.reasoning);
+            if (sycCheck.score > 6 && sycCheck.revised) {
+              parsed.reasoning = sycCheck.revised;
+            }
+          }
+        }
+
         const estimatedTokens = Math.ceil((fittedSystemPrompt.length + userMsg.length + raw.length) / 4);
         storage.incrementUsage(userId, 'tokens_used', estimatedTokens).catch(() => {});
       } else {

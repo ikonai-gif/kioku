@@ -1,8 +1,10 @@
 /**
- * Emotional State Engine — Phase 4a
- * PAD (Pleasure-Arousal-Dominance) vector management with temporal decay
- * and emotion label mapping for agent emotional architecture.
+ * Emotional State Engine — Phase 4a + 4d
+ * PAD (Pleasure-Arousal-Dominance) vector management with temporal decay,
+ * emotion label mapping, and slow reflection for agent emotional architecture.
  */
+
+import OpenAI from 'openai';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -175,4 +177,93 @@ export function defaultEmotionalState(): Omit<EmotionalState, 'id' | 'agentId' |
     poignancySum: 0.0,
     halfLifeMinutes: 120,
   };
+}
+
+// ── Slow Reflection (Phase 4d) ──────────────────────────────────────
+
+const SLOW_REFLECTION_PROMPT = `You are analyzing an AI agent's personality evolution.
+
+Agent's baseline personality: P={baseP}, A={baseA}, D={baseD}
+Current emotional state: P={P}, A={A}, D={D}
+Current emotion: {emotion}
+Recent important events: {events}
+
+Should the agent's BASELINE personality shift permanently?
+This represents slow character growth — like a person gradually becoming more confident or empathetic.
+
+Return ONLY JSON: {"baseline_delta_P": float, "baseline_delta_A": float, "baseline_delta_D": float, "insight": string}
+- Deltas in range [-0.05, 0.05]. Baseline changes VERY slowly.
+- Insight: one sentence about what the agent learned.`;
+
+/**
+ * Slow reflection — triggered when accumulated poignancy exceeds 150.
+ * Uses a more capable model to evaluate whether the agent's baseline
+ * personality should permanently shift based on accumulated experiences.
+ */
+export async function slowReflection(
+  agentId: number, userId: number, storage: any
+): Promise<void> {
+  try {
+    const state = await storage.getAgentEmotionalState(agentId);
+    if (!state || state.poignancySum < 150) return;
+
+    // Get recent high-importance memories for context
+    const memories = await storage.getMemories(userId, 50);
+    const recentImportant = memories
+      .filter((m: any) => m.importance > 0.7)
+      .slice(0, 10)
+      .map((m: any) => m.content.slice(0, 100))
+      .join('; ');
+
+    const openai = new OpenAI();
+    const prompt = SLOW_REFLECTION_PROMPT
+      .replace('{baseP}', (state.baselinePleasure || 0.1).toFixed(2))
+      .replace('{baseA}', (state.baselineArousal || 0.0).toFixed(2))
+      .replace('{baseD}', (state.baselineDominance || 0.2).toFixed(2))
+      .replace('{P}', state.pleasure.toFixed(2))
+      .replace('{A}', state.arousal.toFixed(2))
+      .replace('{D}', state.dominance.toFixed(2))
+      .replace('{emotion}', state.emotionLabel)
+      .replace('{events}', recentImportant || 'No recent significant events');
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4,
+      max_tokens: 150,
+    });
+
+    const text = response.choices[0]?.message?.content?.trim();
+    if (!text) return;
+    const result = JSON.parse(text);
+
+    // Apply baseline deltas (clamped to [-0.05, 0.05])
+    const clampDelta = (v: number) => Math.max(-0.05, Math.min(0.05, v));
+    const newBaseP = clampPAD((state.baselinePleasure || 0.1) + clampDelta(result.baseline_delta_P || 0));
+    const newBaseA = clampPAD((state.baselineArousal || 0.0) + clampDelta(result.baseline_delta_A || 0));
+    const newBaseD = clampPAD((state.baselineDominance || 0.2) + clampDelta(result.baseline_delta_D || 0));
+
+    // Reset poignancy, update baselines
+    await storage.upsertAgentEmotionalState(agentId, userId, {
+      baselinePleasure: newBaseP,
+      baselineArousal: newBaseA,
+      baselineDominance: newBaseD,
+      poignancySum: 0,
+      lastUpdatedAt: Date.now(),
+    });
+
+    // Save reflection as memory
+    if (result.insight) {
+      await storage.createMemory({
+        userId,
+        agentId,
+        content: `[Self-reflection] ${result.insight}`,
+        type: 'episodic',
+        importance: 0.8,
+        namespace: '_reflections',
+      });
+    }
+  } catch {
+    // Silent fail — slow reflection is non-critical
+  }
 }

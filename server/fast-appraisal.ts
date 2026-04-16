@@ -6,7 +6,7 @@
  */
 
 import OpenAI from 'openai';
-import { getDecayedEmotionalState, clampPAD, padToEmotionLabel, defaultEmotionalState } from './emotional-state';
+import { getDecayedEmotionalState, clampPAD, padToEmotionLabel, defaultEmotionalState, slowReflection } from './emotional-state';
 
 const APPRAISAL_PROMPT = `You are an emotion analyzer for an AI agent.
 Agent's current emotional state: Pleasure={P}, Arousal={A}, Dominance={D} (each -1.0 to 1.0)
@@ -66,6 +66,11 @@ export async function fastAppraisal(
       poignancySum: newPoignancy,
       lastUpdatedAt: Date.now(),
     });
+
+    // Trigger slow reflection if poignancy threshold exceeded (Phase 4d)
+    if (newPoignancy > 150) {
+      slowReflection(agentId, userId, storage).catch(() => {});
+    }
   } catch {
     // Silent fail — emotional appraisal is non-critical
   }
