@@ -366,6 +366,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(sanitizeUser(user));
   }));
 
+  app.post("/api/auth/demo", asyncHandler(async (req, res) => {
+    let user = await storage.getUserByEmail("demo@kioku.ai");
+    if (!user) user = await storage.createUser({ email: "demo@kioku.ai", name: "Demo User", plan: "dev" });
+    const sessionToken = createSessionToken(user.id);
+    res.cookie(COOKIE_NAME, sessionToken, COOKIE_OPTS);
+    res.json({ ok: true, sessionToken, user: sanitizeUser(user) });
+  }));
+
   app.post("/api/auth/logout", asyncHandler(async (req, res) => {
     res.clearCookie(COOKIE_NAME, { path: "/" });
     res.json({ ok: true });

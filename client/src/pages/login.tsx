@@ -41,15 +41,18 @@ export default function LoginPage() {
     }
   }, []);
 
-  function handleQuickDemo() {
-    login("demo-session", {
-      id: 1,
-      email: "demo@kioku.ai",
-      name: "Demo User",
-      plan: "dev",
-      billingCycle: "monthly",
-      apiKey: "kk_demo_0000000000000000",
-    });
+  async function handleQuickDemo() {
+    setLoading(true);
+    try {
+      const res = await apiRequest("POST", "/api/auth/demo");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Demo login failed");
+      login(data.sessionToken, data.user);
+    } catch (e: any) {
+      toast({ title: "Demo login failed", description: e.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleRequestLink() {
