@@ -1904,6 +1904,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }));
 
+  // ── Phase 5: Sensory Endpoints — TTS, STT, Vision ─────────────
+
+  // POST /api/partner/speak — Text-to-Speech via OpenAI TTS
+  app.post("/api/partner/speak", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { text, voice } = req.body;
+    if (!text) return res.status(400).json({ error: "Text required" });
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const mp3 = await openai.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice: voice || "nova",
+      input: text.slice(0, 4096),
+      instructions: "Speak naturally, as a friendly partner having a conversation. Match emotional tone to the content.",
+    });
+
+    res.set("Content-Type", "audio/mpeg");
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    res.send(buffer);
+  }));
+
+  // POST /api/partner/listen — Speech-to-Text via Whisper
+  app.post("/api/partner/listen", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const multer = (await import("multer")).default;
+    const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }).single("audio");
+
+    await new Promise<void>((resolve, reject) => {
+      upload(req as any, res as any, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "Audio file required" });
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const transcription = await openai.audio.transcriptions.create({
+      model: "whisper-1",
+      file: new File([file.buffer], file.originalname || "audio.webm", { type: file.mimetype || "audio/webm" }),
+      language: "en",
+    });
+
+    res.json({ text: transcription.text });
+  }));
+
+  // POST /api/partner/see — Vision via GPT-4o-mini
+  app.post("/api/partner/see", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { image, prompt } = req.body;
+    if (!image) return res.status(400).json({ error: "Image required" });
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: prompt || "What do you see in this image? Describe it naturally as a friend would." },
+          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${image}` } },
+        ],
+      }],
+      max_tokens: 500,
+    });
+
+    const description = response.choices[0]?.message?.content || "I couldn't make out the image clearly.";
+    res.json({ description });
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {
