@@ -446,10 +446,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       storage.getUserResourceCounts(userId),
     ]);
     const limits = getLimits(plan);
-    if (counts.agents >= limits.agents) {
+    const { name: rawAgentName, description: rawAgentDesc, color, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(createAgentSchema, req.body);
+    // Agent O is exempt from plan limits — it's the core partner agent
+    const isAgentO = rawAgentName.toLowerCase().includes("agent o");
+    if (!isAgentO && counts.agents >= limits.agents) {
       return res.status(429).json({ error: `Plan limit reached: ${limits.agents} agents (${plan} plan)` });
     }
-    const { name: rawAgentName, description: rawAgentDesc, color, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(createAgentSchema, req.body);
     const agent = await storage.createAgent({
       userId,
       name: sanitizeHtml(rawAgentName),
@@ -1123,7 +1125,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         agentId ?? null,
         agentName,
         content,
-        roomAgentIds
+        roomAgentIds,
+        room.name
       ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
   }));

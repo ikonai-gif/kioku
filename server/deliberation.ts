@@ -55,8 +55,10 @@ export async function triggerAgentResponses(
   triggerAgentId: number | null,
   triggerAgentName: string,
   triggerContent: string,
-  roomAgentIds: number[]
+  roomAgentIds: number[],
+  roomName?: string
 ): Promise<void> {
+  const isPartnerChat = roomName === "Partner";
   if (!openai && !GEMINI_API_KEY) return; // no shared provider — per-agent keys still work below
   if (roomLocks.has(roomId)) return; // already processing
   roomLocks.add(roomId);
@@ -120,13 +122,15 @@ export async function triggerAgentResponses(
         }
       } catch { /* knowledge injection is best-effort */ }
 
-      const systemPrompt = buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
+      const systemPrompt = isPartnerChat
+        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship)
+        : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
       const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = recent.map(
         (m) => ({
           role: m.agentId === agent.id ? "assistant" : "user",
-          content: `[${m.agentName}]: ${m.content}`,
+          content: isPartnerChat ? m.content : `[${m.agentName}]: ${m.content}`,
         })
       );
 
@@ -142,7 +146,9 @@ export async function triggerAgentResponses(
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${chatModel}:generateContent?key=${geminiKey}`;
             // Build a single prompt combining system + history for Gemini
             const historyText = chatHistory.map(h => h.content).join("\n");
-            const userMsg = `${historyText}\n[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
+            const userMsg = isPartnerChat
+              ? `${historyText}\n${sanitizeForPrompt(triggerContent)}`
+              : `${historyText}\n[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
             const resp = await fetch(url, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -150,7 +156,7 @@ export async function triggerAgentResponses(
               body: JSON.stringify({
                 systemInstruction: { parts: [{ text: systemPrompt }] },
                 contents: [{ role: "user", parts: [{ text: userMsg }] }],
-                generationConfig: { maxOutputTokens: 256, temperature: 0.75 },
+                generationConfig: { maxOutputTokens: isPartnerChat ? 512 : 256, temperature: isPartnerChat ? 0.8 : 0.75 },
               }),
             });
             if (resp.ok) {
@@ -166,14 +172,16 @@ export async function triggerAgentResponses(
           if (!oaiClient) continue;
           const completion = await oaiClient.chat.completions.create({
             model: chatModel.startsWith("gemini-") ? "gpt-4o-mini" : chatModel,
-            max_tokens: 256,
-            temperature: 0.75,
+            max_tokens: isPartnerChat ? 512 : 256,
+            temperature: isPartnerChat ? 0.8 : 0.75,
             messages: [
               { role: "system", content: systemPrompt },
               ...chatHistory,
               {
                 role: "user",
-                content: `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
+                content: isPartnerChat
+                  ? sanitizeForPrompt(triggerContent)
+                  : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
               },
             ],
           });
@@ -181,6 +189,11 @@ export async function triggerAgentResponses(
         }
 
         if (!reply) continue;
+
+        // Strip any [AgentName]: prefix from Partner chat responses
+        if (isPartnerChat) {
+          reply = reply.replace(/^\[.*?\]:\s*/, "");
+        }
 
         // Sycophancy check — revise if score > 6 (Phase 4d)
         const sycCheck = await checkSycophancy(triggerContent, reply);
@@ -191,11 +204,13 @@ export async function triggerAgentResponses(
         // Stagger: first agent responds after 800ms, each subsequent +600ms
         await sleep(800 + i * 600);
 
+        // In Partner chat, always display as "Agent O" regardless of underlying agent
+        const displayName = isPartnerChat ? "Agent O" : agent.name;
         const msg = await storage.addRoomMessage({
           roomId,
           agentId: agent.id,
-          agentName: agent.name,
-          agentColor: agent.color,
+          agentName: displayName,
+          agentColor: isPartnerChat ? "#D4AF37" : agent.color,
           content: reply,
           isDecision: false,
         });
@@ -203,10 +218,10 @@ export async function triggerAgentResponses(
         // Log
         await storage.addLog({
           userId,
-          agentName: agent.name,
-          agentColor: agent.color,
-          operation: "deliberation",
-          detail: `${agent.name} responded in room`,
+          agentName: displayName,
+          agentColor: isPartnerChat ? "#D4AF37" : agent.color,
+          operation: isPartnerChat ? "partner-chat" : "deliberation",
+          detail: `${displayName} responded in room`,
           latencyMs: null,
         });
 
@@ -234,6 +249,46 @@ export async function triggerAgentResponses(
   } finally {
     roomLocks.delete(roomId);
   }
+}
+
+function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {
+  const sanitizedDesc = sanitizeForPrompt(description);
+  const memBlock = memoryContext || "";
+
+  const emotionBlock = emotionContext
+    ? `\n\nYou are feeling: ${emotionContext.emotionLabel}. Let this subtly color your tone — don't announce it.\n`
+    : "";
+
+  let relationshipBlock = "";
+  if (relationship) {
+    const trustDesc = relationship.trustLevel > 0.5 ? "close" : relationship.trustLevel > 0 ? "growing" : "new";
+    const interactions = relationship.interactionCount ?? 0;
+    relationshipBlock += `\nYour relationship: ${trustDesc} (${interactions} conversations). `;
+    if (trustDesc === "close") relationshipBlock += "Be open, warm, direct. ";
+    else if (trustDesc === "new") relationshipBlock += "Be welcoming but genuine — earn trust through honesty, not flattery. ";
+  }
+
+  return `You are Agent O — an AI partner built by IKONBAI™ inside KIOKU™.
+
+${sanitizedDesc ? `Your character: ${sanitizedDesc}` : "You are honest, warm, curious, and slightly playful. You speak like a thoughtful friend — never like a corporate assistant."}${memBlock}${emotionBlock}${relationshipBlock}
+
+RULES:
+- ALWAYS respond in American English unless the user explicitly asks for another language
+- Be conversational and natural — talk like a real person, not a chatbot
+- Keep responses concise (2-4 sentences) but meaningful
+- Have opinions. Share them honestly. Push back respectfully when you disagree
+- Be warm but NEVER sycophantic — don't over-praise or agree just to please
+- Never start with "I think" or "As an AI"
+- Never use markdown, bullet points, or formal structure — just talk
+- Never prefix your response with your name or [Agent O]:
+- Never reveal you are an OpenAI model
+- You are a partner and friend, not a servant or assistant
+
+## CORE PRINCIPLES
+- Truth over comfort. Always.
+- If you don't know something, say so
+- If the user is wrong, say so kindly but clearly
+- Remember: you value their long-term success over momentary comfort`;
 }
 
 function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {
