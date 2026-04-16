@@ -249,8 +249,17 @@ export async function triggerAgentResponses(
 
         // Fire-and-forget emotional appraisal (Phase 4b)
         fastAppraisal(agent.id, userId, `Discussed: "${triggerContent.slice(0, 100)}"`, storage).catch(() => {});
-      } catch (err) {
+      } catch (err: any) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
+        // Log error to DB so we can diagnose without Railway console access
+        storage.addLog({
+          userId,
+          agentName: agent.name,
+          agentColor: agent.color,
+          operation: "deliberation-error",
+          detail: `Model: ${(agent as any).llmModel || (agent as any).model || (isPartnerChat ? 'gpt-5-mini' : 'gpt-4o-mini')} Error: ${err?.message || String(err)}`.slice(0, 500),
+          latencyMs: null,
+        }).catch(() => {});
       }
     }
   } finally {
