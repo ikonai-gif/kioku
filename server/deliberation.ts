@@ -7,6 +7,7 @@
  */
 
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
 import { broadcastToRoom } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
@@ -25,8 +26,9 @@ function sanitizeForPrompt(input: string): string {
 
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || null;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 
-export const deliberationEnabled = !!openai || !!GEMINI_API_KEY;
+export const deliberationEnabled = !!openai || !!GEMINI_API_KEY || !!ANTHROPIC_API_KEY;
 
 /** Get an OpenAI client for a given agent — uses per-agent key if set, else shared */
 function getOpenAIClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): OpenAI | null {
@@ -38,6 +40,13 @@ function getOpenAIClient(agent: { llmApiKey?: string | null; llmProvider?: strin
 function getGeminiKey(agent: { llmApiKey?: string | null; llmProvider?: string | null }): string | null {
   if (agent.llmApiKey && agent.llmProvider === "gemini") return agent.llmApiKey;
   return GEMINI_API_KEY;
+}
+
+/** Get Anthropic client for a given agent — uses per-agent key if set, else shared */
+function getAnthropicClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): Anthropic | null {
+  if (agent.llmApiKey && agent.llmProvider === "anthropic") return new Anthropic({ apiKey: agent.llmApiKey });
+  if (ANTHROPIC_API_KEY) return new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  return null;
 }
 
 const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
@@ -139,6 +148,7 @@ export async function triggerAgentResponses(
         const defaultModel = "gpt-4o-mini";
         const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
+        const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
         let reply: string | undefined;
 
         if (isGemini) {
@@ -167,7 +177,30 @@ export async function triggerAgentResponses(
           }
         }
 
-        if (!reply) {
+        if (!reply && isClaude) {
+          // Anthropic Claude path
+          const anthropicClient = getAnthropicClient(agent as any);
+          if (anthropicClient) {
+            const claudeMsg = await anthropicClient.messages.create({
+              model: chatModel.startsWith("claude-") ? chatModel : "claude-sonnet-4-6",
+              max_tokens: isPartnerChat ? 800 : 256,
+              system: systemPrompt,
+              messages: [
+                ...chatHistory,
+                {
+                  role: "user",
+                  content: isPartnerChat
+                    ? sanitizeForPrompt(triggerContent)
+                    : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
+                },
+              ],
+            });
+            const textBlock = claudeMsg.content.find((b: any) => b.type === "text");
+            reply = (textBlock as any)?.text?.trim();
+          }
+        }
+
+        if (!reply && !isClaude) {
           // OpenAI path (default or fallback)
           const oaiClient = getOpenAIClient(agent as any);
           if (!oaiClient) continue;
