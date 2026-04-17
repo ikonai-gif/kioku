@@ -42,7 +42,7 @@ export async function fastAppraisal(
       .replace('{event}', eventDescription.slice(0, 300));
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
       max_tokens: 80,

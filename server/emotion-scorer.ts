@@ -19,7 +19,7 @@ export async function scoreEmotion(content: string): Promise<number[] | null> {
   try {
     const openai = new OpenAI(); // uses OPENAI_API_KEY env var
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: EMOTION_SCORE_PROMPT.replace('{content}', content.slice(0, 500)) }],
       temperature: 0.1,
       max_tokens: 50,

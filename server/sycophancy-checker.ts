@@ -29,7 +29,7 @@ export async function checkSycophancy(
   try {
     const openai = new OpenAI();
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1-mini',
       messages: [{
         role: 'user',
         content: SYCOPHANCY_CHECK_PROMPT

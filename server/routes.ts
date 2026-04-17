@@ -1998,7 +1998,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const OpenAI = (await import("openai")).default;
     const openai = new OpenAI();
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4.1-mini",
       messages: [{
         role: "user",
         content: [
@@ -2062,7 +2062,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const OpenAI = (await import("openai")).default;
     const openai = new OpenAI();
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4.1-mini",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: prompt },
@@ -2275,7 +2275,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ).join('\n');
 
         const response = await openaiClient.chat.completions.create({
-          model: "gpt-4o-mini",
+          model: "gpt-4.1-mini",
           messages: [{
             role: "system",
             content: "Analyze this user's aesthetic preferences and write a concise 2-3 sentence aesthetic profile. Be specific about their taste patterns."
@@ -2331,7 +2331,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const OpenAI = (await import("openai")).default;
       const openaiClient = new OpenAI();
       const response = await openaiClient.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-4.1-mini",
         messages: [{
           role: "system",
           content: "Extract 3-5 aesthetic/style tags from this creative work. Return ONLY a JSON array of lowercase tag strings."
@@ -2595,7 +2595,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const OpenAI = (await import("openai")).default;
         const openai = new OpenAI();
         const response = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
+          model: "gpt-4.1-mini",
           messages: [
             { role: "system", content: "You are a knowledge base generator. Produce comprehensive, well-structured educational content. Use clear headings and paragraphs." },
             { role: "user", content: template.generatePrompt },

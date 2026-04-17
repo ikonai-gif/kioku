@@ -1,7 +1,7 @@
 /**
  * Deliberation Engine — Phase 2A
  * When a user posts a message to a room, online agents in that room
- * automatically generate AI responses via OpenAI gpt-4o-mini.
+ * automatically generate AI responses via OpenAI gpt-4.1-mini.
  * Each agent has its own "persona" derived from name + description + memories.
  * Supports per-agent API keys (Phase C-1).
  */
@@ -119,7 +119,7 @@ async function executePartnerTool(
         const oaiClient = new OAI();
         const question = toolInput.question || "What do you see in this image? Describe it naturally as a friend would.";
         const response = await oaiClient.chat.completions.create({
-          model: "gpt-4o-mini",
+          model: "gpt-4.1-mini",
           messages: [{
             role: "user",
             content: [
@@ -150,7 +150,7 @@ async function executePartnerTool(
         } catch { /* best-effort */ }
 
         const response = await oaiClient.chat.completions.create({
-          model: "gpt-4o-mini",
+          model: "gpt-4.1-mini",
           messages: [
             { role: "system", content: creativeSystem },
             { role: "user", content: toolInput.prompt },
@@ -356,7 +356,7 @@ export async function triggerAgentResponses(
 
       try {
         // Determine model & provider: prefer per-agent llmModel, then agent.model, then default
-        const defaultModel = "gpt-4o-mini";
+        const defaultModel = "gpt-4.1-mini";
         const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
@@ -471,7 +471,7 @@ export async function triggerAgentResponses(
           // OpenAI path (default or fallback)
           const oaiClient = getOpenAIClient(agent as any);
           if (!oaiClient) continue;
-          const resolvedModel = chatModel.startsWith("gemini-") ? "gpt-4o-mini" : chatModel;
+          const resolvedModel = chatModel.startsWith("gemini-") ? "gpt-4.1-mini" : chatModel;
           // gpt-5+ and o-series models have different parameter requirements
           const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
           // gpt-5-mini uses reasoning tokens (hidden chain-of-thought), so needs higher limit
@@ -558,7 +558,7 @@ export async function triggerAgentResponses(
           agentName: agent.name,
           agentColor: agent.color,
           operation: "deliberation-error",
-          detail: `Model: ${(agent as any).llmModel || (agent as any).model || (isPartnerChat ? 'gpt-5-mini' : 'gpt-4o-mini')} Error: ${err?.message || String(err)}`.slice(0, 500),
+          detail: `Model: ${(agent as any).llmModel || (agent as any).model || (isPartnerChat ? 'gpt-5-mini' : 'gpt-4.1-mini')} Error: ${err?.message || String(err)}`.slice(0, 500),
           latencyMs: null,
         }).catch(() => {});
       }
