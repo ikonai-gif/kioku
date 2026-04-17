@@ -367,7 +367,9 @@ function getAnthropicClient(agent: { llmApiKey?: string | null; llmProvider?: st
 const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
 
 // Prevent simultaneous agent responses for same room (simple lock)
-const roomLocks = new Set<number>();
+// Room locks with auto-expiry to prevent permanent deadlocks
+const roomLocks = new Map<number, number>(); // roomId → timestamp
+const ROOM_LOCK_TIMEOUT_MS = 120_000; // 2 minutes max
 
 /**
  * Trigger AI agent responses after a human message is posted.
@@ -384,8 +386,10 @@ export async function triggerAgentResponses(
 ): Promise<void> {
   const isPartnerChat = roomName === "Partner";
   if (!openai && !GEMINI_API_KEY) return; // no shared provider — per-agent keys still work below
-  if (roomLocks.has(roomId)) return; // already processing
-  roomLocks.add(roomId);
+  // Check room lock with auto-expiry
+  const lockTime = roomLocks.get(roomId);
+  if (lockTime && (Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) return; // already processing
+  roomLocks.set(roomId, Date.now());
 
   try {
     // Get all agents in the room that are online and NOT the one who just spoke
