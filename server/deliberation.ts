@@ -604,6 +604,9 @@ export async function triggerAgentResponses(
         if (!reply && isClaude) {
           // Anthropic Claude path — with tool-use loop for Partner Chat
           const anthropicClient = getAnthropicClient(agent as any);
+          if (!anthropicClient) {
+            logger.warn({ agent: agent.name }, "Claude client unavailable — no ANTHROPIC_API_KEY, falling back to OpenAI");
+          }
           if (anthropicClient) {
             const claudeModel = chatModel.startsWith("claude-") ? chatModel : "claude-sonnet-4-6";
             const claudeMaxTokens = isPartnerChat ? 4096 : 256;
@@ -680,11 +683,11 @@ export async function triggerAgentResponses(
           }
         }
 
-        if (!reply && !isClaude) {
-          // OpenAI path (default or fallback)
+        if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
+          // OpenAI path (default or fallback when Claude client unavailable)
           const oaiClient = getOpenAIClient(agent as any);
           if (!oaiClient) continue;
-          const resolvedModel = chatModel.startsWith("gemini-") ? "gpt-4.1-mini" : chatModel;
+          const resolvedModel = (chatModel.startsWith("gemini-") || chatModel.startsWith("claude-")) ? "gpt-4.1-mini" : chatModel;
           // gpt-5+ and o-series models have different parameter requirements
           const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
           // gpt-5-mini uses reasoning tokens (hidden chain-of-thought), so needs higher limit
