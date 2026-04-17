@@ -54,6 +54,18 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "run_code",
+    description: "Run JavaScript/TypeScript code to solve calculations, data processing, or programming tasks. Use when the user asks you to calculate something, process data, write and test code, or solve a programming problem.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        code: { type: "string", description: "JavaScript code to execute. Use console.log() for output." },
+        language: { type: "string", enum: ["javascript", "python"], description: "Programming language (currently only javascript is supported)" },
+      },
+      required: ["code"],
+    },
+  },
+  {
     name: "read_url",
     description: "Read and extract content from a web page URL. Use when the user shares a link and asks you to read it, summarize it, or answer questions about it.",
     input_schema: {
@@ -183,6 +195,56 @@ async function executePartnerTool(
           }).catch(() => {});
         }
         return text || "Creative writing generation failed.";
+      }
+
+      case "run_code": {
+        const code = toolInput.code;
+        if (!code || typeof code !== "string") return "No code provided.";
+        if (toolInput.language === "python") {
+          return "Python execution is not yet available. I can run JavaScript code. Would you like me to convert it?";
+        }
+        try {
+          const vm = await import("vm");
+          const logs: string[] = [];
+          const sandbox = {
+            console: {
+              log: (...args: any[]) => logs.push(args.map(a => typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)).join(" ")),
+              error: (...args: any[]) => logs.push("ERROR: " + args.map(a => String(a)).join(" ")),
+              warn: (...args: any[]) => logs.push("WARN: " + args.map(a => String(a)).join(" ")),
+            },
+            JSON,
+            Math,
+            Date,
+            Array,
+            Object,
+            String,
+            Number,
+            Boolean,
+            RegExp,
+            Map,
+            Set,
+            parseInt,
+            parseFloat,
+            isNaN,
+            isFinite,
+            encodeURIComponent,
+            decodeURIComponent,
+            setTimeout: undefined, // Block async for safety
+            setInterval: undefined,
+            fetch: undefined,
+            require: undefined,
+            process: undefined,
+            __dirname: undefined,
+            __filename: undefined,
+          };
+          const context = vm.createContext(sandbox);
+          const script = new vm.Script(code, { timeout: 10000 }); // 10s max
+          const result = script.runInContext(context);
+          const output = logs.length > 0 ? logs.join("\n") : (result !== undefined ? String(result) : "(no output)");
+          return `Code executed successfully:\n${output.slice(0, 5000)}`;
+        } catch (err: any) {
+          return `Code execution error: ${err?.message || String(err)}`;
+        }
       }
 
       case "read_url": {
