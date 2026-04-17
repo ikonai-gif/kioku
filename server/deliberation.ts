@@ -464,10 +464,11 @@ export async function triggerAgentResponses(
   roomName?: string
 ): Promise<void> {
   const isPartnerChat = roomName === "Partner";
-  if (!openai && !GEMINI_API_KEY) return; // no shared provider — per-agent keys still work below
+  logger.info({ roomId, roomName, isPartnerChat, hasOpenAI: !!openai, hasGemini: !!GEMINI_API_KEY, hasAnthropic: !!ANTHROPIC_API_KEY }, "triggerAgentResponses called");
+  if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) { logger.warn("No LLM providers configured — aborting"); return; }
   // Check room lock with auto-expiry
   const lockTime = roomLocks.get(roomId);
-  if (lockTime && (Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) return; // already processing
+  if (lockTime && (Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) { logger.warn({ roomId, lockAge: Date.now() - lockTime }, "Room locked — skipping"); return; }
   roomLocks.set(roomId, Date.now());
 
   try {
@@ -480,9 +481,11 @@ export async function triggerAgentResponses(
         a.id !== triggerAgentId &&
         ((a as any).agentType || "internal") === "internal" // skip external agents in chat mode
     );
+    logger.info({ respondentCount: respondents.length, respondentNames: respondents.map(a => a.name), roomAgentIds, triggerAgentId }, "Agent respondents found");
 
     if (respondents.length === 0) {
       roomLocks.delete(roomId);
+      logger.warn({ roomId }, "No respondents — returning");
       return;
     }
 
@@ -573,6 +576,7 @@ export async function triggerAgentResponses(
         const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
+        logger.info({ agent: agent.name, chatModel, isGemini, isClaude, llmProvider: (agent as any).llmProvider }, "LLM routing for agent");
         let reply: string | undefined;
 
         if (isGemini) {

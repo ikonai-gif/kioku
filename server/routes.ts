@@ -282,6 +282,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ── Auth ──────────────────────────────────────────────────────
+  // ── Debug — env var check (master key only) ──────────────────
+  app.get("/api/debug/env-check", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] || req.query.mk;
+    if (mk !== process.env.MASTER_KEY) return res.status(403).json({ error: "Forbidden" });
+    res.json({
+      OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+      ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+      E2B_API_KEY: !!process.env.E2B_API_KEY,
+      BREVO_API_KEY: !!process.env.BREVO_API_KEY,
+      STRIPE_SECRET_KEY: !!process.env.STRIPE_SECRET_KEY,
+      DATABASE_URL: !!process.env.DATABASE_URL,
+      REDIS_URL: !!process.env.REDIS_URL,
+      MASTER_KEY: !!process.env.MASTER_KEY,
+    });
+  }));
+
   // alias for frontend
   app.post("/api/auth/magic-link", ...validateMagicLink, asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
