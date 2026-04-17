@@ -19,10 +19,9 @@ export async function loadKnowledgePack(userId: number, agentId: number, chunks:
   for (const chunk of chunks) {
     try {
       await pool.query(
-        `INSERT INTO memories (user_id, agent_id, content, type, importance, namespace, created_at, updated_at, access_count, tags)
-         VALUES ($1, $2, $3, 'semantic', $4, $5, $6, $6, 0, $7)
-         ON CONFLICT DO NOTHING`,
-        [userId, agentId, `[${chunk.domain}/${chunk.category}] ${chunk.title}: ${chunk.content}`, chunk.importance, `_knowledge_${chunk.domain}`, Date.now(), JSON.stringify(chunk.tags)]
+        `INSERT INTO memories (user_id, agent_id, content, type, importance, namespace, created_at)
+         VALUES ($1, $2, $3, 'semantic', $4, $5, $6)`,
+        [userId, agentId, `[${chunk.domain}/${chunk.category}] ${chunk.title}: ${chunk.content}`, chunk.importance, `_knowledge_${chunk.domain}`, Date.now()]
       );
       loaded++;
     } catch { /* skip duplicates */ }
