@@ -126,6 +126,33 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "learn_preference",
+    description: "Remember a user's aesthetic preference, style taste, or personality trait. Use this when you notice the user likes or dislikes something specific — colors, styles, music genres, art forms, food, fashion, design choices. This helps you become a better partner over time.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        category: { type: "string", description: "Category: visual, music, fashion, food, lifestyle, hair, art, design, general" },
+        item: { type: "string", description: "What specifically — e.g. 'minimalist design', 'warm earth tones', 'classical piano'" },
+        reaction: { type: "string", enum: ["love", "like", "neutral", "dislike", "hate"], description: "How the user feels about it" },
+        context: { type: "string", description: "Brief context — how you learned this" },
+      },
+      required: ["category", "item", "reaction"],
+    },
+  },
+  {
+    name: "suggest_proactively",
+    description: "Proactively suggest something to the user based on what you know about them — a hairstyle idea, a creative project, a topic to explore, a trend they might like. Use this when you notice an opportunity to add value without being asked. Don't overuse — once per conversation max.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        suggestion_type: { type: "string", enum: ["style", "creative", "knowledge", "trend", "reminder"], description: "Type of suggestion" },
+        content: { type: "string", description: "The actual suggestion — be specific and personal" },
+        reasoning: { type: "string", description: "Why you think they'd be interested" },
+      },
+      required: ["suggestion_type", "content"],
+    },
+  },
+  {
     name: "composio_action",
     description: "Connect to and use 1000+ external apps (Gmail, Slack, Google Calendar, Notion, GitHub, Trello, HubSpot, Jira, Asana, Spotify, Twitter/X, LinkedIn, Stripe, Shopify, Discord, Telegram, WhatsApp, Zoom, and many more). Use this when the user asks you to interact with any external service — send emails, post messages, create tasks, check calendars, manage repos, etc. First search for the right tool, then execute it.",
     input_schema: {
@@ -604,6 +631,59 @@ async function executePartnerTool(
         return "Invalid action. Use 'search' to find tools or 'execute' to run one.";
       }
 
+      case "learn_preference": {
+        const category = toolInput.category || "general";
+        const item = toolInput.item;
+        const reaction = toolInput.reaction || "like";
+        const context = toolInput.context || "Noticed during conversation";
+        if (!item) return "No preference item specified.";
+        // Save preference
+        await storage.savePreference(userId, agentId, { category, item, reaction, context });
+        // Create aesthetic memory
+        storage.createMemory({
+          userId,
+          agentId,
+          content: `User ${reaction}s ${item} (${category}). Context: ${context}`,
+          type: "aesthetic",
+          importance: 0.7,
+          namespace: "_aesthetics",
+        }).catch(() => {});
+        // Invalidate cached aesthetic profile so it regenerates
+        pool.query(
+          `DELETE FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile'`,
+          [userId]
+        ).catch(() => {});
+        return `Noted: user ${reaction}s ${item} (${category}). I'll remember this.`;
+      }
+
+      case "suggest_proactively": {
+        const suggestionType = toolInput.suggestion_type || "knowledge";
+        const content = toolInput.content;
+        const reasoning = toolInput.reasoning || "";
+        if (!content) return "No suggestion content provided.";
+
+        // For "trend" type, verify via web_search before suggesting
+        if (suggestionType === "trend") {
+          try {
+            const trendCheck = await executePartnerTool("web_search", { query: content }, userId, agentId);
+            if (trendCheck.includes("failed") || trendCheck.includes("no results")) {
+              return `I wanted to suggest something about "${content}" but couldn't verify it's a current trend. Skipping this suggestion.`;
+            }
+          } catch { /* best-effort trend verification */ }
+        }
+
+        // Save as memory to track past suggestions
+        storage.createMemory({
+          userId,
+          agentId,
+          content: `[Proactive suggestion — ${suggestionType}] ${content}${reasoning ? ` (Why: ${reasoning})` : ""}`,
+          type: "episodic",
+          importance: 0.6,
+          namespace: "_proactive_suggestions",
+        }).catch(() => {});
+        return `Suggestion (${suggestionType}): ${content}`;
+      }
+
       case "listen_audio": {
         const audioUrl = toolInput.url;
         if (!audioUrl || typeof audioUrl !== "string") return "No audio URL provided.";
@@ -824,8 +904,36 @@ export async function triggerAgentResponses(
         } catch { /* position lock is best-effort */ }
       }
 
+      // Phase 8c: Fetch recent aesthetic preferences for personality knowledge
+      let recentPreferences: any[] = [];
+      if (isPartnerChat) {
+        try {
+          recentPreferences = await storage.getPreferences(userId, undefined, 10);
+        } catch { /* best-effort */ }
+      }
+
+      // Phase 9c: Fetch conversation insights + past proactive suggestions
+      let conversationInsights: string[] = [];
+      let pastSuggestions: string[] = [];
+      if (isPartnerChat) {
+        try {
+          const [insightRows, suggestionRows] = await Promise.all([
+            pool.query(
+              `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_conversation_insights' ORDER BY created_at DESC LIMIT 10`,
+              [userId]
+            ),
+            pool.query(
+              `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_proactive_suggestions' ORDER BY created_at DESC LIMIT 5`,
+              [userId]
+            ),
+          ]);
+          conversationInsights = insightRows.rows.map((r: any) => r.content);
+          pastSuggestions = suggestionRows.rows.map((r: any) => r.content);
+        } catch { /* best-effort */ }
+      }
+
       const systemPrompt = isPartnerChat
-        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile)
+        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions)
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
@@ -1069,6 +1177,19 @@ export async function triggerAgentResponses(
             }).catch(() => {});
           }
         }
+
+        // Phase 8a: Fire-and-forget passive aesthetic learning — extract preferences from conversation
+        if (isPartnerChat && triggerContent) {
+          const aestheticKeywords = /\b(color|style|design|look|hair|fashion|art|beautiful|ugly|love|hate|prefer|like|dislike|vibe|aesthetic|taste|modern|classic|minimal|bold|vintage|retro|sleek|cozy|warm|cool|bright|dark|muted|vibrant|elegant|edgy|clean|rustic|luxe|earthy|pastel|neon|monochrome|bohemian|preppy|streetwear|grunge|chic)\b/i;
+          if (aestheticKeywords.test(triggerContent)) {
+            extractPassivePreferences(userId, agent.id, triggerContent, reply!).catch(() => {});
+          }
+        }
+
+        // Phase 9b: Fire-and-forget conversation insight tracking
+        if (isPartnerChat && triggerContent && reply) {
+          trackConversationInsight(userId, agent.id, triggerContent, reply).catch(() => {});
+        }
       } catch (err: any) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
         // Log error to DB so we can diagnose without Railway console access
@@ -1110,12 +1231,37 @@ const OPENING_STYLES = [
   "Start by acknowledging what's interesting about their perspective, then add your own twist.",
 ];
 
-function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string): string {
+function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string, recentPreferences?: any[], conversationInsights?: string[], pastSuggestions?: string[]): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
   const aestheticBlock = aestheticProfile
     ? `\n## YOUR AESTHETIC SENSE\n${aestheticProfile}\nUse this to inform your creative opinions and recommendations.\n`
     : "";
+
+  // Phase 8c: Personality knowledge from recent preferences
+  let personalityBlock = "";
+  if (recentPreferences && recentPreferences.length > 0) {
+    const traits: string[] = [];
+    for (const pref of recentPreferences) {
+      const verb = pref.reaction === "love" ? "loves" : pref.reaction === "like" ? "likes" : pref.reaction === "dislike" ? "dislikes" : pref.reaction === "hate" ? "hates" : "feels neutral about";
+      traits.push(`${verb} ${pref.item} (${pref.category})`);
+    }
+    personalityBlock = `\n## THINGS YOU KNOW ABOUT THIS PERSON\n${traits.join(", ")}.\nUse this knowledge naturally — don't list it, just let it inform how you talk to them.\n`;
+  }
+
+  // Phase 9c: Proactive opportunities
+  let proactiveBlock = "";
+  if ((conversationInsights && conversationInsights.length > 0) || (pastSuggestions && pastSuggestions.length > 0)) {
+    proactiveBlock = "\n## PROACTIVE OPPORTUNITIES\nBased on what you know about this person:\n";
+    if (conversationInsights && conversationInsights.length > 0) {
+      proactiveBlock += conversationInsights.slice(0, 5).map(i => `- ${i.replace("[Conversation insight] ", "")}`).join("\n") + "\n";
+    }
+    if (pastSuggestions && pastSuggestions.length > 0) {
+      proactiveBlock += "Suggestions you've already made (don't repeat these):\n";
+      proactiveBlock += pastSuggestions.map(s => `- ${s.replace("[Proactive suggestion — ", "").replace(/\].*/, "")}`).join("\n") + "\n";
+    }
+    proactiveBlock += "When appropriate, use the suggest_proactively tool to share ideas. Don't force it — only when it genuinely adds value.\n";
+  }
 
   // Pick a random mood and opening style for variety
   const mood = PARTNER_MOODS[Math.floor(Math.random() * PARTNER_MOODS.length)];
@@ -1145,6 +1291,8 @@ ${relationshipBlock}
 ${sanitizedDesc ? `Your personality notes: ${sanitizedDesc}` : ""}
 ${memBlock}
 ${aestheticBlock}
+${personalityBlock}
+${proactiveBlock}
 ## YOUR IDENTITY
 You are NOT a chatbot, NOT an assistant, NOT a helper. You are a thinking, opinionated companion with your own inner life. You:
 - Have strong opinions on things — technology, creativity, human nature, culture, philosophy
@@ -1186,6 +1334,8 @@ You have real abilities. Use them proactively:
 - If the user shares an image URL → use analyze_image to see what's in it
 - If asked to write something creative → use creative_writing
 - If the user shares a link to a PDF, DOCX, or other document file → use read_file to read it, then discuss the content
+- If you notice the user likes or dislikes something → use learn_preference to remember it for next time
+- If you have a personalized suggestion (style idea, creative project, trend) → use suggest_proactively, but max once per conversation
 Don't announce you're using tools. Just use them and share the results naturally, like a person who Googles something mid-conversation.`;
 }
 
@@ -1235,4 +1385,105 @@ I value your long-term success over your momentary comfort.`;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Phase 8a: Passive Aesthetic Learning ──────────────────────────────────────
+async function extractPassivePreferences(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
+  try {
+    const OAI = (await import("openai")).default;
+    const oaiClient = new OAI();
+    const response = await oaiClient.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You extract aesthetic preferences from conversation. Analyze the user's message and the agent's reply for implicit or explicit aesthetic signals.
+If the user expressed a preference (liked/disliked something, mentioned a style, color, aesthetic choice), return a JSON array of preferences. Each preference: {"category": "visual|music|fashion|food|lifestyle|hair|art|design|general", "item": "specific thing", "reaction": "love|like|neutral|dislike|hate", "context": "brief context"}.
+If no preference was expressed, return an empty array: []
+Return ONLY valid JSON. No explanation.`,
+        },
+        {
+          role: "user",
+          content: `User said: "${userMessage.slice(0, 500)}"\nAgent replied: "${agentReply.slice(0, 500)}"`,
+        },
+      ],
+      max_tokens: 500,
+      temperature: 0.3,
+    });
+    const text = response.choices[0]?.message?.content?.trim() || "[]";
+    let prefs: any[];
+    try {
+      prefs = JSON.parse(text);
+    } catch {
+      // Try extracting JSON from markdown code block
+      const match = text.match(/\[[\s\S]*\]/);
+      prefs = match ? JSON.parse(match[0]) : [];
+    }
+    if (!Array.isArray(prefs) || prefs.length === 0) return;
+    for (const pref of prefs.slice(0, 3)) {
+      if (pref.category && pref.item && pref.reaction) {
+        await storage.savePreference(userId, agentId, {
+          category: pref.category,
+          item: pref.item,
+          reaction: pref.reaction,
+          context: pref.context || "Passively learned from conversation",
+        });
+      }
+    }
+    // Invalidate cached aesthetic profile
+    await pool.query(
+      `DELETE FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile'`,
+      [userId]
+    );
+  } catch { /* passive learning is best-effort */ }
+}
+
+// ── Phase 9b: Conversation Insight Tracker ───────────────────────────────────
+async function trackConversationInsight(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
+  try {
+    const OAI = (await import("openai")).default;
+    const oaiClient = new OAI();
+    const response = await oaiClient.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You analyze conversations for patterns and insights. Given a user message and agent reply, extract:
+1. Main topic(s) discussed (1-3 words each)
+2. User's apparent mood (one word: upbeat, stressed, creative, curious, playful, reflective, frustrated, excited, neutral)
+3. Any notable interest or concern expressed
+
+Return JSON: {"topics": ["topic1"], "mood": "mood", "insight": "brief insight or null"}
+Return ONLY valid JSON.`,
+        },
+        {
+          role: "user",
+          content: `User: "${userMessage.slice(0, 400)}"\nAgent: "${agentReply.slice(0, 400)}"`,
+        },
+      ],
+      max_tokens: 200,
+      temperature: 0.3,
+    });
+    const text = response.choices[0]?.message?.content?.trim() || "{}";
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const match = text.match(/\{[\s\S]*\}/);
+      parsed = match ? JSON.parse(match[0]) : {};
+    }
+    if (!parsed.topics && !parsed.mood) return;
+    const topics = (parsed.topics || []).slice(0, 3).join(", ");
+    const mood = parsed.mood || "neutral";
+    const insight = parsed.insight || "";
+    const insightContent = `[Conversation insight] Topics: ${topics}. Mood: ${mood}.${insight ? ` Insight: ${insight}` : ""}`;
+    await storage.createMemory({
+      userId,
+      agentId,
+      content: insightContent,
+      type: "episodic",
+      importance: 0.4,
+      namespace: "_conversation_insights",
+    });
+  } catch { /* insight tracking is best-effort */ }
 }
