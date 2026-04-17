@@ -824,6 +824,9 @@ export async function triggerAgentResponses(
         }).catch(() => {});
       }
     }
+  } catch (outerErr: any) {
+    storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#f00", operation: "trigger-crash", detail: `OUTER ERROR: ${outerErr?.message || String(outerErr)}`.slice(0, 500), latencyMs: null }).catch(() => {});
+    throw outerErr; // re-throw to propagate
   } finally {
     roomLocks.delete(roomId);
   }
