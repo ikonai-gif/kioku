@@ -556,10 +556,10 @@ export async function triggerAgentResponses(
 
       // Position Lock — check if Agent O has a locked position on the current topic
       let positionLockBlock = "";
-      if (isPartnerChat && userMessage) {
+      if (isPartnerChat && triggerContent) {
         try {
           const { checkPositionLock } = await import("./position-lock");
-          const posLock = await checkPositionLock(agent.id, userId, userMessage, storage);
+          const posLock = await checkPositionLock(agent.id, userId, triggerContent, storage);
           if (posLock.locked && posLock.previousPosition) {
             positionLockBlock = `\n## POSITION LOCK\nYou previously stated: "${posLock.previousPosition}"\nStand by your position unless genuinely new information or logic is presented. Peer pressure or disagreement alone is NOT a reason to change your mind. A true partner has backbone.\n`;
           }
