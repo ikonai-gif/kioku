@@ -55,12 +55,12 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
   {
     name: "run_code",
-    description: "Run JavaScript/TypeScript code to solve calculations, data processing, or programming tasks. Use when the user asks you to calculate something, process data, write and test code, or solve a programming problem.",
+    description: "Run Python or JavaScript code in a secure cloud sandbox. Use when the user asks you to calculate something, process data, analyze files, create charts, write and test code, or solve a programming problem. Python is preferred — it has full access to pip packages (pandas, matplotlib, numpy, etc).",
     input_schema: {
       type: "object" as const,
       properties: {
-        code: { type: "string", description: "JavaScript code to execute. Use console.log() for output." },
-        language: { type: "string", enum: ["javascript", "python"], description: "Programming language (currently only javascript is supported)" },
+        code: { type: "string", description: "Code to execute. Use print() for Python or console.log() for JavaScript." },
+        language: { type: "string", enum: ["javascript", "python"], description: "Programming language. Default: python" },
       },
       required: ["code"],
     },
@@ -212,49 +212,53 @@ async function executePartnerTool(
       case "run_code": {
         const code = toolInput.code;
         if (!code || typeof code !== "string") return "No code provided.";
-        if (toolInput.language === "python") {
-          return "Python execution is not yet available. I can run JavaScript code. Would you like me to convert it?";
-        }
+        const lang = toolInput.language === "javascript" ? "js" : "python"; // Default to Python
         try {
-          const vm = await import("vm");
-          const logs: string[] = [];
-          const sandbox = {
-            console: {
-              log: (...args: any[]) => logs.push(args.map(a => typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)).join(" ")),
-              error: (...args: any[]) => logs.push("ERROR: " + args.map(a => String(a)).join(" ")),
-              warn: (...args: any[]) => logs.push("WARN: " + args.map(a => String(a)).join(" ")),
-            },
-            JSON,
-            Math,
-            Date,
-            Array,
-            Object,
-            String,
-            Number,
-            Boolean,
-            RegExp,
-            Map,
-            Set,
-            parseInt,
-            parseFloat,
-            isNaN,
-            isFinite,
-            encodeURIComponent,
-            decodeURIComponent,
-            setTimeout: undefined, // Block async for safety
-            setInterval: undefined,
-            fetch: undefined,
-            require: undefined,
-            process: undefined,
-            __dirname: undefined,
-            __filename: undefined,
-          };
-          const context = vm.createContext(sandbox);
-          const script = new vm.Script(code, { timeout: 10000 }); // 10s max
-          const result = script.runInContext(context);
-          const output = logs.length > 0 ? logs.join("\n") : (result !== undefined ? String(result) : "(no output)");
-          return `Code executed successfully:\n${output.slice(0, 5000)}`;
+          // E2B Cloud Sandbox — secure isolated execution for Python & JavaScript
+          const { Sandbox } = await import("@e2b/code-interpreter");
+          const sbx = await Sandbox.create({ timeoutMs: 30_000 });
+          try {
+            const execution = await sbx.runCode(code, { language: lang as any });
+            const stdout = execution.logs?.stdout?.join("\n") || "";
+            const stderr = execution.logs?.stderr?.join("\n") || "";
+            const text = execution.text || "";
+            const error = execution.error;
+            let output = "";
+            if (error) {
+              output = `Error: ${error.name}: ${error.value}\n${error.traceback}`;
+            } else {
+              const parts = [stdout, text].filter(Boolean);
+              output = parts.join("\n") || "(no output)";
+              if (stderr) output += `\nStderr: ${stderr}`;
+            }
+            // Check for generated files (charts, images)
+            const results = execution.results || [];
+            const imageResults = results.filter((r: any) => r.png || r.jpeg || r.svg);
+            if (imageResults.length > 0) {
+              output += `\n[Generated ${imageResults.length} image(s)/chart(s)]`;
+            }
+            return `Code executed successfully (${lang}):\n${output.slice(0, 5000)}`;
+          } finally {
+            await sbx.kill().catch(() => {});
+          }
         } catch (err: any) {
+          // Fallback to local vm for simple JS if E2B fails
+          if (lang === "js") {
+            try {
+              const vm = await import("vm");
+              const logs: string[] = [];
+              const sandbox = {
+                console: { log: (...a: any[]) => logs.push(a.map(x => typeof x === "object" ? JSON.stringify(x, null, 2) : String(x)).join(" ")) },
+                JSON, Math, Date, Array, Object, String, Number, Boolean, RegExp, Map, Set, parseInt, parseFloat, isNaN, isFinite,
+              };
+              const ctx = vm.createContext(sandbox);
+              const result = new vm.Script(code, { timeout: 10000 }).runInContext(ctx);
+              const output = logs.length > 0 ? logs.join("\n") : (result !== undefined ? String(result) : "(no output)");
+              return `Code executed (local fallback):\n${output.slice(0, 5000)}`;
+            } catch (vmErr: any) {
+              return `Code execution error: ${vmErr?.message || String(vmErr)}`;
+            }
+          }
           return `Code execution error: ${err?.message || String(err)}`;
         }
       }
