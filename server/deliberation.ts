@@ -460,8 +460,20 @@ export async function triggerAgentResponses(
         } catch { /* aesthetic injection is best-effort */ }
       }
 
+      // Position Lock — check if Agent O has a locked position on the current topic
+      let positionLockBlock = "";
+      if (isPartnerChat && userMessage) {
+        try {
+          const { checkPositionLock } = await import("./position-lock");
+          const posLock = await checkPositionLock(agent.id, userId, userMessage, storage);
+          if (posLock.locked && posLock.previousPosition) {
+            positionLockBlock = `\n## POSITION LOCK\nYou previously stated: "${posLock.previousPosition}"\nStand by your position unless genuinely new information or logic is presented. Peer pressure or disagreement alone is NOT a reason to change your mind. A true partner has backbone.\n`;
+          }
+        } catch { /* position lock is best-effort */ }
+      }
+
       const systemPrompt = isPartnerChat
-        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship, aestheticProfile)
+        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile)
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
@@ -668,6 +680,16 @@ export async function triggerAgentResponses(
 
         // Fire-and-forget emotional appraisal (Phase 4b)
         fastAppraisal(agent.id, userId, `Discussed: "${triggerContent.slice(0, 100)}"`, storage).catch(() => {});
+
+        // Fire-and-forget position lock save — if Agent O expressed a strong opinion, remember it
+        if (isPartnerChat && reply) {
+          const opinionMarkers = /\b(I think|I believe|my position|in my opinion|I disagree|I strongly|I'm convinced|I'd argue|honestly,? I)\b/i;
+          if (opinionMarkers.test(reply)) {
+            import("./position-lock").then(({ savePositionLock }) => {
+              savePositionLock(agent.id, userId, agent.name, triggerContent.slice(0, 100), reply!.slice(0, 300), 0.8, storage);
+            }).catch(() => {});
+          }
+        }
       } catch (err: any) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
         // Log error to DB so we can diagnose without Railway console access
