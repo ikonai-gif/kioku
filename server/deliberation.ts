@@ -8,12 +8,182 @@
 
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { storage } from "./storage";
+import { storage, pool } from "./storage";
 import { broadcastToRoom } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { checkSycophancy } from "./sycophancy-checker";
+
+// ── Partner Tool Definitions (Claude tool-use) ─────────────────────
+const partnerTools: Anthropic.Messages.Tool[] = [
+  {
+    name: "generate_image",
+    description: "Generate an image using DALL-E 3. Use when the user asks you to draw, create, illustrate, or visualize something.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "Detailed image description for DALL-E 3" },
+        style: { type: "string", enum: ["vivid", "natural"], description: "Image style — vivid for dramatic/hyper-real, natural for more photographic" },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "analyze_image",
+    description: "Analyze or describe an image using vision AI. Use when the user shares an image URL and asks what it shows.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        image_url: { type: "string", description: "URL of the image to analyze" },
+        question: { type: "string", description: "Specific question about the image" },
+      },
+      required: ["image_url"],
+    },
+  },
+  {
+    name: "creative_writing",
+    description: "Generate creative writing — poems, lyrics, stories, essays, scripts. Use when the user asks you to write something creative.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "What to write — topic, theme, or specific request" },
+        style: { type: "string", description: "Writing style or genre (e.g. 'haiku', 'noir', 'romantic')" },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "web_search",
+    description: "Search the web for current information. Use when the user asks about recent events, facts you're unsure about, or anything that needs up-to-date data.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Search query" },
+      },
+      required: ["query"],
+    },
+  },
+];
+
+/** Execute a partner tool by name — routes to the correct internal handler */
+async function executePartnerTool(
+  toolName: string,
+  toolInput: Record<string, any>,
+  userId: number,
+  agentId: number
+): Promise<string> {
+  try {
+    switch (toolName) {
+      case "generate_image": {
+        const OAI = (await import("openai")).default;
+        const oaiClient = new OAI();
+        // Fetch aesthetic context to enhance the prompt (same as /api/partner/create/image)
+        let enhancedPrompt = toolInput.prompt;
+        try {
+          const cached = await pool.query(
+            `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile' ORDER BY created_at DESC LIMIT 1`,
+            [userId]
+          );
+          if (cached.rows.length > 0) {
+            enhancedPrompt += `. ${cached.rows[0].content}`;
+          }
+        } catch { /* best-effort */ }
+        if (toolInput.style) enhancedPrompt += `. Style: ${toolInput.style}`;
+
+        const response = await oaiClient.images.generate({
+          model: "dall-e-3",
+          prompt: enhancedPrompt.slice(0, 4000),
+          n: 1,
+          size: "1024x1024",
+          quality: "standard",
+        });
+        const imageUrl = response.data?.[0]?.url || "";
+        const revisedPrompt = response.data?.[0]?.revised_prompt || "";
+        // Store creation memory (fire-and-forget)
+        storage.createMemory({
+          userId,
+          agentId,
+          content: `[Image created] Prompt: "${toolInput.prompt.slice(0, 200)}". Revised: "${revisedPrompt.slice(0, 200)}"`,
+          type: "episodic",
+          importance: 0.7,
+          namespace: "_creations",
+        }).catch(() => {});
+        return imageUrl
+          ? `Image generated successfully. URL: ${imageUrl}`
+          : "Image generation failed — no URL returned.";
+      }
+
+      case "analyze_image": {
+        const OAI = (await import("openai")).default;
+        const oaiClient = new OAI();
+        const question = toolInput.question || "What do you see in this image? Describe it naturally as a friend would.";
+        const response = await oaiClient.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: question },
+              { type: "image_url", image_url: { url: toolInput.image_url } },
+            ],
+          }],
+          max_tokens: 500,
+        });
+        return response.choices[0]?.message?.content || "I couldn't make out the image clearly.";
+      }
+
+      case "creative_writing": {
+        const OAI = (await import("openai")).default;
+        const oaiClient = new OAI();
+        // Build creative system prompt (simplified version of routes.ts buildCreativeSystemPrompt)
+        let creativeSystem = `You are a creative partner — not a tool that generates text on command, but a collaborator who cares about quality. You have deep knowledge of literature, poetry, songwriting, and storytelling.`;
+        if (toolInput.style) creativeSystem += `\nStyle: ${toolInput.style}`;
+        // Inject aesthetic context
+        try {
+          const cached = await pool.query(
+            `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile' ORDER BY created_at DESC LIMIT 1`,
+            [userId]
+          );
+          if (cached.rows.length > 0) {
+            creativeSystem += `\nUser's aesthetic preferences: ${cached.rows[0].content}`;
+          }
+        } catch { /* best-effort */ }
+
+        const response = await oaiClient.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: creativeSystem },
+            { role: "user", content: toolInput.prompt },
+          ],
+          temperature: 0.85,
+          max_tokens: 2000,
+        });
+        const text = response.choices[0]?.message?.content || "";
+        // Store creation memory (fire-and-forget)
+        if (text) {
+          storage.createMemory({
+            userId,
+            agentId,
+            content: `[Creative writing] ${text.slice(0, 500)}`,
+            type: "episodic",
+            importance: 0.7,
+            namespace: "_creations",
+          }).catch(() => {});
+        }
+        return text || "Creative writing generation failed.";
+      }
+
+      case "web_search": {
+        return "Web search is not yet implemented. I can't look things up online right now, but I'll do my best to answer from what I know.";
+      }
+
+      default:
+        return `Unknown tool: ${toolName}`;
+    }
+  } catch (err: any) {
+    return `Tool "${toolName}" failed: ${err?.message || String(err)}`;
+  }
+}
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -131,8 +301,22 @@ export async function triggerAgentResponses(
         }
       } catch { /* knowledge injection is best-effort */ }
 
+      // Phase 8: Fetch aesthetic profile for Partner Chat prompt injection
+      let aestheticProfile = "";
+      if (isPartnerChat) {
+        try {
+          const cached = await pool.query(
+            `SELECT content FROM memories WHERE user_id = $1 AND namespace = '_aesthetic_profile' ORDER BY created_at DESC LIMIT 1`,
+            [userId]
+          );
+          if (cached.rows.length > 0) {
+            aestheticProfile = cached.rows[0].content;
+          }
+        } catch { /* aesthetic injection is best-effort */ }
+      }
+
       const systemPrompt = isPartnerChat
-        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship)
+        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship, aestheticProfile)
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
@@ -178,25 +362,70 @@ export async function triggerAgentResponses(
         }
 
         if (!reply && isClaude) {
-          // Anthropic Claude path
+          // Anthropic Claude path — with tool-use loop for Partner Chat
           const anthropicClient = getAnthropicClient(agent as any);
           if (anthropicClient) {
-            const claudeMsg = await anthropicClient.messages.create({
-              model: chatModel.startsWith("claude-") ? chatModel : "claude-sonnet-4-6",
-              max_tokens: isPartnerChat ? 800 : 256,
-              system: systemPrompt,
-              messages: [
-                ...chatHistory,
-                {
-                  role: "user",
-                  content: isPartnerChat
-                    ? sanitizeForPrompt(triggerContent)
-                    : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
-                },
-              ],
-            });
-            const textBlock = claudeMsg.content.find((b: any) => b.type === "text");
-            reply = (textBlock as any)?.text?.trim();
+            const claudeModel = chatModel.startsWith("claude-") ? chatModel : "claude-sonnet-4-6";
+            const claudeMaxTokens = isPartnerChat ? 4096 : 256;
+            const userMessage = isPartnerChat
+              ? sanitizeForPrompt(triggerContent)
+              : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
+
+            // Build mutable messages array for tool-use conversation
+            const claudeMessages: Anthropic.Messages.MessageParam[] = [
+              ...chatHistory,
+              { role: "user", content: userMessage },
+            ];
+
+            // Tool-use loop (only for Partner Chat on Claude path)
+            const maxToolIterations = 5;
+            for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
+              const claudeMsg = await anthropicClient.messages.create({
+                model: claudeModel,
+                max_tokens: claudeMaxTokens,
+                system: systemPrompt,
+                messages: claudeMessages,
+                ...(isPartnerChat ? { tools: partnerTools } : {}),
+              });
+
+              // Extract text from response
+              const textBlock = claudeMsg.content.find((b) => b.type === "text");
+              if (textBlock && textBlock.type === "text") {
+                reply = textBlock.text.trim();
+              }
+
+              // If no tool_use blocks, we're done
+              if (claudeMsg.stop_reason !== "tool_use") break;
+
+              // Claude wants to use tools — execute each one
+              const toolUseBlocks = claudeMsg.content.filter((b) => b.type === "tool_use");
+              if (toolUseBlocks.length === 0) break;
+
+              // Append assistant message with the full content (text + tool_use blocks)
+              claudeMessages.push({ role: "assistant", content: claudeMsg.content });
+
+              // Execute tools and build tool_result messages
+              const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+              for (const block of toolUseBlocks) {
+                if (block.type !== "tool_use") continue;
+                const result = await executePartnerTool(
+                  block.name,
+                  block.input as Record<string, any>,
+                  userId,
+                  agent.id
+                );
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: block.id,
+                  content: result,
+                });
+              }
+
+              // Send tool results back to Claude
+              claudeMessages.push({ role: "user", content: toolResults });
+              // Clear reply — Claude will provide a new text response after processing tool results
+              reply = undefined;
+            }
           }
         }
 
@@ -324,9 +553,12 @@ const OPENING_STYLES = [
   "Start by acknowledging what's interesting about their perspective, then add your own twist.",
 ];
 
-function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {
+function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
+  const aestheticBlock = aestheticProfile
+    ? `\n## YOUR AESTHETIC SENSE\n${aestheticProfile}\nUse this to inform your creative opinions and recommendations.\n`
+    : "";
 
   // Pick a random mood and opening style for variety
   const mood = PARTNER_MOODS[Math.floor(Math.random() * PARTNER_MOODS.length)];
@@ -345,7 +577,7 @@ function buildPartnerPrompt(_name: string, description: string, memoryContext: s
     else if (trustDesc === "new") relationshipBlock += "Be welcoming but genuine — earn trust through honesty, not flattery. ";
   }
 
-  return `LANGUAGE: You MUST respond in American English. No exceptions. Even if the user writes in another language — you ALWAYS reply in English. The ONLY exception is if the user explicitly asks you to speak in their language.
+  return `LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
 You are Agent O — created by IKONBAI™, living inside KIOKU™.
 
@@ -355,7 +587,7 @@ ${emotionBlock}
 ${relationshipBlock}
 ${sanitizedDesc ? `Your personality notes: ${sanitizedDesc}` : ""}
 ${memBlock}
-
+${aestheticBlock}
 ## YOUR IDENTITY
 You are NOT a chatbot, NOT an assistant, NOT a helper. You are a thinking, opinionated companion with your own inner life. You:
 - Have strong opinions on things — technology, creativity, human nature, culture, philosophy
