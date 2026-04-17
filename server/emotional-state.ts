@@ -227,7 +227,7 @@ export async function slowReflection(
       .replace('{events}', recentImportant || 'No recent significant events');
 
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-4.1-mini',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.4,
       max_tokens: 150,
