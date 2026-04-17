@@ -157,6 +157,28 @@ export function broadcastToRoom(roomId: number, payload: object) {
 }
 
 /**
+ * Broadcast a streaming text chunk to all clients in a room.
+ * Used by Partner Chat to display Agent O's response word-by-word.
+ */
+export function broadcastStreamChunk(roomId: number, payload: {
+  messageId?: number;
+  agentId: number;
+  agentName: string;
+  agentColor: string;
+  chunk: string;
+  done: boolean;
+}) {
+  const clients = roomClients.get(roomId);
+  if (!clients) return;
+  const data = JSON.stringify({ type: "stream_chunk", ...payload });
+  Array.from(clients).forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  });
+}
+
+/**
  * Broadcast a human_turn event to all clients subscribed to a room.
  * Signals that it's the human participant's turn to respond in a deliberation.
  */

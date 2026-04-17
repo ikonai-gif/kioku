@@ -9,7 +9,7 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool } from "./storage";
-import { broadcastToRoom } from "./ws";
+import { broadcastToRoom, broadcastStreamChunk } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
@@ -648,6 +648,29 @@ export async function triggerAgentResponses(
 
         // In Partner chat, always display as "Agent O" regardless of underlying agent
         const displayName = isPartnerChat ? "Agent O" : agent.name;
+
+        // Stream the reply in chunks via WebSocket for Partner Chat (visual typing effect)
+        if (isPartnerChat && reply) {
+          const words = reply.split(/(\s+)/);
+          for (let w = 0; w < words.length; w += 3) {
+            const chunk = words.slice(w, w + 3).join("");
+            broadcastStreamChunk(roomId, {
+              agentId: agent.id,
+              agentName: displayName,
+              agentColor: "#D4AF37",
+              chunk,
+              done: false,
+            });
+            await sleep(30);
+          }
+          broadcastStreamChunk(roomId, {
+            agentId: agent.id,
+            agentName: displayName,
+            agentColor: "#D4AF37",
+            chunk: "",
+            done: true,
+          });
+        }
         const msg = await storage.addRoomMessage({
           roomId,
           agentId: agent.id,
