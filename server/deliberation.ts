@@ -101,6 +101,18 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "watch_video",
+    description: "Watch and understand a YouTube video or video file. Use when the user shares a YouTube link and asks what's in the video, to summarize it, analyze it, or answer questions about it. This actually WATCHES the video frame by frame with audio — not just reads the description. Works with YouTube URLs and direct video file URLs.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "YouTube URL or direct video file URL" },
+        question: { type: "string", description: "What to analyze or answer about the video. Default: general summary with key moments" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "composio_action",
     description: "Connect to and use 1000+ external apps (Gmail, Slack, Google Calendar, Notion, GitHub, Trello, HubSpot, Jira, Asana, Spotify, Twitter/X, LinkedIn, Stripe, Shopify, Discord, Telegram, WhatsApp, Zoom, and many more). Use this when the user asks you to interact with any external service — send emails, post messages, create tasks, check calendars, manage repos, etc. First search for the right tool, then execute it.",
     input_schema: {
@@ -425,6 +437,61 @@ async function executePartnerTool(
         } catch (err: any) {
           if (err?.name === "AbortError") return "File download timed out.";
           return `Failed to read file: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "watch_video": {
+        const videoUrl = toolInput.url;
+        if (!videoUrl || typeof videoUrl !== "string") return "No video URL provided.";
+        const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY;
+        if (!geminiKey) return "Video understanding requires GEMINI_API_KEY. Please ask the admin to configure it.";
+        try {
+          const { GoogleGenAI } = await import("@google/genai");
+          const ai = new GoogleGenAI({ apiKey: geminiKey });
+          const prompt = toolInput.question
+            ? `Watch this video carefully (both visuals and audio) and answer: ${toolInput.question}\nProvide timestamps where relevant.`
+            : `Watch this video carefully (both visuals and audio) and provide:\n1. A concise summary (3-5 sentences)\n2. Key moments with timestamps (MM:SS format)\n3. Main topics and ideas\n4. Emotional tone and style\nAnalyze both what you SEE and what you HEAR.`;
+          // Try models in order: 2.5-flash (best), 2.0-flash (fallback), 2.5-pro (premium)
+          const videoModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+          let response: any = null;
+          let usedModel = "";
+          for (const model of videoModels) {
+            try {
+              response = await ai.models.generateContent({
+                model,
+                contents: [
+                  { fileData: { fileUri: videoUrl } },
+                  { text: prompt },
+                ],
+              });
+              usedModel = model;
+              break;
+            } catch (modelErr: any) {
+              const errMsg = modelErr?.message || "";
+              // If quota/rate limit, try next model; if video error, break
+              if (errMsg.includes("quota") || errMsg.includes("429") || errMsg.includes("503") || errMsg.includes("UNAVAILABLE")) continue;
+              throw modelErr; // video-specific error, don't retry
+            }
+          }
+          if (!response) throw new Error("All Gemini models unavailable. Try again later.");
+          const text = response.text ?? "";
+          if (!text) return "Video was processed but no analysis was generated. The video may be too short, private, or unavailable.";
+          // Store in memory (fire-and-forget)
+          storage.createMemory({
+            userId,
+            agentId,
+            content: `[Video watched] ${videoUrl} — ${text.slice(0, 500)}`,
+            type: "episodic",
+            importance: 0.7,
+            namespace: "_video",
+          }).catch(() => {});
+          return `Video analysis:\n${text.slice(0, 6000)}`;
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          if (msg.includes("not found") || msg.includes("unavailable") || msg.includes("private")) {
+            return `Could not access this video. It may be private, age-restricted, or unavailable. Error: ${msg.slice(0, 200)}`;
+          }
+          return `Video analysis failed: ${msg.slice(0, 300)}`;
         }
       }
 
