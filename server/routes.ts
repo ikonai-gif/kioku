@@ -2327,6 +2327,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ...profile, summary });
   }));
 
+  // Gallery
+  app.get("/api/gallery", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const type = req.query.type as string | undefined;
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const offset = Number(req.query.offset) || 0;
+    const items = await storage.getGalleryItems(userId, type, limit, offset);
+    res.json(items);
+  }));
+
   // POST /api/partner/feedback — Reaction to a creation (auto-extract tags)
   app.post("/api/partner/feedback", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
@@ -2686,6 +2697,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       { slug: "contemporary_art", name: "Contemporary Art 2020-2026", category: "art", description: "NFTs, AI art, major exhibitions, emerging artists" },
     ];
     res.json(templates);
+  }));
+
+  // Load knowledge packs
+  app.post("/api/knowledge/load", asyncHandler(async (req, res) => {
+    const masterKey = req.headers["x-master-key"] as string;
+    if (masterKey !== process.env.KIOKU_MASTER_KEY) return res.status(403).json({ error: "Forbidden" });
+    const { userId, agentId, packs } = req.body as { userId: number; agentId: number; packs: string[] };
+    if (!userId || !agentId || !packs?.length) return res.status(400).json({ error: "userId, agentId, packs required" });
+
+    const { loadKnowledgePack, HAIR_ART_KNOWLEDGE, ART_KNOWLEDGE, MUSIC_KNOWLEDGE, FASHION_KNOWLEDGE } = await import("./knowledge-loader");
+
+    const results: Record<string, number> = {};
+    for (const pack of packs) {
+      switch (pack) {
+        case "hair": results[pack] = await loadKnowledgePack(userId, agentId, HAIR_ART_KNOWLEDGE); break;
+        case "art": results[pack] = await loadKnowledgePack(userId, agentId, ART_KNOWLEDGE); break;
+        case "music": results[pack] = await loadKnowledgePack(userId, agentId, MUSIC_KNOWLEDGE); break;
+        case "fashion": results[pack] = await loadKnowledgePack(userId, agentId, FASHION_KNOWLEDGE); break;
+        default: results[pack] = 0;
+      }
+    }
+    res.json({ loaded: results });
+  }));
+
+  app.get("/api/knowledge/domains-list", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const result = await pool.query(
+      `SELECT * FROM knowledge_domains WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    );
+    res.json(result.rows);
   }));
 
   // ── Global error handler ──────────────────────────────────────

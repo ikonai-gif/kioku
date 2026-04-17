@@ -401,6 +401,24 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_aesthetic_prefs_user ON aesthetic_preferences(user_id, category);
     CREATE INDEX IF NOT EXISTS idx_aesthetic_prefs_agent ON aesthetic_preferences(agent_id);
   `);
+
+  // Phase 9: Gallery — auto-saved creations (images, writing, etc.)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gallery (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      agent_id    INTEGER,
+      type        TEXT NOT NULL,
+      title       TEXT,
+      content_url TEXT,
+      content_text TEXT,
+      prompt      TEXT,
+      metadata    JSONB DEFAULT '{}',
+      created_at  BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gallery_user ON gallery(user_id, type);
+    CREATE INDEX IF NOT EXISTS idx_gallery_created ON gallery(user_id, created_at DESC);
+  `);
 }
 
 function generateApiKey(): string {
@@ -473,6 +491,9 @@ export interface IStorage {
   addLog(data: InsertLog): Promise<Log>;
 
   getStats(userId: number): Promise<{ totalMemories: number; totalOps: number; avgLatency: number; activeAgents: number }>;
+
+  addGalleryItem(item: { userId: number; agentId?: number | null; type: string; title?: string; contentUrl?: string; contentText?: string; prompt?: string; metadata?: any }): Promise<any>;
+  getGalleryItems(userId: number, type?: string, limit?: number, offset?: number): Promise<any[]>;
 }
 
 export class Storage implements IStorage {
@@ -2042,6 +2063,32 @@ export class Storage implements IStorage {
       [userId, slug]
     );
     return result.rows.length > 0;
+  }
+
+  // ── Gallery ──────────────────────────────────────────────────────────────────
+  async addGalleryItem(item: { userId: number; agentId?: number | null; type: string; title?: string; contentUrl?: string; contentText?: string; prompt?: string; metadata?: any }): Promise<any> {
+    const now = Date.now();
+    const result = await pool.query(
+      `INSERT INTO gallery (user_id, agent_id, type, title, content_url, content_text, prompt, metadata, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [item.userId, item.agentId || null, item.type, item.title || null, item.contentUrl || null, item.contentText || null, item.prompt || null, JSON.stringify(item.metadata || {}), now]
+    );
+    return result.rows[0];
+  }
+
+  async getGalleryItems(userId: number, type?: string, limit = 50, offset = 0): Promise<any[]> {
+    if (type) {
+      const result = await pool.query(
+        `SELECT * FROM gallery WHERE user_id = $1 AND type = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
+        [userId, type, limit, offset]
+      );
+      return result.rows;
+    }
+    const result = await pool.query(
+      `SELECT * FROM gallery WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+    return result.rows;
   }
 }
 

@@ -31,14 +31,15 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
   {
     name: "analyze_image",
-    description: "Analyze or describe an image using vision AI. Use when the user shares an image URL and asks what it shows.",
+    description: "Analyze or describe an image using vision AI. Use when the user shares an image URL or base64 data and asks what it shows. Can analyze photos, screenshots, artwork, documents, and anything visual.",
     input_schema: {
       type: "object" as const,
       properties: {
         image_url: { type: "string", description: "URL of the image to analyze" },
+        image_base64: { type: "string", description: "Base64-encoded image data (alternative to URL, for camera captures)" },
         question: { type: "string", description: "Specific question about the image" },
       },
-      required: ["image_url"],
+      required: [],
     },
   },
   {
@@ -108,6 +109,18 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       properties: {
         url: { type: "string", description: "YouTube URL or direct video file URL" },
         question: { type: "string", description: "What to analyze or answer about the video. Default: general summary with key moments" },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "listen_audio",
+    description: "Listen to and transcribe audio files or voice messages. Use when the user shares an audio URL (mp3, wav, ogg, m4a, webm) and asks you to listen, transcribe, or analyze what's being said. Understands speech in any language.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "URL of the audio file to listen to" },
+        question: { type: "string", description: "Optional: specific question about the audio content" },
       },
       required: ["url"],
     },
@@ -184,6 +197,18 @@ async function executePartnerTool(
           importance: 0.7,
           namespace: "_creations",
         }).catch(() => {});
+        // Auto-save to gallery
+        if (imageUrl) {
+          (storage as any).addGalleryItem({
+            userId,
+            agentId,
+            type: "image",
+            title: toolInput.prompt.slice(0, 200),
+            contentUrl: imageUrl,
+            prompt: toolInput.prompt,
+            metadata: { style: toolInput.style || "vivid", revisedPrompt },
+          }).catch(() => {});
+        }
         return imageUrl
           ? `Image generated successfully. URL: ${imageUrl}`
           : "Image generation failed — no URL returned.";
@@ -193,13 +218,23 @@ async function executePartnerTool(
         const OAI = (await import("openai")).default;
         const oaiClient = new OAI();
         const question = toolInput.question || "What do you see in this image? Describe it naturally as a friend would.";
+        // Support both URL and base64
+        let imageContent: any;
+        if (toolInput.image_url) {
+          imageContent = { type: "image_url", image_url: { url: toolInput.image_url } };
+        } else if (toolInput.image_base64) {
+          const b64 = toolInput.image_base64.startsWith("data:") ? toolInput.image_base64 : `data:image/jpeg;base64,${toolInput.image_base64}`;
+          imageContent = { type: "image_url", image_url: { url: b64 } };
+        } else {
+          return "No image provided. Please share an image URL or base64 data.";
+        }
         const response = await oaiClient.chat.completions.create({
           model: "gpt-4.1-mini",
           messages: [{
             role: "user",
             content: [
               { type: "text", text: question },
-              { type: "image_url", image_url: { url: toolInput.image_url } },
+              imageContent,
             ],
           }],
           max_tokens: 500,
@@ -243,6 +278,16 @@ async function executePartnerTool(
             type: "episodic",
             importance: 0.7,
             namespace: "_creations",
+          }).catch(() => {});
+          // Auto-save to gallery
+          (storage as any).addGalleryItem({
+            userId,
+            agentId,
+            type: "writing",
+            title: toolInput.prompt.slice(0, 200),
+            contentText: text,
+            prompt: toolInput.prompt,
+            metadata: { style: toolInput.style || null },
           }).catch(() => {});
         }
         return text || "Creative writing generation failed.";
@@ -557,6 +602,71 @@ async function executePartnerTool(
         }
 
         return "Invalid action. Use 'search' to find tools or 'execute' to run one.";
+      }
+
+      case "listen_audio": {
+        const audioUrl = toolInput.url;
+        if (!audioUrl || typeof audioUrl !== "string") return "No audio URL provided.";
+        try {
+          const OAI = (await import("openai")).default;
+          const oaiClient = new OAI();
+          // Download audio file
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 30000);
+          const resp = await fetch(audioUrl, {
+            signal: controller.signal,
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; AgentO/1.0)" },
+          });
+          clearTimeout(timeout);
+          if (!resp.ok) return `Failed to download audio: HTTP ${resp.status}`;
+          const audioBuffer = Buffer.from(await resp.arrayBuffer());
+          if (audioBuffer.length > 25 * 1024 * 1024) return "Audio file too large (max 25MB for transcription).";
+          // Determine file extension from URL or content-type
+          const contentType = resp.headers.get("content-type") || "";
+          let ext = "mp3";
+          if (audioUrl.match(/\.(wav|mp3|ogg|m4a|webm|flac|mp4)(\?|$)/i)) {
+            ext = audioUrl.match(/\.(wav|mp3|ogg|m4a|webm|flac|mp4)(\?|$)/i)![1].toLowerCase();
+          } else if (contentType.includes("wav")) ext = "wav";
+          else if (contentType.includes("ogg")) ext = "ogg";
+          else if (contentType.includes("webm")) ext = "webm";
+          else if (contentType.includes("m4a") || contentType.includes("mp4")) ext = "m4a";
+          // Create a File-like object for OpenAI
+          const file = new File([audioBuffer], `audio.${ext}`, { type: contentType || `audio/${ext}` });
+          const transcription = await oaiClient.audio.transcriptions.create({
+            model: "whisper-1",
+            file,
+            response_format: "verbose_json",
+          });
+          const text = (transcription as any).text || "";
+          const language = (transcription as any).language || "unknown";
+          const duration = (transcription as any).duration || 0;
+          if (!text.trim()) return "Audio was processed but no speech was detected.";
+          // If user asked a specific question, analyze the transcription
+          if (toolInput.question) {
+            const analysis = await oaiClient.chat.completions.create({
+              model: "gpt-4.1-mini",
+              messages: [
+                { role: "system", content: "Answer the question based on the audio transcription provided. Be natural and concise." },
+                { role: "user", content: `Audio transcription (${language}, ${Math.round(duration)}s):\n${text}\n\nQuestion: ${toolInput.question}` },
+              ],
+              max_tokens: 1000,
+            });
+            return analysis.choices[0]?.message?.content || text;
+          }
+          // Store in memory
+          storage.createMemory({
+            userId,
+            agentId,
+            content: `[Audio listened] ${audioUrl} — Language: ${language}, Duration: ${Math.round(duration)}s — "${text.slice(0, 400)}"`,
+            type: "episodic",
+            importance: 0.6,
+            namespace: "_audio",
+          }).catch(() => {});
+          return `Audio transcription (${language}, ${Math.round(duration)}s):\n${text.slice(0, 6000)}`;
+        } catch (err: any) {
+          if (err?.name === "AbortError") return "Audio download timed out.";
+          return `Audio listening failed: ${err?.message || String(err)}`;
+        }
       }
 
       default:
