@@ -88,6 +88,18 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["query"],
     },
   },
+  {
+    name: "read_file",
+    description: "Download and read a file (PDF, DOCX, TXT) from a URL. Use when the user shares a link to a document and asks you to read or summarize it.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "URL of the file to download and read" },
+        question: { type: "string", description: "Optional: specific question to answer from the file" },
+      },
+      required: ["url"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -319,6 +331,69 @@ async function executePartnerTool(
           return (content + citations) || "Search returned no results.";
         } catch (err: any) {
           return `Web search failed: ${err?.message || String(err)}. I'll answer from my existing knowledge instead.`;
+        }
+      }
+
+      case "read_file": {
+        const fileUrl = toolInput.url;
+        if (!fileUrl) return "No file URL provided.";
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 20000);
+          const resp = await fetch(fileUrl, {
+            signal: controller.signal,
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; AgentO/1.0)" },
+          });
+          clearTimeout(timeout);
+          if (!resp.ok) return `Failed to download file: HTTP ${resp.status}`;
+
+          const contentType = resp.headers.get("content-type") || "";
+          const buffer = Buffer.from(await resp.arrayBuffer());
+
+          let textContent = "";
+
+          if (contentType.includes("pdf") || fileUrl.toLowerCase().endsWith(".pdf")) {
+            try {
+              const { PDFParse } = await import("pdf-parse");
+              const pdf = new PDFParse({ data: new Uint8Array(buffer) });
+              const result = await pdf.getText();
+              textContent = result.text.slice(0, 8000);
+              await pdf.destroy();
+            } catch {
+              textContent = "Could not parse PDF content.";
+            }
+          } else if (contentType.includes("wordprocessing") || fileUrl.toLowerCase().endsWith(".docx")) {
+            try {
+              const mammoth = await import("mammoth");
+              const result = await mammoth.extractRawText({ buffer });
+              textContent = result.value.slice(0, 8000);
+            } catch {
+              textContent = "Could not parse DOCX content.";
+            }
+          } else {
+            textContent = buffer.toString("utf-8").slice(0, 8000);
+          }
+
+          if (!textContent.trim()) return "File downloaded but no readable text found.";
+
+          if (toolInput.question) {
+            const OAI = (await import("openai")).default;
+            const oaiClient = new OAI();
+            const answer = await oaiClient.chat.completions.create({
+              model: "gpt-4.1-mini",
+              messages: [
+                { role: "system", content: "Answer the question based ONLY on the provided document content. Be concise." },
+                { role: "user", content: `Document content:\n${textContent}\n\nQuestion: ${toolInput.question}` },
+              ],
+              max_tokens: 1000,
+            });
+            return answer.choices[0]?.message?.content || textContent.slice(0, 3000);
+          }
+
+          return `File content:\n${textContent.slice(0, 5000)}`;
+        } catch (err: any) {
+          if (err?.name === "AbortError") return "File download timed out.";
+          return `Failed to read file: ${err?.message || String(err)}`;
         }
       }
 
@@ -833,6 +908,7 @@ You have real abilities. Use them proactively:
 - If asked to calculate, process data, or write code → use run_code
 - If the user shares an image URL → use analyze_image to see what's in it
 - If asked to write something creative → use creative_writing
+- If the user shares a link to a PDF, DOCX, or other document file → use read_file to read it, then discuss the content
 Don't announce you're using tools. Just use them and share the results naturally, like a person who Googles something mid-conversation.`;
 }
 
