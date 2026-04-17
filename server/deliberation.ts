@@ -54,6 +54,18 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "read_url",
+    description: "Read and extract content from a web page URL. Use when the user shares a link and asks you to read it, summarize it, or answer questions about it.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "The URL to read" },
+        question: { type: "string", description: "Optional: specific question to answer from the page content" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "web_search",
     description: "Search the web for current information. Use when the user asks about recent events, facts you're unsure about, or anything that needs up-to-date data.",
     input_schema: {
@@ -171,6 +183,50 @@ async function executePartnerTool(
           }).catch(() => {});
         }
         return text || "Creative writing generation failed.";
+      }
+
+      case "read_url": {
+        const url = toolInput.url;
+        if (!url || typeof url !== "string") return "No URL provided.";
+        try {
+          // Fetch the page with timeout
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 15000);
+          const resp = await fetch(url, {
+            signal: controller.signal,
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; AgentO/1.0)" },
+          });
+          clearTimeout(timeout);
+          if (!resp.ok) return `Failed to fetch URL: HTTP ${resp.status}`;
+          const html = await resp.text();
+          // Extract text content — strip HTML tags, scripts, styles
+          const textContent = html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 8000); // Limit to ~8k chars to fit in context
+          if (!textContent) return "Page loaded but no readable text found.";
+          // If user asked a specific question, use LLM to answer from content
+          if (toolInput.question) {
+            const OAI = (await import("openai")).default;
+            const oaiClient = new OAI();
+            const answer = await oaiClient.chat.completions.create({
+              model: "gpt-4.1-mini",
+              messages: [
+                { role: "system", content: "Answer the question based ONLY on the provided web page content. Be concise and accurate. If the answer is not in the content, say so." },
+                { role: "user", content: `Page content:\n${textContent}\n\nQuestion: ${toolInput.question}` },
+              ],
+              max_tokens: 1000,
+            });
+            return answer.choices[0]?.message?.content || textContent.slice(0, 3000);
+          }
+          return `Page content (${url}):\n${textContent.slice(0, 5000)}`;
+        } catch (err: any) {
+          if (err?.name === "AbortError") return "URL fetch timed out after 15 seconds.";
+          return `Failed to read URL: ${err?.message || String(err)}`;
+        }
       }
 
       case "web_search": {
