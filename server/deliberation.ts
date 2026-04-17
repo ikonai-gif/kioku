@@ -464,18 +464,10 @@ export async function triggerAgentResponses(
   roomName?: string
 ): Promise<void> {
   const isPartnerChat = roomName === "Partner";
-  // DB-level debug logging (visible via /api/logs)
-  storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#888", operation: "trigger-entry", detail: `room=${roomId} partner=${isPartnerChat} openai=${!!openai} anthropic=${!!ANTHROPIC_API_KEY} gemini=${!!GEMINI_API_KEY}`, latencyMs: null }).catch(() => {});
-  if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) {
-    storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#f00", operation: "trigger-abort", detail: "No LLM providers configured", latencyMs: null }).catch(() => {});
-    return;
-  }
+  if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) return; // no shared provider
   // Check room lock with auto-expiry
   const lockTime = roomLocks.get(roomId);
-  if (lockTime && (Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) {
-    storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#ff0", operation: "trigger-locked", detail: `roomId=${roomId} lockAge=${Date.now() - lockTime}ms`, latencyMs: null }).catch(() => {});
-    return;
-  }
+  if (lockTime && (Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) return; // already processing
   roomLocks.set(roomId, Date.now());
 
   try {
@@ -488,14 +480,12 @@ export async function triggerAgentResponses(
         a.id !== triggerAgentId &&
         ((a as any).agentType || "internal") === "internal" // skip external agents in chat mode
     );
-    // respondent count tracked via DB debug logs above
+
 
     if (respondents.length === 0) {
       roomLocks.delete(roomId);
-      storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#f00", operation: "no-respondents", detail: `roomAgentIds=${JSON.stringify(roomAgentIds)} triggerAgentId=${triggerAgentId}`, latencyMs: null }).catch(() => {});
       return;
     }
-    storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#0f0", operation: "respondents-found", detail: `count=${respondents.length} names=${respondents.map(a=>a.name).join(',')}`, latencyMs: null }).catch(() => {});
 
     // Fetch room history for context (last 20 messages)
     const history = await storage.getRoomMessages(roomId, userId);
@@ -584,7 +574,7 @@ export async function triggerAgentResponses(
         const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
-        // LLM routing: DB debug logs handle this
+
         let reply: string | undefined;
 
         if (isGemini) {
@@ -824,9 +814,6 @@ export async function triggerAgentResponses(
         }).catch(() => {});
       }
     }
-  } catch (outerErr: any) {
-    storage.addLog({ userId, agentName: "[DEBUG]", agentColor: "#f00", operation: "trigger-crash", detail: `OUTER ERROR: ${outerErr?.message || String(outerErr)}`.slice(0, 500), latencyMs: null }).catch(() => {});
-    throw outerErr; // re-throw to propagate
   } finally {
     roomLocks.delete(roomId);
   }
