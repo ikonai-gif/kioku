@@ -291,6 +291,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
       GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
       E2B_API_KEY: !!process.env.E2B_API_KEY,
+      COMPOSIO_API_KEY: !!process.env.COMPOSIO_API_KEY,
       BREVO_API_KEY: !!process.env.BREVO_API_KEY,
       STRIPE_SECRET_KEY: !!process.env.STRIPE_SECRET_KEY,
       DATABASE_URL: !!process.env.DATABASE_URL,

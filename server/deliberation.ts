@@ -100,6 +100,33 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["url"],
     },
   },
+  {
+    name: "composio_action",
+    description: "Connect to and use 1000+ external apps (Gmail, Slack, Google Calendar, Notion, GitHub, Trello, HubSpot, Jira, Asana, Spotify, Twitter/X, LinkedIn, Stripe, Shopify, Discord, Telegram, WhatsApp, Zoom, and many more). Use this when the user asks you to interact with any external service — send emails, post messages, create tasks, check calendars, manage repos, etc. First search for the right tool, then execute it.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["search", "execute"],
+          description: "'search' to find available tools for a task, 'execute' to run a specific Composio action",
+        },
+        query: {
+          type: "string",
+          description: "For 'search': describe what you want to do (e.g. 'send email via gmail', 'create github issue')",
+        },
+        tool_name: {
+          type: "string",
+          description: "For 'execute': the exact Composio action enum (e.g. 'GMAIL_SEND_EMAIL', 'SLACK_SEND_MESSAGE') — get this from search results",
+        },
+        params: {
+          type: "object",
+          description: "For 'execute': input parameters for the action",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -399,6 +426,70 @@ async function executePartnerTool(
           if (err?.name === "AbortError") return "File download timed out.";
           return `Failed to read file: ${err?.message || String(err)}`;
         }
+      }
+
+      case "composio_action": {
+        const COMPOSIO_KEY = process.env.COMPOSIO_API_KEY;
+        if (!COMPOSIO_KEY) return "Composio integration is not configured yet. Please ask the admin to add the COMPOSIO_API_KEY.";
+        const composioBase = "https://backend.composio.dev/api/v2";
+        const composioHeaders = { "x-api-key": COMPOSIO_KEY, "Content-Type": "application/json" };
+
+        if (toolInput.action === "search") {
+          const query = toolInput.query;
+          if (!query) return "Please specify what you want to do (e.g. 'send email via gmail').";
+          // Search for relevant tools via Composio
+          const resp = await fetch(`${composioBase}/actions/COMPOSIO_SEARCH_TOOLS/execute`, {
+            method: "POST",
+            headers: composioHeaders,
+            signal: AbortSignal.timeout(20000),
+            body: JSON.stringify({
+              input: {
+                queries: [{ use_case: query }],
+              },
+              entityId: `kioku_user_${userId}`,
+              appName: "composio",
+            }),
+          });
+          if (!resp.ok) return `Composio search failed: HTTP ${resp.status}`;
+          const data = await resp.json() as any;
+          if (!data.successful && !data.successfull) {
+            return `Composio search error: ${data.error || data.message || "Unknown error"}`;
+          }
+          // Parse search results
+          const results = data.data?.results || data.data?.tools || data.data;
+          if (!results) return `Search completed but no tools found for: ${query}. Try a different description.`;
+          return `Composio search results for "${query}":\n${JSON.stringify(results, null, 2).slice(0, 4000)}`;
+        }
+
+        if (toolInput.action === "execute") {
+          const toolSlug = toolInput.tool_name;
+          if (!toolSlug) return "Missing tool_name. First use action='search' to find the right tool, then use its enum name here.";
+          const params = toolInput.params || {};
+          const resp = await fetch(`${composioBase}/actions/${toolSlug}/execute`, {
+            method: "POST",
+            headers: composioHeaders,
+            signal: AbortSignal.timeout(30000),
+            body: JSON.stringify({
+              input: params,
+              entityId: `kioku_user_${userId}`,
+            }),
+          });
+          if (!resp.ok) {
+            const errBody = await resp.text().catch(() => "");
+            return `Composio execute failed: HTTP ${resp.status} ${errBody.slice(0, 500)}`;
+          }
+          const data = await resp.json() as any;
+          if (!data.successful && !data.successfull) {
+            // Check if auth is needed
+            if (data.error?.includes("connection") || data.error?.includes("auth") || data.message?.includes("connected account")) {
+              return `This action requires authentication. The user needs to connect their account first. Error: ${data.error || data.message}`;
+            }
+            return `Action ${toolSlug} failed: ${data.error || data.message || JSON.stringify(data).slice(0, 500)}`;
+          }
+          return `Action ${toolSlug} executed successfully:\n${JSON.stringify(data.data || data, null, 2).slice(0, 4000)}`;
+        }
+
+        return "Invalid action. Use 'search' to find tools or 'execute' to run one.";
       }
 
       default:
