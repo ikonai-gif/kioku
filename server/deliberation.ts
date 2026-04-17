@@ -488,7 +488,7 @@ export async function triggerAgentResponses(
         a.id !== triggerAgentId &&
         ((a as any).agentType || "internal") === "internal" // skip external agents in chat mode
     );
-    logger.info({ respondentCount: respondents.length, respondentNames: respondents.map(a => a.name), roomAgentIds, triggerAgentId }, "Agent respondents found");
+    // respondent count tracked via DB debug logs above
 
     if (respondents.length === 0) {
       roomLocks.delete(roomId);
@@ -584,7 +584,7 @@ export async function triggerAgentResponses(
         const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
-        logger.info({ agent: agent.name, chatModel, isGemini, isClaude, llmProvider: (agent as any).llmProvider }, "LLM routing for agent");
+        // LLM routing: DB debug logs handle this
         let reply: string | undefined;
 
         if (isGemini) {
@@ -617,7 +617,7 @@ export async function triggerAgentResponses(
           // Anthropic Claude path — with tool-use loop for Partner Chat
           const anthropicClient = getAnthropicClient(agent as any);
           if (!anthropicClient) {
-            logger.warn({ agent: agent.name }, "Claude client unavailable — no ANTHROPIC_API_KEY, falling back to OpenAI");
+            console.warn(`[deliberation] Claude client unavailable for ${agent.name} — falling back to OpenAI`);
           }
           if (anthropicClient) {
             const claudeModel = chatModel.startsWith("claude-") ? chatModel : "claude-sonnet-4-6";
