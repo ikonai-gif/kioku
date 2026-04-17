@@ -174,7 +174,34 @@ async function executePartnerTool(
       }
 
       case "web_search": {
-        return "Web search is not yet implemented. I can't look things up online right now, but I'll do my best to answer from what I know.";
+        // Real web search via OpenAI gpt-4o-mini-search-preview (Chat Completions with web_search_options)
+        try {
+          const OAI = (await import("openai")).default;
+          const oaiClient = new OAI();
+          const searchResponse = await oaiClient.chat.completions.create({
+            model: "gpt-4o-mini-search-preview",
+            web_search_options: {
+              search_context_size: "medium",
+            },
+            messages: [
+              { role: "user", content: toolInput.query },
+            ],
+          } as any);
+          const content = searchResponse.choices[0]?.message?.content || "";
+          // Extract URL citations if present
+          const annotations = (searchResponse.choices[0]?.message as any)?.annotations;
+          let citations = "";
+          if (annotations && Array.isArray(annotations)) {
+            const urls = annotations
+              .filter((a: any) => a.type === "url_citation" && a.url)
+              .map((a: any) => a.url)
+              .slice(0, 5);
+            if (urls.length > 0) citations = "\nSources: " + urls.join(" | ");
+          }
+          return (content + citations) || "Search returned no results.";
+        } catch (err: any) {
+          return `Web search failed: ${err?.message || String(err)}. I'll answer from my existing knowledge instead.`;
+        }
       }
 
       default:
@@ -379,6 +406,7 @@ export async function triggerAgentResponses(
 
             // Tool-use loop (only for Partner Chat on Claude path)
             const maxToolIterations = 5;
+            const generatedAssets: string[] = []; // Collect image URLs etc. to append to final reply
             for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
               const claudeMsg = await anthropicClient.messages.create({
                 model: claudeModel,
@@ -414,6 +442,11 @@ export async function triggerAgentResponses(
                   userId,
                   agent.id
                 );
+                // Collect generated image URLs to guarantee they reach the user
+                if (block.name === "generate_image" && result.includes("URL: ")) {
+                  const urlMatch = result.match(/URL: (https:\/\/[^\s]+)/);
+                  if (urlMatch) generatedAssets.push(urlMatch[1]);
+                }
                 toolResults.push({
                   type: "tool_result",
                   tool_use_id: block.id,
@@ -425,6 +458,11 @@ export async function triggerAgentResponses(
               claudeMessages.push({ role: "user", content: toolResults });
               // Clear reply — Claude will provide a new text response after processing tool results
               reply = undefined;
+            }
+            // Append generated asset URLs to final reply so user always sees them
+            if (reply && generatedAssets.length > 0) {
+              const assetBlock = generatedAssets.map(url => `\n${url}`).join("");
+              reply = reply + assetBlock;
             }
           }
         }
