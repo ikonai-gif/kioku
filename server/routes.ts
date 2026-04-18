@@ -2883,9 +2883,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const redirectBase = process.env.APP_URL || "";
       res.redirect(`${redirectBase}/partner?integration=google_drive&status=connected`);
     } catch (err: any) {
-      logger.error({ source: "google-callback", error: err.message }, "Google OAuth callback failed");
+      logger.error({ source: "google-callback", error: err.message, stack: err.stack }, "Google OAuth callback failed");
       const redirectBase = process.env.APP_URL || "";
-      res.redirect(`${redirectBase}/partner?integration=google_drive&status=error`);
+      res.redirect(`${redirectBase}/partner?integration=google_drive&status=error&msg=${encodeURIComponent(err.message || 'unknown')}`);
     }
   }));
 
