@@ -1112,6 +1112,22 @@ export default function PartnerChat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isThinking]);
 
+  // ── Proactive check — Luca initiates if appropriate ───────────
+  const proactiveCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!partnerRoomId || proactiveCheckedRef.current) return;
+    proactiveCheckedRef.current = true;
+    apiRequest("POST", `/api/rooms/${partnerRoomId}/proactive-check`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.message) {
+          // Proactive message was posted and broadcasted via WebSocket — just refetch messages
+          queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoomId, "messages"] });
+        }
+      })
+      .catch(() => {}); // best-effort
+  }, [partnerRoomId]);
+
   // ── Detect agent response (clear thinking indicator) ──────────
   useEffect(() => {
     if (messages.length > lastMessageCountRef.current) {

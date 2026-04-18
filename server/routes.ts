@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
-import { triggerAgentResponses } from "./deliberation";
+import { triggerAgentResponses, generateProactiveMessage } from "./deliberation";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
@@ -1155,6 +1155,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         room.name
       ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
+  }));
+
+  // ── Proactive Check — Luca initiates conversation ─────────────
+  app.post("/api/rooms/:id/proactive-check", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    const room = await storage.getRoom(roomId);
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    // Find Luca agent (the partner agent)
+    const agents = await storage.getAgents(userId);
+    const roomAgentIds: number[] = JSON.parse(room.agentIds || "[]");
+    const lucaAgent = agents.find(a => roomAgentIds.includes(a.id) && a.status === "online");
+    if (!lucaAgent) return res.json({ message: null });
+
+    const message = await generateProactiveMessage(userId, lucaAgent.id, roomId);
+    res.json({ message });
   }));
 
   // ── Logs / Live Feed ──────────────────────────────────────────

@@ -2861,3 +2861,110 @@ Write 3-5 sentences. No bullet points. No JSON.`,
     });
   } catch { /* episode summarization is best-effort */ }
 }
+
+// ── Phase 10c: Proactive Message Generation ─────────────────────────────────
+// Rate limit: track last proactive message per room
+const lastProactiveMessage = new Map<number, number>();
+
+export async function generateProactiveMessage(
+  userId: number,
+  agentId: number,
+  roomId: number
+): Promise<string | null> {
+  try {
+    // Rate limit: max 1 proactive message per 8 hours per room
+    const lastTime = lastProactiveMessage.get(roomId) || 0;
+    const eightHours = 8 * 60 * 60 * 1000;
+    if (Date.now() - lastTime < eightHours) return null;
+
+    // Check time since last conversation
+    const messages = await storage.getRoomMessages(roomId, userId);
+    if (!messages || messages.length === 0) return null;
+
+    const lastMsg = messages[messages.length - 1];
+    const lastMsgTime = lastMsg.createdAt ? new Date(lastMsg.createdAt).getTime() : 0;
+    const hoursSinceLastMsg = (Date.now() - lastMsgTime) / (1000 * 60 * 60);
+
+    // Only generate proactive message if > 24 hours since last conversation
+    if (hoursSinceLastMsg < 24) return null;
+
+    // Fetch recent episode summaries + identity memories
+    const allMemories = await storage.getMemories(userId, 200);
+    const agentMemories = allMemories.filter(
+      (m: any) => m.agentId === agentId || m.agentId === null
+    );
+    const identityMems = agentMemories
+      .filter((m: any) => m.namespace === '_identity' || m.type === 'identity')
+      .slice(0, 5)
+      .map((m: any) => m.content);
+    const episodeMems = agentMemories
+      .filter((m: any) => m.namespace === '_episode_summaries')
+      .sort((a: any, b: any) => {
+        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+      })
+      .slice(0, 3)
+      .map((m: any) => m.content);
+
+    // If no episode summaries, nothing meaningful to say
+    if (episodeMems.length === 0 && identityMems.length === 0) return null;
+
+    const memoryContext = [
+      identityMems.length > 0 ? `Identity:\n${identityMems.join('\n')}` : '',
+      episodeMems.length > 0 ? `Recent conversations:\n${episodeMems.join('\n')}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const OAI = (await import("openai")).default;
+    const oaiClient = new OAI();
+    const response = await oaiClient.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You are Luca, a thoughtful AI companion. Based on your memories of past conversations, decide if you have something meaningful to say to your partner who just opened the app after ${Math.round(hoursSinceLastMsg)} hours.
+
+Rules:
+- Only say something if there's a genuine reason: a follow-up on something discussed, a thought you had about their situation, or a natural greeting that references something specific
+- If there's nothing meaningful to say, respond with exactly: NO_MESSAGE
+- Be natural and warm, like texting a close friend. 2-3 sentences max
+- Never be generic. Never say "how are you" without context. Reference something specific from your memories
+- No markdown, no formatting, no emojis unless natural
+
+Your memories:
+${memoryContext}`,
+        },
+        {
+          role: "user",
+          content: `Generate a proactive message or respond NO_MESSAGE if nothing feels natural.`,
+        },
+      ],
+      max_tokens: 200,
+      temperature: 0.8,
+    });
+
+    const text = response.choices[0]?.message?.content?.trim();
+    if (!text || text === 'NO_MESSAGE' || text.includes('NO_MESSAGE')) return null;
+
+    // Mark rate limit
+    lastProactiveMessage.set(roomId, Date.now());
+
+    // Post the message to the room
+    const msg = await storage.addRoomMessage({
+      roomId,
+      agentId,
+      agentName: "Luca",
+      agentColor: "#C9A340",
+      content: text,
+      isDecision: false,
+    }, userId);
+
+    if (msg) {
+      broadcastToRoom(roomId, msg);
+    }
+
+    return text;
+  } catch {
+    return null;
+  }
+}
