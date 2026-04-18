@@ -16,6 +16,7 @@ export interface InjectedMemory {
   confidence: number;
   expiresAt?: number | null;
   emotionVector?: string | null;
+  namespace?: string | null;
 }
 
 /**
@@ -69,8 +70,29 @@ export async function fetchRelevantMemories(
       confidence: 1.0,
       expiresAt: m.expiresAt,
       emotionVector: m.emotionVector ?? null,
+      namespace: m.namespace ?? null,
     }));
-  const alwaysIds = new Set(alwaysInject.map(m => m.id));
+
+  // Always-inject: 3 most recent episode summaries regardless of keyword match
+  const episodeSummaries: InjectedMemory[] = candidateMemories
+    .filter((m: any) => m.namespace === '_episode_summaries')
+    .sort((a: any, b: any) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bTime - aTime;
+    })
+    .slice(0, 3)
+    .map((m: any) => ({
+      id: m.id,
+      content: m.content,
+      type: m.type,
+      confidence: 1.0,
+      expiresAt: m.expiresAt,
+      emotionVector: m.emotionVector ?? null,
+      namespace: '_episode_summaries',
+    }));
+
+  const alwaysIds = new Set([...alwaysInject, ...episodeSummaries].map(m => m.id));
 
   // Score remaining memories by topic relevance * decayed confidence
   const scored = candidateMemories
@@ -120,6 +142,7 @@ export async function fetchRelevantMemories(
         confidence: Math.round(currentConfidence * 100) / 100,
         expiresAt: m.expiresAt,
         emotionVector: m.emotionVector ?? null,
+        namespace: m.namespace ?? null,
         score,
       };
     })
@@ -127,8 +150,8 @@ export async function fetchRelevantMemories(
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(0, limit - alwaysInject.length));
 
-  // Identity memories first, then topic-relevant memories
-  return [...alwaysInject, ...scored.map(({ score: _score, ...rest }) => rest)];
+  // Identity memories first, then episode summaries, then topic-relevant memories
+  return [...alwaysInject, ...episodeSummaries, ...scored.map(({ score: _score, ...rest }) => rest)];
 }
 
 /**
@@ -140,15 +163,22 @@ export function formatMemoryContext(memories: InjectedMemory[]): string {
 
   const EMOTION_LABELS = ['joy', 'acceptance', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation'];
 
-  // Separate identity memories from topic-relevant ones
+  // Separate identity, episode summaries, and topic-relevant memories
   const identityMems = memories.filter(m => m.type === 'identity');
-  const topicMems = memories.filter(m => m.type !== 'identity');
+  const episodeMems = memories.filter(m => m.namespace === '_episode_summaries');
+  const episodeIds = new Set(episodeMems.map(m => m.id));
+  const topicMems = memories.filter(m => m.type !== 'identity' && !episodeIds.has(m.id));
 
   let output = "";
 
   if (identityMems.length > 0) {
     const idLines = identityMems.map((m, i) => `${i + 1}. ${m.content}`);
     output += `\n\n## WHO YOU ARE (core memories — always active)\n${idLines.join("\n")}\nThese are your foundational memories. They define who you are across every conversation.`;
+  }
+
+  if (episodeMems.length > 0) {
+    const epLines = episodeMems.map((m, i) => `${i + 1}. ${m.content}`);
+    output += `\n\n## RECENT CONVERSATIONS (your episodic memory)\n${epLines.join("\n")}\nThese are summaries of your recent conversations. Use them to maintain continuity — reference past discussions naturally.`;
   }
 
   if (topicMems.length > 0) {

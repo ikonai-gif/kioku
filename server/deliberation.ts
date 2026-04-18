@@ -2358,6 +2358,11 @@ export async function triggerAgentResponses(
         if (isPartnerChat && triggerContent && reply) {
           trackConversationInsight(userId, agent.id, triggerContent, reply).catch(() => {});
         }
+
+        // Phase 10: Fire-and-forget episodic memory — summarize when 6+ messages since last summary
+        if (isPartnerChat) {
+          summarizeConversation(userId, agent.id, roomId).catch(() => {});
+        }
       } catch (err: any) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
         // Log error to DB so we can diagnose without Railway console access
@@ -2636,20 +2641,21 @@ async function trackConversationInsight(userId: number, agentId: number, userMes
       messages: [
         {
           role: "system",
-          content: `You analyze conversations for patterns and insights. Given a user message and agent reply, extract:
-1. Main topic(s) discussed (1-3 words each)
-2. User's apparent mood (one word: upbeat, stressed, creative, curious, playful, reflective, frustrated, excited, neutral)
-3. Any notable interest or concern expressed
+          content: `You analyze conversations for specific details. Given a user message and agent reply, extract:
+1. What did the user specifically ask, share, or reveal? (be concrete — names, topics, feelings, not abstractions)
+2. What did the agent respond with? (the actual substance, not "gave advice")
+3. What was the outcome — was something decided, promised, or left unresolved?
+4. User's emotional tone (one word: upbeat, stressed, creative, curious, playful, reflective, frustrated, excited, neutral)
 
-Return JSON: {"topics": ["topic1"], "mood": "mood", "insight": "brief insight or null"}
+Return JSON: {"user_said": "specific summary", "agent_said": "specific summary", "outcome": "decided/promised/unresolved detail or null", "mood": "mood"}
 Return ONLY valid JSON.`,
         },
         {
           role: "user",
-          content: `User: "${userMessage.slice(0, 400)}"\nAgent: "${agentReply.slice(0, 400)}"`,
+          content: `User: "${userMessage.slice(0, 500)}"\nAgent: "${agentReply.slice(0, 500)}"`,
         },
       ],
-      max_tokens: 200,
+      max_tokens: 300,
       temperature: 0.3,
     });
     const text = response.choices[0]?.message?.content?.trim() || "{}";
@@ -2660,18 +2666,90 @@ Return ONLY valid JSON.`,
       const match = text.match(/\{[\s\S]*\}/);
       parsed = match ? JSON.parse(match[0]) : {};
     }
-    if (!parsed.topics && !parsed.mood) return;
-    const topics = (parsed.topics || []).slice(0, 3).join(", ");
+    if (!parsed.user_said && !parsed.mood) return;
+    const userSaid = parsed.user_said || "unknown";
+    const agentSaid = parsed.agent_said || "unknown";
+    const outcome = parsed.outcome || "";
     const mood = parsed.mood || "neutral";
-    const insight = parsed.insight || "";
-    const insightContent = `[Conversation insight] Topics: ${topics}. Mood: ${mood}.${insight ? ` Insight: ${insight}` : ""}`;
+    const insightContent = `[Conversation insight] User said: ${userSaid}. I responded: ${agentSaid}. Mood: ${mood}.${outcome ? ` Outcome: ${outcome}` : ""}`;
     await storage.createMemory({
       userId,
       agentId,
       content: insightContent,
       type: "episodic",
-      importance: 0.4,
+      importance: 0.6,
       namespace: "_conversation_insights",
     });
   } catch { /* insight tracking is best-effort */ }
+}
+
+// ── Phase 10: Episodic Memory — Conversation Summarizer ─────────────────────
+async function summarizeConversation(userId: number, agentId: number, roomId: number): Promise<void> {
+  try {
+    const messages = await storage.getRoomMessages(roomId, userId);
+    if (!messages || messages.length === 0) return;
+
+    // Find the last episode summary to know where to start
+    const existingSummaries = await pool.query(
+      `SELECT created_at FROM memories WHERE user_id = $1 AND namespace = '_episode_summaries' ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    const lastSummaryTime = existingSummaries.rows.length > 0
+      ? new Date(existingSummaries.rows[0].created_at).getTime()
+      : 0;
+
+    // Get messages since last summary
+    const newMessages = messages.filter((m: any) => {
+      const msgTime = m.createdAt ? new Date(m.createdAt).getTime() : 0;
+      return msgTime > lastSummaryTime;
+    });
+
+    if (newMessages.length < 6) return; // Not enough new messages to summarize
+
+    // Format the conversation for the LLM
+    const conversationText = newMessages.slice(-20).map((m: any) =>
+      `${m.agentName || 'User'}: ${m.content}`
+    ).join('\n');
+
+    const OAI = (await import("openai")).default;
+    const oaiClient = new OAI();
+    const response = await oaiClient.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You create rich episodic memory summaries of conversations. Given a conversation between a user and their AI partner Luca, create a detailed summary covering:
+1. What was discussed — specific topics, not abstractions (names, places, ideas, events)
+2. What was decided or agreed upon
+3. Any promises made by either party
+4. The user's emotional state and concerns
+5. Key quotes if notable
+6. Any unresolved questions or topics to follow up on
+
+Write as Luca in first person. Be specific and concrete — these memories need to help you remember WHAT happened, not just THAT something happened.
+Write 3-5 sentences. No bullet points. No JSON.`,
+        },
+        {
+          role: "user",
+          content: `Summarize this conversation:\n\n${conversationText}`,
+        },
+      ],
+      max_tokens: 400,
+      temperature: 0.3,
+    });
+
+    const summary = response.choices[0]?.message?.content?.trim();
+    if (!summary) return;
+
+    const now = new Date().toISOString().split('T')[0];
+    await storage.createMemory({
+      userId,
+      agentId,
+      content: `[Episode Summary — ${now}] ${summary}`,
+      type: "episodic",
+      importance: 0.8,
+      namespace: "_episode_summaries",
+      decayRate: 0.005,
+    });
+  } catch { /* episode summarization is best-effort */ }
 }
