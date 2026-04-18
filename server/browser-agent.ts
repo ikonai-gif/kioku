@@ -26,6 +26,17 @@ interface BrowseResult {
  * Browse a website using Puppeteer + bundled Chromium inside the E2B sandbox.
  * Installs system deps and Puppeteer on first use (cached in persistent sandbox).
  */
+async function safeRun(sandbox: any, cmd: string, opts: { timeoutMs: number }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const r = await sandbox.commands.run(cmd, opts);
+    return { stdout: r.stdout || "", stderr: r.stderr || "", exitCode: r.exitCode ?? 0 };
+  } catch (e: any) {
+    // E2B throws CommandExitError on non-zero exit — extract result from it
+    if (e?.result) return { stdout: e.result.stdout || "", stderr: e.result.stderr || "", exitCode: e.result.exitCode ?? 1 };
+    return { stdout: "", stderr: e?.message || String(e), exitCode: 1 };
+  }
+}
+
 export async function browseWebsite(
   task: BrowseTask,
   sandbox: any
@@ -33,23 +44,32 @@ export async function browseWebsite(
   const timeout = task.timeout || 15000;
 
   // Step 1: Ensure Puppeteer is installed (it bundles its own Chromium)
-  const checkResult = await sandbox.commands.run(
+  const checkResult = await safeRun(sandbox,
     `node -e "try{require('puppeteer');console.log('OK')}catch(e){console.log('MISSING')}"`,
     { timeoutMs: 10_000 }
   );
 
   if (checkResult.stdout?.trim() !== "OK") {
     // Install system dependencies required by Chromium (E2B runs as non-root, needs sudo)
-    await sandbox.commands.run(
-      "sudo apt-get update -qq && sudo apt-get install -y -qq libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1",
+    await safeRun(sandbox,
+      "sudo apt-get update -qq && sudo apt-get install -y -qq libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1 2>/dev/null || true",
       { timeoutMs: 120_000 }
     );
 
     // Install Puppeteer (downloads bundled Chromium automatically)
-    await sandbox.commands.run(
-      "npm install puppeteer",
+    await safeRun(sandbox,
+      "npm install puppeteer 2>/dev/null",
       { timeoutMs: 120_000 }
     );
+
+    // Verify installation
+    const verify = await safeRun(sandbox,
+      `node -e "try{require('puppeteer');console.log('OK')}catch(e){console.log('MISSING')}"`,
+      { timeoutMs: 10_000 }
+    );
+    if (verify.stdout?.trim() !== "OK") {
+      return { success: false, error: "Failed to install Puppeteer in sandbox" };
+    }
   }
 
   // Step 2: Generate and write Puppeteer script
@@ -57,7 +77,7 @@ export async function browseWebsite(
   await sandbox.files.write("/tmp/browse_task.js", script);
 
   // Step 3: Execute the script
-  const result = await sandbox.commands.run(
+  const result = await safeRun(sandbox,
     "node /tmp/browse_task.js",
     { timeoutMs: timeout + 30_000 }
   );
