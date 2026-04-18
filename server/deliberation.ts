@@ -2009,12 +2009,6 @@ export async function triggerAgentResponses(
       // Fetch topic-relevant memories for this agent (per-agent + shared, confidence > 0.3)
       const injectedMemories = await fetchRelevantMemories(userId, agent.id, triggerContent, 15);
       const memoryContext = formatMemoryContext(injectedMemories);
-      const identityCount = injectedMemories.filter(m => m.type === 'identity').length;
-      console.log(`[deliberation] Agent ${agent.name} (id=${agent.id}): ${injectedMemories.length} memories injected, ${identityCount} identity. MemCtx length: ${memoryContext.length}`);
-      if (identityCount > 0) {
-        console.log(`[deliberation] Identity memories: ${injectedMemories.filter(m => m.type === 'identity').map(m => m.content.slice(0, 60)).join(' | ')}`);
-      }
-
       // Reinforce accessed memories (fire-and-forget)
       reinforceAccessedMemories(userId, injectedMemories);
 

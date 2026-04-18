@@ -71,11 +71,6 @@ export async function fetchRelevantMemories(
       emotionVector: m.emotionVector ?? null,
     }));
   const alwaysIds = new Set(alwaysInject.map(m => m.id));
-  if (alwaysInject.length > 0) {
-    console.log(`[memory-injection] Always-inject: ${alwaysInject.length} identity memories for agent ${agentId}`);
-  } else {
-    console.log(`[memory-injection] WARNING: No identity memories found for agent ${agentId}. Candidates: ${candidateMemories.length}, identity filter: namespace=${candidateMemories.filter((m:any) => m.namespace === '_identity').length}, type=${candidateMemories.filter((m:any) => m.type === 'identity').length}`);
-  }
 
   // Score remaining memories by topic relevance * decayed confidence
   const scored = candidateMemories
