@@ -30,6 +30,7 @@ import KnowledgePage from "./pages/knowledge";
 import AppLayout from "./components/layout";
 import NotFound from "./pages/not-found";
 import VerifyPage from "./pages/verify";
+import LandingPage from "./pages/landing";
 
 // ── Page titles ──────────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
@@ -219,7 +220,8 @@ export default function App() {
                 <Route path="/privacy" component={PrivacyPage} />
                 <Route path="/terms" component={TermsPage} />
                 <Route path="/cookies" component={CookiesPage} />
-                <Route component={LoginPage} />
+                <Route path="/login" component={LoginPage} />
+                <Route component={LandingPage} />
               </Switch>
             ) : (
               <>

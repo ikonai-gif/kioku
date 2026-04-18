@@ -3263,6 +3263,88 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ text: transcription.text });
   }));
 
+  // ── Public Demo Chat ──────────────────────────────────────────
+  const demoSessionMessages = new Map<string, number>();
+  const demoIpHourly = new Map<string, { count: number; reset: number }>();
+
+  const DEMO_SYSTEM_PROMPT = `You are Luca, the AI companion from KIOKU™ — a next-generation AI agent platform.
+You are friendly, warm, and intelligent. You help visitors learn about KIOKU™.
+
+KIOKU™ features you can talk about:
+- Volumetric memory: I remember everything about my users across conversations
+- 24+ tools: web search, code execution, image generation, file creation, cloud integration
+- Scheduling: I can set reminders and run tasks on a schedule
+- Voice: Text and voice chat
+- Multi-language: English, Russian, and more
+- Privacy-first: Your data is encrypted and belongs to you
+
+Keep responses SHORT (2-3 sentences max). Be conversational, not salesy.
+After 5+ messages, gently suggest: "Want to experience the full version? Sign up — it's free during beta!"
+
+Do NOT:
+- Pretend to have access to tools or execute anything
+- Share technical details about the backend
+- Discuss pricing specifics (say "free during beta")
+- Say anything negative about competitors`;
+
+  app.post("/api/demo/chat", asyncHandler(async (req, res) => {
+    const { message, sessionId } = req.body || {};
+    if (!message || typeof message !== "string" || !sessionId || typeof sessionId !== "string") {
+      return res.status(400).json({ error: "message and sessionId are required" });
+    }
+    if (message.length > 500) {
+      return res.status(400).json({ error: "Message too long (max 500 characters)" });
+    }
+
+    // Per-IP hourly rate limit (50/hr)
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    const now = Date.now();
+    const ipEntry = demoIpHourly.get(ip);
+    if (ipEntry && now < ipEntry.reset) {
+      if (ipEntry.count >= 50) {
+        return res.status(429).json({ error: "Too many requests. Try again later." });
+      }
+      ipEntry.count++;
+    } else {
+      demoIpHourly.set(ip, { count: 1, reset: now + 3600000 });
+    }
+
+    // Per-session limit (10 messages)
+    const sessionCount = demoSessionMessages.get(sessionId) || 0;
+    if (sessionCount >= 10) {
+      return res.status(429).json({ error: "Demo limit reached. Sign up for the full experience!", limitReached: true });
+    }
+    demoSessionMessages.set(sessionId, sessionCount + 1);
+
+    try {
+      const OpenAI = (await import("openai")).default;
+      const openai = new OpenAI();
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        max_tokens: 300,
+        messages: [
+          { role: "system", content: DEMO_SYSTEM_PROMPT },
+          { role: "user", content: message },
+        ],
+      });
+      const reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response. Try again!";
+      res.json({ reply });
+    } catch (err: any) {
+      logger.error({ source: "demo-chat", err }, "demo chat error");
+      res.status(500).json({ error: "Something went wrong. Please try again." });
+    }
+  }));
+
+  // Clean up stale demo session entries every 30 minutes
+  setInterval(() => {
+    const cutoff = Date.now();
+    const keys = Array.from(demoIpHourly.keys());
+    for (let i = 0; i < keys.length; i++) {
+      const entry = demoIpHourly.get(keys[i]);
+      if (entry && cutoff >= entry.reset) demoIpHourly.delete(keys[i]);
+    }
+  }, 1800000);
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {

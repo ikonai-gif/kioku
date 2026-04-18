@@ -229,3 +229,491 @@ input[type="range"]::-moz-range-thumb {
   border: 2px solid rgba(255,255,255,0.2);
   box-shadow: 0 0 6px rgba(212,175,55,0.3);
 }
+
+/* ── Landing Page ────────────────────────────────────────────── */
+.landing-page {
+  min-height: 100vh;
+  background: linear-gradient(180deg, #0a0f1e 0%, #0F1B3D 40%, #0a0f1e 100%);
+  color: #f5f5f5;
+  font-family: Inter, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Scroll-fade animations */
+.landing-fade-in {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.landing-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Nav */
+.landing-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  backdrop-filter: blur(12px);
+  background: rgba(10, 15, 30, 0.8);
+  border-bottom: 1px solid rgba(255, 215, 0, 0.08);
+}
+.landing-nav-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 1rem;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.landing-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.landing-nav-logo {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #FFD700;
+  letter-spacing: -0.02em;
+}
+.landing-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.landing-nav-link {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  transition: color 0.2s;
+}
+.landing-nav-link:hover {
+  color: #FFD700;
+}
+.landing-nav-cta {
+  background: #FFD700;
+  color: #0a0f1e;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.375rem 1rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+.landing-nav-cta:hover {
+  background: #e6c200;
+}
+
+/* Hero */
+.landing-hero {
+  padding: 7rem 1rem 4rem;
+  text-align: center;
+}
+.landing-hero-inner {
+  max-width: 640px;
+  margin: 0 auto;
+}
+.landing-hero-logo {
+  margin: 0 auto 1.25rem;
+  display: block;
+}
+.landing-hero-title {
+  font-size: 2.5rem;
+  font-weight: 800;
+  color: #FFD700;
+  letter-spacing: -0.03em;
+  margin: 0 0 0.5rem;
+}
+.landing-hero-tagline {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 0.75rem;
+}
+.landing-hero-sub {
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.6;
+  margin: 0 0 2rem;
+  max-width: 480px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.landing-hero-btns {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.landing-btn-primary {
+  background: #FFD700;
+  color: #0a0f1e;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.65rem 1.5rem;
+  border-radius: 0.6rem;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.2s, transform 0.15s;
+}
+.landing-btn-primary:hover {
+  background: #e6c200;
+  transform: translateY(-1px);
+}
+.landing-btn-secondary {
+  background: transparent;
+  color: #FFD700;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.65rem 1.5rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.landing-btn-secondary:hover {
+  border-color: #FFD700;
+  background: rgba(255, 215, 0, 0.06);
+}
+
+/* Features */
+.landing-features {
+  padding: 3rem 1rem 4rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.landing-section-title {
+  text-align: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 2rem;
+}
+.landing-features-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+@media (min-width: 640px) {
+  .landing-features-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (min-width: 960px) {
+  .landing-features-grid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+.landing-feature-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  transition: border-color 0.25s, background 0.25s;
+}
+.landing-feature-card:hover {
+  border-color: rgba(255, 215, 0, 0.2);
+  background: rgba(255, 215, 0, 0.03);
+}
+.landing-feature-icon {
+  width: 28px;
+  height: 28px;
+  color: #FFD700;
+  margin-bottom: 0.75rem;
+}
+.landing-feature-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 0.35rem;
+}
+.landing-feature-desc {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.45);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Demo section */
+.landing-demo {
+  padding: 3rem 1rem 4rem;
+  text-align: center;
+}
+.landing-demo-sub {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.45);
+  margin: -1rem auto 2rem;
+}
+.landing-demo-widget {
+  max-width: 460px;
+  margin: 0 auto;
+}
+
+/* Final CTA */
+.landing-final-cta {
+  padding: 4rem 1rem;
+  text-align: center;
+}
+.landing-cta-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 0.75rem;
+}
+.landing-cta-sub {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.45);
+  margin: 0 0 1.5rem;
+  max-width: 420px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Footer */
+.landing-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 1.5rem 1rem;
+}
+.landing-footer-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.3);
+}
+.landing-footer-sep {
+  color: rgba(255, 255, 255, 0.15);
+}
+.landing-footer-link {
+  color: rgba(255, 255, 255, 0.4);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+.landing-footer-link:hover {
+  color: #FFD700;
+}
+
+/* ── Demo Chat Widget ────────────────────────────────────────── */
+.demo-chat {
+  background: rgba(15, 20, 40, 0.9);
+  border: 1px solid rgba(255, 215, 0, 0.12);
+  border-radius: 1rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 420px;
+}
+.demo-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(10, 15, 30, 0.5);
+}
+.demo-chat-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0a0f1e, #1a2744);
+  border: 2px solid rgba(255, 215, 0, 0.25);
+  box-shadow: 0 0 12px rgba(255, 215, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.demo-chat-avatar span {
+  color: #C9A340;
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+.demo-chat-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+.demo-chat-status {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.35);
+}
+.demo-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.demo-chat-messages::-webkit-scrollbar {
+  width: 4px;
+}
+.demo-chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+.demo-chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+.demo-msg {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 85%;
+}
+.demo-msg-luca {
+  align-self: flex-start;
+}
+.demo-msg-user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+.demo-msg-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0a0f1e, #1a2744);
+  border: 1.5px solid rgba(255, 215, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.demo-msg-avatar span {
+  color: #C9A340;
+  font-weight: 700;
+  font-size: 0.6rem;
+}
+.demo-msg-bubble {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.demo-msg-bubble-luca {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.85);
+  border-top-left-radius: 0.2rem;
+}
+.demo-msg-bubble-user {
+  background: rgba(255, 215, 0, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+  border-top-right-radius: 0.2rem;
+}
+
+/* Typing indicator */
+.demo-typing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.6rem 0.85rem;
+}
+.demo-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 215, 0, 0.5);
+  animation: demo-bounce 1.2s infinite;
+}
+.demo-dot:nth-child(2) { animation-delay: 0.15s; }
+.demo-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes demo-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Input row */
+.demo-chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(10, 15, 30, 0.4);
+}
+.demo-chat-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.82rem;
+  padding: 0.45rem 0.65rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.demo-chat-input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+.demo-chat-input:focus {
+  border-color: rgba(255, 215, 0, 0.3);
+}
+.demo-chat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.demo-send-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 0.5rem;
+  border: none;
+  background: #FFD700;
+  color: #0a0f1e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, opacity 0.2s;
+}
+.demo-send-btn:hover:not(:disabled) {
+  background: #e6c200;
+}
+.demo-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* CTA bar inside chat */
+.demo-chat-cta {
+  padding: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(10, 15, 30, 0.4);
+  text-align: center;
+}
+.demo-cta-btn {
+  display: inline-block;
+  background: #FFD700;
+  color: #0a0f1e;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.5rem 1.25rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+.demo-cta-btn:hover {
+  background: #e6c200;
+}
+
+/* Footer badge */
+.demo-chat-footer {
+  text-align: center;
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.2);
+  padding: 0.35rem 0;
+  background: rgba(10, 15, 30, 0.3);
+}
