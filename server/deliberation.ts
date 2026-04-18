@@ -550,6 +550,21 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["objective"],
     },
   },
+  {
+    name: "browse_website",
+    description: "Open a website in a real browser (Chromium with Playwright), extract text content, take screenshots, or interact with the page. Use this when you need to: check if a website works, extract content from JavaScript-heavy pages that read_url can't handle, take visual screenshots, or verify web applications. Supports SPAs, dynamic content, and JavaScript rendering.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "Full URL to navigate to (must include https://)" },
+        action: { type: "string", enum: ["extract_text", "screenshot", "interact"], description: "What to do: extract_text (default) gets page text, screenshot takes a PNG, interact follows instructions" },
+        selector: { type: "string", description: "Optional CSS selector to target a specific element" },
+        waitFor: { type: "string", description: "Optional CSS selector to wait for before extracting (for lazy-loaded content)" },
+        instructions: { type: "string", description: "For 'interact' action: describe what to do on the page" },
+      },
+      required: ["url"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -2266,6 +2281,38 @@ print("Converted MD to DOCX")
           return `[Sub-agent completed] (${result.iterations} iteration${result.iterations !== 1 ? "s" : ""}, tools used: ${result.toolsUsed.join(", ") || "none"})\n\n${result.result}`;
         } catch (err: any) {
           return `Sub-agent failed: ${err.message || String(err)}`;
+        }
+      }
+
+      case "browse_website": {
+        const url = toolInput.url;
+        if (!url || typeof url !== "string") return "No URL provided.";
+
+        try {
+          const { browseWebsite } = await import("./browser-agent");
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const result = await browseWebsite(
+            {
+              url,
+              action: toolInput.action || "extract_text",
+              selector: toolInput.selector,
+              waitFor: toolInput.waitFor,
+              instructions: toolInput.instructions,
+              timeout: 15000,
+            },
+            sbx
+          );
+
+          if (!result.success) {
+            return `Browser error: ${result.error || "Unknown error"}`;
+          }
+
+          let response = `[Browser] Page: ${result.title || "Unknown"}\nURL: ${result.url || url}\n`;
+          if (result.text) response += `\nContent:\n${result.text}`;
+          if (result.screenshot) response += `\n[Screenshot captured: ${result.screenshot.length} chars base64 PNG]`;
+          return response;
+        } catch (err: any) {
+          return `Browser failed: ${err?.message || String(err)}`;
         }
       }
 
