@@ -395,6 +395,7 @@
   </a>
   <div class="nav-links">
     <a href="#features">Features</a>
+      <a href="#demo">Demo</a>
     <a href="#pricing">Pricing</a>
     <a href="#mcp">MCP</a>
     <a href="#waitlist">Early Access</a>
@@ -653,7 +654,176 @@
   </div>
 </section>
 
+
 <!-- FOOTER -->
+<!-- LIVE DEMO CHAT WITH LUCA -->
+<section id="demo" style="padding:6rem 2rem; text-align:center;">
+  <div style="max-width:800px; margin:0 auto;">
+    <div class="section-label">Live Demo</div>
+    <h2 class="section-title">Talk to Luca Right Now</h2>
+    <p class="section-sub" style="margin:0 auto 3rem;">No signup needed. Ask anything about KIOKU&#8482;.</p>
+
+    <div id="luca-chat" style="
+      max-width:480px; margin:0 auto; border-radius:20px;
+      border:1px solid var(--border); background:rgba(13,21,41,0.8);
+      backdrop-filter:blur(16px); overflow:hidden; text-align:left;
+    ">
+      <!-- Header -->
+      <div style="
+        padding:1rem 1.25rem; display:flex; align-items:center; gap:0.75rem;
+        border-bottom:1px solid var(--border); background:rgba(10,15,30,0.6);
+      ">
+        <div style="
+          width:36px; height:36px; border-radius:50%;
+          background:linear-gradient(135deg, var(--gold), #b8941e);
+          display:flex; align-items:center; justify-content:center;
+          font-weight:700; font-size:0.85rem; color:#0a0f1e;
+        ">L</div>
+        <div>
+          <div style="font-weight:600; font-size:0.9rem;">Luca</div>
+          <div style="font-size:0.7rem; color:var(--muted);">KIOKU&#8482; AI Companion</div>
+        </div>
+        <div style="margin-left:auto; width:8px; height:8px; border-radius:50%; background:#22c55e;"></div>
+      </div>
+
+      <!-- Messages -->
+      <div id="luca-messages" style="
+        padding:1rem 1.25rem; min-height:280px; max-height:360px;
+        overflow-y:auto; display:flex; flex-direction:column; gap:0.75rem;
+      ">
+        <div class="luca-msg luca-msg-bot">
+          Hey! I'm Luca, your AI companion from KIOKU&#8482;. Want to know what I can do? Ask me anything.
+        </div>
+      </div>
+
+      <!-- Input -->
+      <div id="luca-input-area" style="
+        padding:0.75rem 1rem; border-top:1px solid var(--border);
+        display:flex; gap:0.5rem; align-items:center;
+      ">
+        <input id="luca-input" type="text" placeholder="Type a message..." maxlength="500" style="
+          flex:1; background:rgba(255,255,255,0.05); border:1px solid var(--border);
+          border-radius:12px; padding:0.6rem 1rem; color:var(--text);
+          font-size:0.85rem; outline:none; font-family:inherit;
+        " />
+        <button id="luca-send" onclick="lucaSend()" style="
+          width:36px; height:36px; border-radius:50%; border:none;
+          background:var(--gold); color:#0a0f1e; cursor:pointer;
+          display:flex; align-items:center; justify-content:center;
+          font-size:1rem; flex-shrink:0;
+        ">&#x27A4;</button>
+      </div>
+
+      <!-- Limit CTA (hidden) -->
+      <div id="luca-limit" style="
+        display:none; padding:1.25rem; text-align:center;
+        border-top:1px solid var(--border); background:rgba(212,175,55,0.05);
+      ">
+        <p style="font-size:0.85rem; color:var(--text); margin-bottom:0.75rem;">
+          Want to keep chatting? The full Luca experience is free during beta.
+        </p>
+        <a href="/app" style="
+          display:inline-block; padding:0.6rem 1.5rem; border-radius:10px;
+          background:var(--gold); color:#0a0f1e; font-weight:600;
+          font-size:0.85rem; text-decoration:none;
+        ">Sign Up Free</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .luca-msg {
+    max-width:85%; padding:0.65rem 1rem; border-radius:14px;
+    font-size:0.85rem; line-height:1.5; word-wrap:break-word;
+  }
+  .luca-msg-bot {
+    align-self:flex-start; background:rgba(212,175,55,0.1);
+    border:1px solid rgba(212,175,55,0.15); color:var(--text);
+  }
+  .luca-msg-user {
+    align-self:flex-end; background:rgba(255,255,255,0.08);
+    border:1px solid rgba(255,255,255,0.08); color:var(--text);
+  }
+  .luca-typing { align-self:flex-start; color:var(--muted); font-size:0.8rem; font-style:italic; }
+  #luca-input:focus { border-color:rgba(212,175,55,0.4); }
+  #luca-send:hover { opacity:0.85; }
+  @media(max-width:600px) {
+    #luca-chat { border-radius:16px; }
+    .luca-msg { max-width:92%; }
+  }
+</style>
+
+<script>
+(function(){
+  var sessionId = (function(){
+    var m = document.cookie.match(/(?:^|;\s*)kioku_demo_sid=([^;]*)/);
+    if(m) return m[1];
+    var id = 'demo_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var exp = new Date(); exp.setDate(exp.getDate()+1);
+    document.cookie = 'kioku_demo_sid='+id+'; expires='+exp.toUTCString()+'; path=/; SameSite=Lax';
+    return id;
+  })();
+  var msgCount = 0;
+  var sending = false;
+
+  var input = document.getElementById('luca-input');
+  input.addEventListener('keydown', function(e){ if(e.key==='Enter' && !e.shiftKey) lucaSend(); });
+
+  window.lucaSend = async function(){
+    if(sending) return;
+    var text = input.value.trim();
+    if(!text) return;
+    input.value = '';
+    sending = true;
+
+    // Add user message
+    addMsg(text, 'user');
+    msgCount++;
+
+    // Typing indicator
+    var typing = document.createElement('div');
+    typing.className = 'luca-typing';
+    typing.textContent = 'Luca is thinking...';
+    var msgs = document.getElementById('luca-messages');
+    msgs.appendChild(typing);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    try {
+      var resp = await fetch('/api/demo/chat', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ message: text, sessionId: sessionId })
+      });
+      var data = await resp.json();
+      typing.remove();
+
+      if(data.limitReached || resp.status === 429){
+        addMsg("Thanks for trying me out! Sign up to continue our conversation.", 'bot');
+        document.getElementById('luca-input-area').style.display = 'none';
+        document.getElementById('luca-limit').style.display = 'block';
+      } else if(data.reply){
+        addMsg(data.reply, 'bot');
+      } else if(data.error){
+        addMsg(data.error, 'bot');
+      }
+    } catch(err){
+      typing.remove();
+      addMsg("Oops, something went wrong. Try again!", 'bot');
+    }
+    sending = false;
+  };
+
+  function addMsg(text, who){
+    var div = document.createElement('div');
+    div.className = 'luca-msg luca-msg-' + (who==='user' ? 'user' : 'bot');
+    div.textContent = text;
+    var msgs = document.getElementById('luca-messages');
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+})();
+</script>
 <footer>
   <p>© 2026 IKONBAI™, Inc. · Patent Pending · All rights reserved.</p>
   <div class="footer-links">
