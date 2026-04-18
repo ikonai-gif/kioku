@@ -2000,7 +2000,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const transcription = await openai.audio.transcriptions.create({
       model: "whisper-1",
       file: new File([file.buffer], file.originalname || "audio.webm", { type: file.mimetype || "audio/webm" }),
-      language: "en",
     });
 
     res.json({ text: transcription.text });

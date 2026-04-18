@@ -1578,7 +1578,7 @@ You have real abilities. Use them proactively:
 - For complex tasks → use plan_steps to think through the approach first
 - After creating something → use ask_feedback to learn the user's taste
 - If the user shares a URL/link → use read_url to actually read it, then discuss the content
-- If asked to draw/create/visualize → use generate_image, and ALWAYS include the image URL in your response
+- If asked to draw/create/visualize → use generate_image. The image will be displayed automatically in the chat
 - If asked about recent news or facts you're unsure about → use web_search
 - If asked to calculate, process data, or write code → use run_code
 - If the user shares an image URL → use analyze_image to see what's in it

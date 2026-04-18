@@ -136,7 +136,7 @@ function SpeakButton({ text }: { text: string }) {
   return (
     <motion.button
       onClick={speak}
-      className="inline-flex items-center justify-center w-6 h-6 rounded-full transition-colors"
+      className="inline-flex items-center justify-center w-8 h-8 rounded-full transition-colors"
       style={{
         background: state === "playing" ? "rgba(201,163,64,0.25)" : "rgba(255,255,255,0.06)",
         color: state === "playing" ? "#C9A340" : "rgba(255,255,255,0.4)",
@@ -146,9 +146,9 @@ function SpeakButton({ text }: { text: string }) {
       title="Play message"
     >
       {state === "loading" ? (
-        <Loader2 className="w-3 h-3 animate-spin" />
+        <Loader2 className="w-4 h-4 animate-spin" />
       ) : (
-        <Volume2 className="w-3 h-3" />
+        <Volume2 className="w-4 h-4" />
       )}
     </motion.button>
   );
@@ -218,7 +218,58 @@ function renderMessageContent(content: string): React.ReactNode {
     parts.push(<span key={key++}>{content.slice(lastIndex)}</span>);
   }
 
-  return parts.length > 0 ? parts : content;
+  // Second pass: detect raw URLs in text spans
+  // Collect image URLs that were already rendered as <img> tags
+  const renderedImageUrls = new Set<string>();
+  for (const part of parts) {
+    if (part && typeof part === "object" && (part as any).type === "img") {
+      renderedImageUrls.add((part as any).props.src);
+    }
+  }
+
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const finalParts: React.ReactNode[] = [];
+  for (const part of parts) {
+    if (part && typeof part === "object" && (part as any).type === "span") {
+      const text = (part as any).props.children as string;
+      if (typeof text === "string" && urlRegex.test(text)) {
+        urlRegex.lastIndex = 0;
+        let textLastIndex = 0;
+        let urlMatch: RegExpExecArray | null;
+        while ((urlMatch = urlRegex.exec(text)) !== null) {
+          if (urlMatch.index > textLastIndex) {
+            finalParts.push(<span key={key++}>{text.slice(textLastIndex, urlMatch.index)}</span>);
+          }
+          const rawUrl = urlMatch[1];
+          if (renderedImageUrls.has(rawUrl)) {
+            // Duplicate of an already-rendered image — skip it
+          } else {
+            finalParts.push(
+              <a
+                key={key++}
+                href={rawUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a] transition-colors break-all"
+              >
+                {rawUrl.length > 60 ? rawUrl.slice(0, 60) + "…" : rawUrl}
+              </a>
+            );
+          }
+          textLastIndex = urlMatch.index + rawUrl.length;
+        }
+        if (textLastIndex < text.length) {
+          finalParts.push(<span key={key++}>{text.slice(textLastIndex)}</span>);
+        }
+      } else {
+        finalParts.push(part);
+      }
+    } else {
+      finalParts.push(part);
+    }
+  }
+
+  return finalParts.length > 0 ? finalParts : content;
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────
@@ -907,6 +958,10 @@ export default function PartnerChat() {
   // ── Voice Recording ───────────────────────────────────────────
   const startRecording = async () => {
     try {
+      if (!navigator.mediaDevices) {
+        toast({ title: "Microphone not available on this device", variant: "destructive" });
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4" });
       chunksRef.current = [];
@@ -933,7 +988,8 @@ export default function PartnerChat() {
           if (!res.ok) throw new Error("STT failed");
           const { text } = await res.json();
           if (text) setInput((prev) => (prev ? prev + " " + text : text));
-        } catch {
+        } catch (err) {
+          console.error("Transcription error:", err);
           toast({ title: "Transcription failed", variant: "destructive" });
         } finally {
           setIsTranscribing(false);
@@ -941,9 +997,10 @@ export default function PartnerChat() {
       };
 
       mediaRecorderRef.current = recorder;
-      recorder.start();
+      recorder.start(1000);
       setIsRecording(true);
-    } catch {
+    } catch (err) {
+      console.error("Microphone access error:", err);
       toast({ title: "Microphone access required for voice input", variant: "destructive" });
     }
   };
