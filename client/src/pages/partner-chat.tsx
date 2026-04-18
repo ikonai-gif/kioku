@@ -1408,22 +1408,29 @@ export default function PartnerChat() {
             </div>
           </div>
         ) : (
-          messages.map((msg: any, idx: number) => (
-            <ChatBubble
-              key={msg.id}
-              message={msg}
-              isUser={isUser(msg)}
-              emotion={emotion}
-              voiceMode={voiceMode}
-              onTTSDone={undefined}
-            />
-          ))
+          // Merge messages + creative results into one timeline
+          [...messages.map((m: any) => ({ ...m, _type: "msg" as const })),
+           ...creativeResults.map((cr: any) => ({ ...cr, _type: "creative" as const }))]
+            .sort((a, b) => {
+              const ta = Number(a.createdAt) || a.id || 0;
+              const tb = Number(b.createdAt) || b.id || 0;
+              return ta - tb;
+            })
+            .map((item: any, idx: number, arr: any[]) =>
+              item._type === "creative" ? (
+                <CreativeChatCard key={`cr-${item.id}`} message={item} />
+              ) : (
+                <ChatBubble
+                  key={item.id}
+                  message={item}
+                  isUser={isUser(item)}
+                  emotion={emotion}
+                  voiceMode={voiceMode}
+                  onTTSDone={undefined}
+                />
+              )
+            )
         )}
-
-        {/* Creative results */}
-        {creativeResults.map((cr: any) => (
-          <CreativeChatCard key={cr.id} message={cr} />
-        ))}
 
         <AnimatePresence>{isThinking && <TypingIndicator emotion={emotion} />}</AnimatePresence>
         <AnimatePresence>
