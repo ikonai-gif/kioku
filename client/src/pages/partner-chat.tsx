@@ -10,6 +10,25 @@ import { useAuth } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 
+// ── Global audio playback (avoids Safari autoplay issues) ──────
+let globalAudioUnlocked = false;
+function unlockAudio() {
+  if (globalAudioUnlocked) return;
+  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  const buf = ctx.createBuffer(1, 1, 22050);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.start(0);
+  globalAudioUnlocked = true;
+}
+// Unlock on first user interaction
+if (typeof window !== "undefined") {
+  const doUnlock = () => { unlockAudio(); window.removeEventListener("touchstart", doUnlock); window.removeEventListener("click", doUnlock); };
+  window.addEventListener("touchstart", doUnlock, { once: true });
+  window.addEventListener("click", doUnlock, { once: true });
+}
+
 // ── Emotion → Glow Color Map ─────────────────────────────────────
 const EMOTION_GLOW: Record<string, string> = {
   relaxed: "#60A5FA",
@@ -276,13 +295,19 @@ function renderMessageContent(content: string): React.ReactNode {
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────
-function ChatBubble({ message, isUser, emotion, voiceMode }: { message: any; isUser: boolean; emotion: string; voiceMode: boolean }) {
+function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { message: any; isUser: boolean; emotion: string; voiceMode: boolean; onTTSDone?: () => void }) {
   const glowColor = getGlowColor(emotion);
   const autoPlayedRef = useRef(false);
+  const mountTimeRef = useRef(Date.now());
 
-  // Auto-play TTS for new Luca messages when voice mode is on
+  // Auto-play TTS for NEW Luca messages when voice mode is on
   useEffect(() => {
-    if (!isUser && voiceMode && !autoPlayedRef.current && message.content) {
+    // Only auto-play messages that arrived AFTER this component mounted (within 3s)
+    // This prevents replaying old messages on page load
+    const msgTime = Number(message.createdAt) || new Date(message.createdAt).getTime();
+    const isRecent = (Date.now() - mountTimeRef.current) < 3000 || (Date.now() - msgTime) < 10000;
+    
+    if (!isUser && voiceMode && !autoPlayedRef.current && message.content && isRecent) {
       autoPlayedRef.current = true;
       const token = getSessionToken();
       fetch(`${API_BASE}/api/partner/speak`, {
@@ -298,12 +323,13 @@ function ChatBubble({ message, isUser, emotion, voiceMode }: { message: any; isU
         .then((blob) => {
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
-          audio.onended = () => URL.revokeObjectURL(url);
-          audio.play().catch(() => URL.revokeObjectURL(url));
+          audio.onended = () => { URL.revokeObjectURL(url); onTTSDone?.(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); onTTSDone?.(); };
+          audio.play().catch(() => { URL.revokeObjectURL(url); onTTSDone?.(); });
         })
-        .catch(() => {});
+        .catch(() => { onTTSDone?.(); });
     }
-  }, []);
+  }, [voiceMode]);
 
   return (
     <motion.div
@@ -1323,8 +1349,20 @@ export default function PartnerChat() {
             </div>
           </div>
         ) : (
-          messages.map((msg: any) => (
-            <ChatBubble key={msg.id} message={msg} isUser={isUser(msg)} emotion={emotion} voiceMode={voiceMode} />
+          messages.map((msg: any, idx: number) => (
+            <ChatBubble
+              key={msg.id}
+              message={msg}
+              isUser={isUser(msg)}
+              emotion={emotion}
+              voiceMode={voiceMode}
+              onTTSDone={idx === messages.length - 1 && voiceMode && !isUser(msg) ? () => {
+                // Auto-start recording after Luca finishes speaking (continuous voice conversation)
+                if (!isRecording && !isTranscribing) {
+                  toggleRecording();
+                }
+              } : undefined}
+            />
           ))
         )}
 
