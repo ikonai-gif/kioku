@@ -952,8 +952,13 @@ export default function PartnerChat() {
     // If image attached, get Luca's vision description and include in message
     if (hasImage) {
       try {
+        // imageBase64 format: "mimeType:base64data"
+        const colonIdx = imageBase64!.indexOf(":");
+        const mimeType = colonIdx > 0 ? imageBase64!.slice(0, colonIdx) : "image/jpeg";
+        const rawBase64 = colonIdx > 0 ? imageBase64!.slice(colonIdx + 1) : imageBase64;
         const visionRes = await apiRequest("POST", "/api/partner/see", {
-          image: imageBase64,
+          image: rawBase64,
+          mimeType,
           prompt: hasText ? input.trim() : undefined,
         });
         if (visionRes.ok) {
@@ -1085,7 +1090,7 @@ export default function PartnerChat() {
   // ── Image Handling ────────────────────────────────────────────
   // ── Paste Handler (images + text from clipboard) ─────────────
   // Compress image to max 1024px and JPEG quality 0.7 for fast upload
-  const compressImage = (file: File): Promise<{ preview: string; base64: string }> => {
+  const compressImage = (file: File): Promise<{ preview: string; base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
@@ -1102,7 +1107,7 @@ export default function PartnerChat() {
         if (!ctx) { reject(new Error("Canvas not supported")); return; }
         ctx.drawImage(img, 0, 0, w, h);
         const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-        resolve({ preview: dataUrl, base64: dataUrl.split(",")[1] });
+        resolve({ preview: dataUrl, base64: dataUrl.split(",")[1], mimeType: "image/jpeg" });
       };
       img.onerror = () => reject(new Error("Failed to load image"));
       img.src = URL.createObjectURL(file);
@@ -1120,16 +1125,19 @@ export default function PartnerChat() {
         const file = item.getAsFile();
         if (!file) return;
         try {
-          const { preview, base64 } = await compressImage(file);
+          const { preview, base64, mimeType } = await compressImage(file);
           setImagePreview(preview);
-          setImageBase64(base64);
+          setImageBase64(`${mimeType}:${base64}`);
           toast({ title: "Image pasted — tap send" });
         } catch {
           const reader = new FileReader();
           reader.onload = () => {
             const result = reader.result as string;
             setImagePreview(result);
-            setImageBase64(result.split(",")[1]);
+            // Extract mime type from data URL (data:image/png;base64,...)
+            const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
+            const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+            setImageBase64(`${mime}:${result.split(",")[1]}`);
             toast({ title: "Image pasted — tap send" });
           };
           reader.readAsDataURL(file);
@@ -1155,9 +1163,9 @@ export default function PartnerChat() {
     }
 
     try {
-      const { preview, base64 } = await compressImage(file);
+      const { preview, base64, mimeType } = await compressImage(file);
       setImagePreview(preview);
-      setImageBase64(base64);
+      setImageBase64(`${mimeType}:${base64}`);
       toast({ title: "Image attached — tap send" });
     } catch (err) {
       console.error("Image compression failed:", err);
@@ -1166,7 +1174,9 @@ export default function PartnerChat() {
       reader.onload = () => {
         const result = reader.result as string;
         setImagePreview(result);
-        setImageBase64(result.split(",")[1]);
+        const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
+        const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+        setImageBase64(`${mime}:${result.split(",")[1]}`);
         toast({ title: "Image attached — tap send" });
       };
       reader.onerror = () => {

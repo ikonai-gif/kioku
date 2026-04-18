@@ -2005,30 +2005,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ text: transcription.text });
   }));
 
-  // POST /api/partner/see — Vision via GPT-4o-mini
+  // POST /api/partner/see — Vision via GPT-4.1-mini
   app.post("/api/partner/see", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { image, prompt } = req.body;
+    const { image, mimeType, prompt } = req.body;
     if (!image) return res.status(400).json({ error: "Image required" });
 
-    const OpenAI = (await import("openai")).default;
-    const openai = new OpenAI();
-    const response = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [{
-        role: "user",
-        content: [
-          { type: "text", text: prompt || "What do you see in this image? Describe it naturally as a friend would." },
-          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${image}` } },
-        ],
-      }],
-      max_tokens: 500,
-    });
+    // Validate base64 — strip whitespace/newlines, check it's valid
+    const cleanBase64 = image.replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/]+=*$/.test(cleanBase64.slice(0, 100))) {
+      return res.status(400).json({ error: "Invalid base64 image data" });
+    }
 
-    const description = response.choices[0]?.message?.content || "I couldn't make out the image clearly.";
-    res.json({ description });
+    // Use provided mimeType or default to jpeg
+    const mime = mimeType && mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+    const dataUrl = `data:${mime};base64,${cleanBase64}`;
+
+    try {
+      const OpenAI = (await import("openai")).default;
+      const openai = new OpenAI();
+      const response = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: prompt || "What do you see in this image? Describe it naturally as a friend would." },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        }],
+        max_tokens: 500,
+      });
+
+      const description = response.choices[0]?.message?.content || "I couldn't make out the image clearly.";
+      res.json({ description });
+    } catch (err: any) {
+      console.error("[vision] /api/partner/see failed:", err?.message || err, "| mimeType:", mime, "| base64 length:", cleanBase64.length);
+      res.status(500).json({ error: "Vision processing failed", detail: err?.message || "Unknown error" });
+    }
   }));
 
   // ── Phase 6: Creative Hands — Writing + Image Generation ───────
