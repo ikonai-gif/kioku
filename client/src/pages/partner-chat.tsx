@@ -27,8 +27,8 @@ function getGlowColor(emotion: string): string {
   return EMOTION_GLOW[emotion] || "#60A5FA";
 }
 
-// ── Agent O Avatar ───────────────────────────────────────────────
-function AgentOAvatar({ emotion, size = 40, pulse = false }: { emotion: string; size?: number; pulse?: boolean }) {
+// ── Luca Avatar ─────────────────────────────────────────────────
+function LucaAvatar({ emotion, size = 40, pulse = false }: { emotion: string; size?: number; pulse?: boolean }) {
   const glowColor = getGlowColor(emotion);
   return (
     <div
@@ -51,7 +51,7 @@ function AgentOAvatar({ emotion, size = 40, pulse = false }: { emotion: string; 
           letterSpacing: "-0.02em",
         }}
       >
-        O
+        L
       </span>
     </div>
   );
@@ -67,7 +67,7 @@ function TypingIndicator({ emotion }: { emotion: string }) {
       exit={{ opacity: 0, y: -4 }}
       className="flex items-center gap-2 px-4 py-3"
     >
-      <AgentOAvatar emotion={emotion} size={28} pulse />
+      <LucaAvatar emotion={emotion} size={28} pulse />
       <div
         className="flex items-center gap-1 px-3 py-2 rounded-2xl"
         style={{
@@ -90,7 +90,7 @@ function TypingIndicator({ emotion }: { emotion: string }) {
   );
 }
 
-// ── Speaker Button on Agent O messages ───────────────────────────
+// ── Speaker Button on Luca messages ─────────────────────────────
 function SpeakButton({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -154,12 +154,79 @@ function SpeakButton({ text }: { text: string }) {
   );
 }
 
+// ── Markdown-lite renderer for chat messages ────────────────────
+function renderMessageContent(content: string): React.ReactNode {
+  if (!content) return null;
+
+  // Split on markdown images ![alt](url) and links [text](url)
+  // Process images first, then links within remaining text segments
+  const parts: React.ReactNode[] = [];
+  let key = 0;
+
+  // Regex that matches both ![alt](url) and [text](url)
+  const mdRegex = /(!?\[([^\]]*)\]\(([^)]+)\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = mdRegex.exec(content)) !== null) {
+    // Add text before this match
+    if (match.index > lastIndex) {
+      parts.push(<span key={key++}>{content.slice(lastIndex, match.index)}</span>);
+    }
+
+    const fullMatch = match[1];
+    const altOrText = match[2];
+    let url = match[3];
+    const isImage = fullMatch.startsWith("!");
+
+    if (isImage) {
+      // Render as inline image
+      parts.push(
+        <img
+          key={key++}
+          src={url}
+          alt={altOrText || "Image"}
+          className="inline-block rounded-lg max-w-[280px] w-full my-1 cursor-pointer"
+          style={{ maxHeight: 300 }}
+          onClick={() => window.open(url, "_blank")}
+        />
+      );
+    } else {
+      // Resolve relative download links to full API URL
+      if (url.startsWith("/api/")) {
+        url = `${API_BASE}${url}`;
+      }
+      const isExternal = url.startsWith("http://") || url.startsWith("https://");
+      parts.push(
+        <a
+          key={key++}
+          href={url}
+          target={isExternal ? "_blank" : "_self"}
+          rel={isExternal ? "noopener noreferrer" : undefined}
+          className="text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a] transition-colors"
+        >
+          {altOrText || url}
+        </a>
+      );
+    }
+
+    lastIndex = match.index + fullMatch.length;
+  }
+
+  // Add remaining text after last match
+  if (lastIndex < content.length) {
+    parts.push(<span key={key++}>{content.slice(lastIndex)}</span>);
+  }
+
+  return parts.length > 0 ? parts : content;
+}
+
 // ── Chat Message Bubble ──────────────────────────────────────────
 function ChatBubble({ message, isUser, emotion, voiceMode }: { message: any; isUser: boolean; emotion: string; voiceMode: boolean }) {
   const glowColor = getGlowColor(emotion);
   const autoPlayedRef = useRef(false);
 
-  // Auto-play TTS for new Agent O messages when voice mode is on
+  // Auto-play TTS for new Luca messages when voice mode is on
   useEffect(() => {
     if (!isUser && voiceMode && !autoPlayedRef.current && message.content) {
       autoPlayedRef.current = true;
@@ -193,7 +260,7 @@ function ChatBubble({ message, isUser, emotion, voiceMode }: { message: any; isU
     >
       {!isUser && (
         <div className="flex-shrink-0 mr-2 mt-1">
-          <AgentOAvatar emotion={emotion} size={28} />
+          <LucaAvatar emotion={emotion} size={28} />
         </div>
       )}
       <div
@@ -226,7 +293,7 @@ function ChatBubble({ message, isUser, emotion, voiceMode }: { message: any; isU
             />
           </div>
         )}
-        <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        <div className="whitespace-pre-wrap break-words">{renderMessageContent(message.content)}</div>
         <div className="flex items-center justify-between mt-1 gap-2">
           {!isUser && <SpeakButton text={message.content} />}
           <span className={cn("text-[10px] text-muted-foreground/40", !isUser ? "ml-auto" : "")}>
@@ -547,7 +614,7 @@ function TasteProfilePanel() {
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-1.5">
           <Heart className="w-3.5 h-3.5 text-[#C9A340]" />
-          <span className="text-xs font-medium text-foreground/80">Agent O's Taste Profile</span>
+          <span className="text-xs font-medium text-foreground/80">Luca's Taste Profile</span>
         </div>
         <button onClick={() => setOpen(false)} className="text-muted-foreground/40 hover:text-foreground">
           <ChevronUp className="w-4 h-4" />
@@ -623,7 +690,7 @@ function TasteProfilePanel() {
 
         {(!profile || profile.totalPreferences === 0) && (
           <p className="text-[10px] text-muted-foreground/30 text-center py-2">
-            React to Agent O's creations to build your taste profile
+            React to Luca's creations to build your taste profile
           </p>
         )}
       </div>
@@ -670,7 +737,7 @@ export default function PartnerChat() {
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/rooms", {
         name: "Partner",
-        description: "Direct conversation with Agent O",
+        description: "Direct conversation with Luca",
       });
       if (!res.ok) throw new Error("Failed to create partner room");
       return res.json();
@@ -798,7 +865,7 @@ export default function PartnerChat() {
 
     let messageContent = input.trim();
 
-    // If image attached, get Agent O's vision description and include in message
+    // If image attached, get Luca's vision description and include in message
     if (hasImage) {
       try {
         const visionRes = await apiRequest("POST", "/api/partner/see", {
@@ -808,8 +875,8 @@ export default function PartnerChat() {
         if (visionRes.ok) {
           const { description } = await visionRes.json();
           messageContent = hasText
-            ? `${input.trim()}\n\n[Shared an image — Agent O sees: ${description}]`
-            : `[Shared an image — Agent O sees: ${description}]`;
+            ? `${input.trim()}\n\n[Shared an image — Luca sees: ${description}]`
+            : `[Shared an image — Luca sees: ${description}]`;
         }
       } catch {
         // If vision fails, still send the text
@@ -987,9 +1054,9 @@ export default function PartnerChat() {
             <ArrowLeft className="w-5 h-5" />
           </a>
         </Link>
-        <AgentOAvatar emotion={emotion} size={36} />
+        <LucaAvatar emotion={emotion} size={36} />
         <div className="flex-1 min-w-0">
-          <h1 className="text-sm font-semibold text-foreground truncate">Agent O</h1>
+          <h1 className="text-sm font-semibold text-foreground truncate">Luca</h1>
           <div className="flex items-center gap-1.5">
             <div
               className="w-1.5 h-1.5 rounded-full"
@@ -1037,13 +1104,13 @@ export default function PartnerChat() {
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 px-6">
-            <AgentOAvatar emotion={emotion} size={64} />
+            <LucaAvatar emotion={emotion} size={64} />
             <div className="text-center space-y-2">
               <h2 className="text-lg font-semibold" style={{ color: "#C9A340" }}>
                 Welcome{user?.name ? `, ${user.name}` : ""}
               </h2>
               <p className="text-sm text-muted-foreground/70 max-w-xs leading-relaxed">
-                I'm Agent O, your AI partner. Ask me anything, share your thoughts, or start a conversation.
+                I'm Luca, your AI partner. Ask me anything, share your thoughts, or start a conversation.
               </p>
             </div>
           </div>
@@ -1084,11 +1151,12 @@ export default function PartnerChat() {
 
       {/* ── Input Bar ────────────────────────────────────────── */}
       <div
-        className="flex-shrink-0 px-3 pb-3 pt-2"
+        className="flex-shrink-0 px-3 pt-2"
         style={{
           background: "rgba(10, 15, 30, 0.85)",
           borderTop: "1px solid rgba(255,255,255,0.06)",
           backdropFilter: "blur(12px)",
+          paddingBottom: "max(12px, env(safe-area-inset-bottom))",
         }}
       >
         {/* Image Preview */}
@@ -1161,7 +1229,7 @@ export default function PartnerChat() {
           {/* Mic Button */}
           <button
             onClick={toggleRecording}
-            className="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-xl transition-colors"
+            className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
             style={{
               background: isRecording ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.05)",
               border: `1px solid ${isRecording ? "rgba(239,68,68,0.4)" : "rgba(255,255,255,0.08)"}`,
@@ -1184,7 +1252,7 @@ export default function PartnerChat() {
           {/* Image Button */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-xl transition-colors"
+            className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
             style={{
               background: imagePreview ? "rgba(201,163,64,0.15)" : "rgba(255,255,255,0.05)",
               border: `1px solid ${imagePreview ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
@@ -1206,7 +1274,7 @@ export default function PartnerChat() {
           {/* Create Button */}
           <button
             onClick={() => setCreativeMenuOpen(!creativeMenuOpen)}
-            className="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-xl transition-colors"
+            className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
             style={{
               background: creativeMenuOpen || creativeMode ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
               border: `1px solid ${creativeMenuOpen || creativeMode ? "rgba(201,163,64,0.4)" : "rgba(255,255,255,0.08)"}`,
@@ -1237,10 +1305,10 @@ export default function PartnerChat() {
               ? creativeMode.mode === "draw"
                 ? "Describe what you'd like me to create..."
                 : "Describe what you'd like me to write..."
-              : "Message Agent O..."}
+              : "Message Luca..."}
             rows={1}
             className="flex-1 resize-none rounded-xl px-4 py-2.5 text-sm bg-white/5 border border-white/10 text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-[#C9A340]/40 focus:ring-1 focus:ring-[#C9A340]/20"
-            style={{ maxHeight: 120, minHeight: 40 }}
+            style={{ maxHeight: 120, minHeight: 44 }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
               target.style.height = "auto";
@@ -1251,7 +1319,7 @@ export default function PartnerChat() {
           {/* Send Button */}
           <Button
             size="sm"
-            className="rounded-xl h-10 w-10 p-0 flex-shrink-0"
+            className="rounded-xl h-11 w-11 p-0 flex-shrink-0"
             style={{
               background: (input.trim() || imageBase64) ? "#C9A340" : "rgba(201,163,64,0.2)",
               color: (input.trim() || imageBase64) ? "#0a0f1e" : "rgba(201,163,64,0.5)",

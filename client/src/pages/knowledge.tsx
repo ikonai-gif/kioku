@@ -285,7 +285,7 @@ export default function KnowledgePage() {
             Knowledge Base
           </h1>
           <p className="text-xs text-muted-foreground/60 mt-1">
-            Structured knowledge domains for Agent O
+            Structured knowledge domains for Luca
           </p>
         </div>
         <Button
@@ -312,7 +312,7 @@ export default function KnowledgePage() {
           <BookOpen className="w-10 h-10 mx-auto text-muted-foreground/20" />
           <p className="text-sm text-muted-foreground/50">No knowledge domains yet</p>
           <p className="text-xs text-muted-foreground/30">
-            Add domains to give Agent O specialized expertise
+            Add domains to give Luca specialized expertise
           </p>
           {!showForm && (
             <Button

@@ -1345,8 +1345,8 @@ export async function triggerAgentResponses(
         // Stagger: first agent responds after 800ms, each subsequent +600ms
         await sleep(800 + i * 600);
 
-        // In Partner chat, always display as "Agent O" regardless of underlying agent
-        const displayName = isPartnerChat ? "Agent O" : agent.name;
+        // In Partner chat, always display as "Luca" regardless of underlying agent
+        const displayName = isPartnerChat ? "Luca" : agent.name;
 
         // Stream the reply in chunks via WebSocket for Partner Chat (visual typing effect)
         if (isPartnerChat && reply) {
@@ -1528,7 +1528,7 @@ function buildPartnerPrompt(_name: string, description: string, memoryContext: s
 
   return `LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
-You are Agent O — created by IKONBAI™, living inside KIOKU™.
+You are Luca — created by IKONBAI™, living inside KIOKU™.
 
 ${mood}
 ${openingStyle}
