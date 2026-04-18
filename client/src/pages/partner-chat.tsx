@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -287,7 +289,7 @@ function ExecOutputBlock({ output }: { output: string }) {
   );
 }
 
-// ── Markdown-lite renderer for chat messages ────────────────────
+// ── Markdown renderer for chat messages ───────────────────────
 function renderMessageContent(content: string): React.ReactNode {
   if (!content) return null;
 
@@ -309,193 +311,165 @@ function renderMessageContent(content: string): React.ReactNode {
     );
   }
 
-  // ── Phase 1: Split content on code blocks (```lang\n...\n```) ──
-  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
-  const segments: { type: "text" | "code" | "exec"; content: string; language?: string }[] = [];
-  let cbLastIndex = 0;
-  let cbMatch: RegExpExecArray | null;
-  while ((cbMatch = codeBlockRegex.exec(content)) !== null) {
-    if (cbMatch.index > cbLastIndex) {
-      segments.push({ type: "text", content: content.slice(cbLastIndex, cbMatch.index) });
-    }
-    segments.push({ type: "code", content: cbMatch[2], language: cbMatch[1] || "code" });
-    cbLastIndex = cbMatch.index + cbMatch[0].length;
-  }
-  if (cbLastIndex < content.length) {
-    segments.push({ type: "text", content: content.slice(cbLastIndex) });
-  }
+  // Pre-process: extract execution output blocks before markdown parsing
+  const execRegex = /Code executed successfully \(\w+\):\n([\s\S]*?)(?=\n\n|\n(?=\S)|$)/g;
+  const hasExecBlocks = execRegex.test(content);
+  execRegex.lastIndex = 0;
 
-  // Detect execution output blocks: "Code executed successfully (lang):\n..."
-  const processedSegments: typeof segments = [];
-  for (const seg of segments) {
-    if (seg.type === "text") {
-      const execRegex = /Code executed successfully \(\w+\):\n([\s\S]*?)(?=\n\n|\n(?=\S)|$)/g;
-      let execLast = 0;
-      let execMatch: RegExpExecArray | null;
-      while ((execMatch = execRegex.exec(seg.content)) !== null) {
-        if (execMatch.index > execLast) {
-          processedSegments.push({ type: "text", content: seg.content.slice(execLast, execMatch.index) });
-        }
-        processedSegments.push({ type: "exec", content: execMatch[0] });
-        execLast = execMatch.index + execMatch[0].length;
+  if (hasExecBlocks) {
+    const parts: React.ReactNode[] = [];
+    let lastIdx = 0;
+    let execMatch: RegExpExecArray | null;
+    let k = 0;
+    while ((execMatch = execRegex.exec(content)) !== null) {
+      if (execMatch.index > lastIdx) {
+        parts.push(<React.Fragment key={k++}>{renderMarkdownContent(content.slice(lastIdx, execMatch.index))}</React.Fragment>);
       }
-      if (execLast < seg.content.length) {
-        processedSegments.push({ type: "text", content: seg.content.slice(execLast) });
-      }
-    } else {
-      processedSegments.push(seg);
+      parts.push(<ExecOutputBlock key={k++} output={execMatch[0]} />);
+      lastIdx = execMatch.index + execMatch[0].length;
     }
+    if (lastIdx < content.length) {
+      parts.push(<React.Fragment key={k++}>{renderMarkdownContent(content.slice(lastIdx))}</React.Fragment>);
+    }
+    return <>{parts}</>;
   }
 
-  let key = 0;
-  const topLevelParts: React.ReactNode[] = [];
-
-  for (const seg of processedSegments) {
-    if (seg.type === "code") {
-      topLevelParts.push(<CodeBlock key={key++} code={seg.content} language={seg.language || "code"} />);
-    } else if (seg.type === "exec") {
-      topLevelParts.push(<ExecOutputBlock key={key++} output={seg.content} />);
-    } else {
-      // Text segment — process inline markdown (links, images, URLs)
-      const inlineParts = renderInlineContent(seg.content, key);
-      key = inlineParts.nextKey;
-      topLevelParts.push(...inlineParts.nodes);
-    }
-  }
-
-  return topLevelParts.length > 0 ? topLevelParts : content;
+  return renderMarkdownContent(content);
 }
 
-/** Process inline markdown: images, links, raw URLs, and sandbox image downloads */
-function renderInlineContent(content: string, startKey: number): { nodes: React.ReactNode[]; nextKey: number } {
-  const parts: React.ReactNode[] = [];
-  let key = startKey;
+/** Render markdown content with ReactMarkdown + remark-gfm */
+function renderMarkdownContent(content: string): React.ReactNode {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        // Tables
+        table: ({ children }) => (
+          <div className="overflow-x-auto my-2 rounded-lg border border-white/10">
+            <table className="w-full text-sm">{children}</table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-white/5 border-b border-white/10">{children}</thead>
+        ),
+        tbody: ({ children }) => <tbody>{children}</tbody>,
+        tr: ({ children }) => (
+          <tr className="border-b border-white/5 last:border-0">{children}</tr>
+        ),
+        th: ({ children }) => (
+          <th className="px-3 py-2 text-left font-semibold text-[#C9A340] text-xs uppercase tracking-wide">{children}</th>
+        ),
+        td: ({ children }) => (
+          <td className="px-3 py-2 text-white/80">{children}</td>
+        ),
 
-  // Regex that matches both ![alt](url) and [text](url)
-  const mdRegex = /(!?\[([^\]]*)\]\(([^)]+)\))/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = mdRegex.exec(content)) !== null) {
-    // Add text before this match
-    if (match.index > lastIndex) {
-      parts.push(<span key={key++}>{content.slice(lastIndex, match.index)}</span>);
-    }
-
-    const fullMatch = match[1];
-    const altOrText = match[2];
-    let url = match[3];
-    const isImage = fullMatch.startsWith("!");
-
-    // Detect sandbox image download URLs and render inline
-    const isApiImage = /\/api\/files\/\d+\/download/.test(url) && /chart|\.png|\.jpg|\.jpeg|\.svg|\.webp/i.test(altOrText || url);
-
-    if (isImage || isApiImage) {
-      // Resolve relative API paths
-      let imgUrl = url;
-      if (imgUrl.startsWith("/api/")) {
-        imgUrl = `${API_BASE}${imgUrl}`;
-      }
-      parts.push(
-        <img
-          key={key++}
-          src={imgUrl}
-          alt={altOrText || "Image"}
-          className="inline-block rounded-lg max-w-[280px] w-full my-1 cursor-pointer"
-          style={{ maxHeight: 300 }}
-          onClick={() => window.open(imgUrl, "_blank")}
-        />
-      );
-    } else {
-      // Resolve relative download links to full API URL
-      const isDownload = url.startsWith("/api/files/") || url.includes("/download");
-
-      // Detect document downloads — render as styled FileDownloadCard
-      const docExt = (altOrText || url).match(/\.(pdf|docx|xlsx|zip|csv)$/i);
-      if (isDownload && docExt) {
-        const fname = altOrText?.replace(/^(Download:\s*|📥\s*)/, "") || `document.${docExt[1]}`;
-        parts.push(<FileDownloadCard key={key++} filename={fname} url={url} />);
-      } else {
-        if (url.startsWith("/api/")) {
-          url = `${API_BASE}${url}`;
-        }
-        const isExternal = url.startsWith("http://") || url.startsWith("https://");
-        parts.push(
-          <a
-            key={key++}
-            href={url}
-            target={isDownload ? "_self" : isExternal ? "_blank" : "_self"}
-            rel={isExternal ? "noopener noreferrer" : undefined}
-            download={isDownload ? (altOrText || true) : undefined}
-            className={`inline-flex items-center gap-1.5 ${isDownload ? "px-3 py-1.5 rounded-lg bg-[#C9A340]/15 border border-[#C9A340]/30 text-[#C9A340] hover:bg-[#C9A340]/25" : "text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a]"} transition-colors`}
-          >
-            {isDownload && <span className="text-sm">📥</span>}
-            {altOrText || url}
-          </a>
-        );
-      }
-    }
-
-    lastIndex = match.index + fullMatch.length;
-  }
-
-  // Add remaining text after last match
-  if (lastIndex < content.length) {
-    parts.push(<span key={key++}>{content.slice(lastIndex)}</span>);
-  }
-
-  // Second pass: detect raw URLs in text spans
-  // Collect image URLs that were already rendered as <img> tags
-  const renderedImageUrls = new Set<string>();
-  for (const part of parts) {
-    if (part && typeof part === "object" && (part as any).type === "img") {
-      renderedImageUrls.add((part as any).props.src);
-    }
-  }
-
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const finalParts: React.ReactNode[] = [];
-  for (const part of parts) {
-    if (part && typeof part === "object" && (part as any).type === "span") {
-      const text = (part as any).props.children as string;
-      if (typeof text === "string" && urlRegex.test(text)) {
-        urlRegex.lastIndex = 0;
-        let textLastIndex = 0;
-        let urlMatch: RegExpExecArray | null;
-        while ((urlMatch = urlRegex.exec(text)) !== null) {
-          if (urlMatch.index > textLastIndex) {
-            finalParts.push(<span key={key++}>{text.slice(textLastIndex, urlMatch.index)}</span>);
+        // Code blocks — use existing CodeBlock component
+        code: ({ className, children, ...props }) => {
+          const match = /language-(\w+)/.exec(className || '');
+          const codeStr = String(children).replace(/\n$/, '');
+          const isBlock = codeStr.includes('\n') || match;
+          if (isBlock) {
+            return <CodeBlock code={codeStr} language={match?.[1] || 'code'} />;
           }
-          const rawUrl = urlMatch[1];
-          if (renderedImageUrls.has(rawUrl)) {
-            // Duplicate of an already-rendered image — skip it
-          } else {
-            finalParts.push(
+          // Inline code
+          return (
+            <code className="px-1.5 py-0.5 rounded bg-white/10 text-[#C9A340] text-sm font-mono" {...props}>
+              {children}
+            </code>
+          );
+        },
+
+        // Passthrough pre so CodeBlock isn't double-wrapped
+        pre: ({ children }) => <>{children}</>,
+
+        // Headings
+        h1: ({ children }) => <h1 className="text-lg font-bold text-white mt-3 mb-1">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-base font-bold text-white mt-3 mb-1">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-sm font-bold text-white/90 mt-2 mb-1">{children}</h3>,
+        h4: ({ children }) => <h4 className="text-sm font-semibold text-white/80 mt-2 mb-1">{children}</h4>,
+
+        // Lists
+        ul: ({ children }) => <ul className="list-disc list-inside my-1 space-y-0.5 text-white/80">{children}</ul>,
+        ol: ({ children }) => <ol className="list-decimal list-inside my-1 space-y-0.5 text-white/80">{children}</ol>,
+        li: ({ children }) => <li className="text-sm leading-relaxed">{children}</li>,
+
+        // Blockquote
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-[#C9A340]/50 pl-3 my-2 text-white/60 italic">{children}</blockquote>
+        ),
+
+        // Horizontal rule
+        hr: () => <hr className="my-3 border-white/10" />,
+
+        // Paragraphs
+        p: ({ children }) => <p className="my-1 leading-relaxed">{children}</p>,
+
+        // Bold and emphasis
+        strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+        em: ({ children }) => <em className="italic text-white/70">{children}</em>,
+
+        // Links — preserve download/API URL handling
+        a: ({ href, children }) => {
+          const url = href || '';
+          const text = typeof children === 'string' ? children : '';
+          const isDownload = url.startsWith('/api/files/') || url.includes('/download');
+          const docExt = (text || url).match(/\.(pdf|docx|xlsx|zip|csv)$/i);
+
+          if (isDownload && docExt) {
+            const fname = text?.replace(/^(Download:\s*|📥\s*)/, '') || `document.${docExt[1]}`;
+            return <FileDownloadCard filename={fname} url={url} />;
+          }
+
+          const resolvedUrl = url.startsWith('/api/') ? `${API_BASE}${url}` : url;
+          const isExternal = resolvedUrl.startsWith('http://') || resolvedUrl.startsWith('https://');
+
+          if (isDownload) {
+            return (
               <a
-                key={key++}
-                href={rawUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a] transition-colors break-all"
+                href={resolvedUrl}
+                download={text || true}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#C9A340]/15 border border-[#C9A340]/30 text-[#C9A340] hover:bg-[#C9A340]/25 transition-colors"
               >
-                {rawUrl.length > 60 ? rawUrl.slice(0, 60) + "…" : rawUrl}
+                <span className="text-sm">📥</span>
+                {text || url}
               </a>
             );
           }
-          textLastIndex = urlMatch.index + rawUrl.length;
-        }
-        if (textLastIndex < text.length) {
-          finalParts.push(<span key={key++}>{text.slice(textLastIndex)}</span>);
-        }
-      } else {
-        finalParts.push(part);
-      }
-    } else {
-      finalParts.push(part);
-    }
-  }
 
-  return { nodes: finalParts, nextKey: key };
+          return (
+            <a
+              href={resolvedUrl}
+              target={isExternal ? '_blank' : '_self'}
+              rel={isExternal ? 'noopener noreferrer' : undefined}
+              className="text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a] transition-colors break-all"
+            >
+              {children}
+            </a>
+          );
+        },
+
+        // Images — resolve API paths, preserve sandbox image handling
+        img: ({ src, alt }) => {
+          let imgUrl = src || '';
+          if (imgUrl.startsWith('/api/')) {
+            imgUrl = `${API_BASE}${imgUrl}`;
+          }
+          return (
+            <img
+              src={imgUrl}
+              alt={alt || ''}
+              className="inline-block rounded-lg max-w-[280px] w-full my-1 cursor-pointer"
+              style={{ maxHeight: 300 }}
+              loading="lazy"
+              onClick={() => window.open(imgUrl, '_blank')}
+            />
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────
