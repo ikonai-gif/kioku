@@ -403,6 +403,33 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_aesthetic_prefs_agent ON aesthetic_preferences(agent_id);
   `);
 
+  // Phase 4 Scheduling: scheduled_tasks table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      room_id INTEGER REFERENCES rooms(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      task_type TEXT NOT NULL,
+      cron_expression TEXT,
+      scheduled_at BIGINT,
+      timezone TEXT DEFAULT 'UTC',
+      status TEXT NOT NULL DEFAULT 'active',
+      last_run_at BIGINT,
+      next_run_at BIGINT,
+      run_count INTEGER DEFAULT 0,
+      max_runs INTEGER,
+      action_type TEXT NOT NULL DEFAULT 'message',
+      action_payload TEXT,
+      created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT,
+      updated_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user ON scheduled_tasks(user_id);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at) WHERE status = 'active';
+  `);
+
   // Phase 9: Gallery — auto-saved creations (images, writing, etc.)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gallery (
@@ -1255,7 +1282,9 @@ export class Storage implements IStorage {
     await pool.query('DELETE FROM kioku_agent_tokens WHERE user_id = $1', [userId]);
     // 10. Webhooks
     await pool.query('DELETE FROM kioku_webhooks WHERE user_id = $1', [userId]);
-    // 10b. Knowledge domains
+    // 10b. Scheduled tasks
+    await pool.query('DELETE FROM scheduled_tasks WHERE user_id = $1', [userId]);
+    // 10c. Knowledge domains
     await pool.query('DELETE FROM knowledge_domains WHERE user_id = $1', [userId]);
     // 10c. Aesthetic preferences
     await pool.query('DELETE FROM aesthetic_preferences WHERE user_id = $1', [userId]);
@@ -2106,6 +2135,149 @@ export class Storage implements IStorage {
       [userId, slug]
     );
     return result.rows.length > 0;
+  }
+
+  // ── Scheduled Tasks CRUD ────────────────────────────────────────────────────
+
+  async createScheduledTask(data: {
+    userId: number; agentId: number; roomId?: number | null;
+    title: string; description?: string | null;
+    taskType: string; cronExpression?: string | null;
+    scheduledAt?: number | null; timezone?: string;
+    status?: string; nextRunAt?: number | null;
+    maxRuns?: number | null;
+    actionType?: string; actionPayload?: string | null;
+  }): Promise<any> {
+    const now = Date.now();
+    const { rows } = await pool.query(
+      `INSERT INTO scheduled_tasks
+        (user_id, agent_id, room_id, title, description, task_type, cron_expression,
+         scheduled_at, timezone, status, next_run_at, max_runs, action_type, action_payload, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
+       RETURNING *`,
+      [
+        data.userId, data.agentId, data.roomId || null,
+        data.title, data.description || null,
+        data.taskType, data.cronExpression || null,
+        data.scheduledAt || null, data.timezone || 'UTC',
+        data.status || 'active', data.nextRunAt || data.scheduledAt || null,
+        data.maxRuns || null,
+        data.actionType || 'message', data.actionPayload || null,
+        now,
+      ]
+    );
+    return this.mapScheduledTaskRow(rows[0]);
+  }
+
+  async getScheduledTasks(userId: number): Promise<any[]> {
+    const { rows } = await pool.query(
+      `SELECT * FROM scheduled_tasks WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
+    );
+    return rows.map((r: any) => this.mapScheduledTaskRow(r));
+  }
+
+  async getScheduledTaskById(taskId: number, userId: number): Promise<any | undefined> {
+    const { rows } = await pool.query(
+      `SELECT * FROM scheduled_tasks WHERE id = $1 AND user_id = $2`,
+      [taskId, userId]
+    );
+    return rows[0] ? this.mapScheduledTaskRow(rows[0]) : undefined;
+  }
+
+  async updateScheduledTask(taskId: number, userId: number, updates: Record<string, any>): Promise<any | undefined> {
+    const allowed = ['title', 'description', 'status', 'cron_expression', 'scheduled_at',
+      'timezone', 'next_run_at', 'max_runs', 'action_type', 'action_payload'];
+    const colMap: Record<string, string> = {
+      title: 'title', description: 'description', status: 'status',
+      cronExpression: 'cron_expression', cron_expression: 'cron_expression',
+      scheduledAt: 'scheduled_at', scheduled_at: 'scheduled_at',
+      timezone: 'timezone', nextRunAt: 'next_run_at', next_run_at: 'next_run_at',
+      maxRuns: 'max_runs', max_runs: 'max_runs',
+      actionType: 'action_type', action_type: 'action_type',
+      actionPayload: 'action_payload', action_payload: 'action_payload',
+    };
+    const sets: string[] = [];
+    const params: any[] = [taskId, userId];
+    let idx = 3;
+    for (const [key, val] of Object.entries(updates)) {
+      const col = colMap[key];
+      if (col && allowed.includes(col)) {
+        sets.push(`${col} = $${idx++}`);
+        params.push(val);
+      }
+    }
+    if (sets.length === 0) return this.getScheduledTaskById(taskId, userId);
+    sets.push(`updated_at = $${idx++}`);
+    params.push(Date.now());
+    const { rows } = await pool.query(
+      `UPDATE scheduled_tasks SET ${sets.join(', ')} WHERE id = $1 AND user_id = $2 RETURNING *`,
+      params
+    );
+    return rows[0] ? this.mapScheduledTaskRow(rows[0]) : undefined;
+  }
+
+  async deleteScheduledTask(taskId: number, userId: number): Promise<boolean> {
+    const result = await pool.query(
+      `DELETE FROM scheduled_tasks WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [taskId, userId]
+    );
+    return result.rows.length > 0;
+  }
+
+  async getDueScheduledTasks(): Promise<any[]> {
+    const now = Date.now();
+    const { rows } = await pool.query(
+      `SELECT * FROM scheduled_tasks WHERE next_run_at <= $1 AND status = 'active'`,
+      [now]
+    );
+    return rows.map((r: any) => this.mapScheduledTaskRow(r));
+  }
+
+  async markTaskRun(taskId: number, nextRunAt?: number | null): Promise<void> {
+    const now = Date.now();
+    if (nextRunAt) {
+      // Recurring task: update run count and next_run_at
+      await pool.query(
+        `UPDATE scheduled_tasks SET last_run_at = $1, run_count = run_count + 1, next_run_at = $2, updated_at = $1 WHERE id = $3`,
+        [now, nextRunAt, taskId]
+      );
+      // Check max_runs
+      await pool.query(
+        `UPDATE scheduled_tasks SET status = 'completed' WHERE id = $1 AND max_runs IS NOT NULL AND run_count >= max_runs`,
+        [taskId]
+      );
+    } else {
+      // One-time/reminder: mark as completed
+      await pool.query(
+        `UPDATE scheduled_tasks SET last_run_at = $1, run_count = run_count + 1, status = 'completed', updated_at = $1 WHERE id = $2`,
+        [now, taskId]
+      );
+    }
+  }
+
+  private mapScheduledTaskRow(row: any): any {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      agentId: row.agent_id,
+      roomId: row.room_id,
+      title: row.title,
+      description: row.description,
+      taskType: row.task_type,
+      cronExpression: row.cron_expression,
+      scheduledAt: row.scheduled_at ? Number(row.scheduled_at) : null,
+      timezone: row.timezone,
+      status: row.status,
+      lastRunAt: row.last_run_at ? Number(row.last_run_at) : null,
+      nextRunAt: row.next_run_at ? Number(row.next_run_at) : null,
+      runCount: row.run_count,
+      maxRuns: row.max_runs,
+      actionType: row.action_type,
+      actionPayload: row.action_payload,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
   }
 
   // ── Gallery ──────────────────────────────────────────────────────────────────

@@ -438,6 +438,48 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["source_text", "source_format", "target_format"],
     },
   },
+  // ── Scheduling Tools ──────────────────────────────────────────────────────
+  {
+    name: "set_reminder",
+    description: "Set a reminder for a specific time. Examples: 'remind me in 2 hours to call mom', 'remind me tomorrow at 9am about the meeting'",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        title: { type: "string", description: "Short title for the reminder" },
+        message: { type: "string", description: "The reminder message to deliver" },
+        when: { type: "string", description: "When to trigger: ISO datetime, relative time ('in 2 hours', 'tomorrow 9am'), or natural language" },
+        timezone: { type: "string", description: "User's timezone (e.g., 'America/Los_Angeles'). Ask if unknown." },
+      },
+      required: ["title", "message", "when"],
+    },
+  },
+  {
+    name: "schedule_task",
+    description: "Schedule a recurring task. Examples: 'every morning at 9am search for AI news', 'every Monday summarize my week'",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        title: { type: "string", description: "Short title" },
+        description: { type: "string", description: "What to do when triggered" },
+        schedule: { type: "string", description: "Cron expression or natural language: 'every day at 9am', 'every Monday', 'hourly'" },
+        action_type: { type: "string", enum: ["message", "code", "search"], description: "What type of action to perform" },
+        action_payload: { type: "string", description: "JSON payload for the action" },
+        timezone: { type: "string", description: "User's timezone" },
+        max_runs: { type: "number", description: "Maximum number of times to run. Omit for unlimited." },
+      },
+      required: ["title", "description", "schedule"],
+    },
+  },
+  {
+    name: "list_tasks",
+    description: "List all scheduled tasks and reminders for the user",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        status: { type: "string", enum: ["active", "paused", "completed", "all"], description: "Filter by status. Default: active" },
+      },
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -1909,6 +1951,105 @@ print("Converted MD to DOCX")
           await sandboxManager.kill(userId).catch(() => {});
           return `File conversion failed: ${err?.message || String(err)}`;
         }
+      }
+
+      // ── Scheduling Tool Handlers ────────────────────────────────────────────
+      case "set_reminder": {
+        const { parseRelativeTime } = await import("./scheduler");
+        const title = toolInput.title || "Reminder";
+        const message = toolInput.message || title;
+        const when = toolInput.when;
+        const tz = toolInput.timezone || "UTC";
+
+        if (!when) return "Please specify when the reminder should trigger.";
+
+        const scheduledAt = parseRelativeTime(when, tz);
+        if (!scheduledAt) return `Could not parse time "${when}". Try formats like "in 2 hours", "tomorrow 9am", or an ISO date.`;
+
+        // Find a room for this user/agent to post to
+        const rooms = await pool.query(
+          `SELECT id FROM rooms WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [userId]
+        );
+        const roomId = rooms.rows[0]?.id || null;
+
+        const task = await storage.createScheduledTask({
+          userId,
+          agentId,
+          roomId,
+          title,
+          description: message,
+          taskType: "reminder",
+          scheduledAt,
+          nextRunAt: scheduledAt,
+          timezone: tz,
+          actionType: "message",
+          actionPayload: JSON.stringify({ message }),
+        });
+
+        const d = new Date(scheduledAt);
+        const formatted = d.toLocaleString("en-US", { timeZone: tz !== "UTC" ? tz : undefined });
+        return `Reminder set: "${title}" at ${formatted} (ID: ${task.id})`;
+      }
+
+      case "schedule_task": {
+        const { naturalLanguageToCron, calculateNextRun } = await import("./scheduler");
+        const title = toolInput.title || "Scheduled Task";
+        const description = toolInput.description || title;
+        const schedule = toolInput.schedule;
+        const actionType = toolInput.action_type || "message";
+        const actionPayload = toolInput.action_payload || JSON.stringify({ message: description });
+        const tz = toolInput.timezone || "UTC";
+        const maxRuns = toolInput.max_runs || null;
+
+        if (!schedule) return "Please specify a schedule (e.g., 'every day at 9am', 'every Monday').";
+
+        const cronExpr = naturalLanguageToCron(schedule);
+        if (!cronExpr) return `Could not parse schedule "${schedule}". Try "every day at 9am", "every Monday", "hourly", or a cron expression like "0 9 * * *".`;
+
+        const nextRunAt = calculateNextRun(cronExpr, tz);
+
+        const rooms = await pool.query(
+          `SELECT id FROM rooms WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+          [userId]
+        );
+        const roomId = rooms.rows[0]?.id || null;
+
+        const task = await storage.createScheduledTask({
+          userId,
+          agentId,
+          roomId,
+          title,
+          description,
+          taskType: "recurring",
+          cronExpression: cronExpr,
+          nextRunAt,
+          timezone: tz,
+          maxRuns,
+          actionType,
+          actionPayload,
+        });
+
+        const nextDate = new Date(nextRunAt).toLocaleString("en-US", { timeZone: tz !== "UTC" ? tz : undefined });
+        return `Task scheduled: "${title}" (${cronExpr})\nAction: ${actionType}\nNext run: ${nextDate}\nID: ${task.id}`;
+      }
+
+      case "list_tasks": {
+        const statusFilter = toolInput.status || "active";
+        const allTasks = await storage.getScheduledTasks(userId);
+        const tasks = statusFilter === "all"
+          ? allTasks
+          : allTasks.filter((t: any) => t.status === statusFilter);
+
+        if (tasks.length === 0) return `No ${statusFilter === "all" ? "" : statusFilter + " "}tasks found.`;
+
+        const lines = tasks.map((t: any) => {
+          const nextRun = t.nextRunAt ? new Date(t.nextRunAt).toLocaleString("en-US") : "—";
+          const status = t.status.charAt(0).toUpperCase() + t.status.slice(1);
+          return `- **${t.title}** (ID: ${t.id})\n  Type: ${t.taskType} | Status: ${status} | Runs: ${t.runCount}${t.maxRuns ? `/${t.maxRuns}` : ""}\n  Next: ${nextRun}`;
+        });
+
+        return `**Scheduled Tasks (${statusFilter})**\n\n${lines.join("\n\n")}`;
       }
 
       default:

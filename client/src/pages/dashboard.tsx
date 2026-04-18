@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle, CheckCircle2, AlertCircle, XCircle, ChevronDown, ChevronUp, Database, Cpu, CreditCard, Lightbulb, Check, X as XIcon } from "lucide-react";
+import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle, CheckCircle2, AlertCircle, XCircle, ChevronDown, ChevronUp, Database, Cpu, CreditCard, Lightbulb, Check, X as XIcon, Clock, Pause, Play, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -141,6 +141,9 @@ export default function DashboardPage() {
 
       {/* Upgrade Proposals */}
       <UpgradeProposalsWidget />
+
+      {/* Scheduled Tasks */}
+      <ScheduledTasksWidget />
 
       {/* Agents + Feed */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -516,6 +519,121 @@ function APIKeyCard() {
           &nbsp;&nbsp;-H "X-API-Key: {'<YOUR_KEY>'}" \<br />
           &nbsp;&nbsp;-d {'{"content":"User prefers dark mode","type":"semantic"}'}
         </p>
+      </div>
+    </div>
+  );
+}
+
+function ScheduledTasksWidget() {
+  const { data: tasks = [] } = useQuery<any[]>({
+    queryKey: ["/api/tasks"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/tasks");
+      return r.json();
+    },
+  });
+  const { toast } = useToast();
+
+  const pauseMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      apiRequest("PATCH", `/api/tasks/${id}`, { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/tasks/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      toast({ title: "Task deleted" });
+    },
+  });
+
+  if ((tasks as any[]).length === 0) return null;
+
+  const statusBadge = (status: string) => {
+    const styles: Record<string, string> = {
+      active: "bg-green-400/10 text-green-400",
+      paused: "bg-yellow-400/10 text-yellow-400",
+      completed: "bg-muted text-muted-foreground",
+      cancelled: "bg-red-400/10 text-red-400",
+    };
+    return styles[status] || "bg-muted text-muted-foreground";
+  };
+
+  const typeLabel = (t: string) => {
+    const labels: Record<string, string> = { reminder: "Reminder", recurring: "Recurring", one_time: "One-time" };
+    return labels[t] || t;
+  };
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <Clock className="w-4 h-4 text-primary" />
+        <h2 className="text-sm font-semibold text-foreground">Scheduled Tasks</h2>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+          {(tasks as any[]).filter((t: any) => t.status === "active").length} active
+        </span>
+      </div>
+      <div className="space-y-2">
+        {(tasks as any[]).map((task: any) => (
+          <div key={task.id} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border hover:bg-muted/20 transition-colors">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-foreground truncate">{task.title}</span>
+                <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium", statusBadge(task.status))}>
+                  {task.status}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                  {typeLabel(task.taskType)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground">
+                {task.nextRunAt && task.status === "active" && (
+                  <span>Next: {new Date(task.nextRunAt).toLocaleString()}</span>
+                )}
+                {task.cronExpression && (
+                  <span className="font-mono text-[10px]">{task.cronExpression}</span>
+                )}
+                {task.runCount > 0 && (
+                  <span>Runs: {task.runCount}{task.maxRuns ? `/${task.maxRuns}` : ""}</span>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {task.status === "active" ? (
+                <button
+                  onClick={() => pauseMutation.mutate({ id: task.id, status: "paused" })}
+                  disabled={pauseMutation.isPending}
+                  className="p-1.5 rounded-lg hover:bg-yellow-400/10 text-muted-foreground hover:text-yellow-400 transition-colors"
+                  title="Pause"
+                >
+                  <Pause className="w-3.5 h-3.5" />
+                </button>
+              ) : task.status === "paused" ? (
+                <button
+                  onClick={() => pauseMutation.mutate({ id: task.id, status: "active" })}
+                  disabled={pauseMutation.isPending}
+                  className="p-1.5 rounded-lg hover:bg-green-400/10 text-muted-foreground hover:text-green-400 transition-colors"
+                  title="Resume"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                </button>
+              ) : null}
+              <button
+                onClick={() => {
+                  if (confirm(`Delete task "${task.title}"?`)) deleteMutation.mutate(task.id);
+                }}
+                disabled={deleteMutation.isPending}
+                className="p-1.5 rounded-lg hover:bg-red-400/10 text-muted-foreground hover:text-red-400 transition-colors"
+                title="Delete"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

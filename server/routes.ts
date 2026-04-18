@@ -3122,6 +3122,94 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Scheduled Tasks API ─────────────────────────────────────────────────────
+
+  // GET /api/tasks — list all tasks for user
+  app.get("/api/tasks", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const tasks = await storage.getScheduledTasks(userId);
+    res.json(tasks);
+  }));
+
+  // POST /api/tasks — create task
+  app.post("/api/tasks", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { title, description, taskType, cronExpression, scheduledAt, timezone,
+      agentId, roomId, maxRuns, actionType, actionPayload } = req.body;
+    if (!title || !taskType) {
+      return res.status(400).json({ error: "title and taskType are required" });
+    }
+    // Resolve agentId — use the first agent if not provided
+    let resolvedAgentId = agentId;
+    if (!resolvedAgentId) {
+      const agents = await storage.getAgents(userId);
+      if (agents.length === 0) return res.status(400).json({ error: "No agents found. Create an agent first." });
+      resolvedAgentId = agents[0].id;
+    }
+    let nextRunAt = scheduledAt || null;
+    if (taskType === "recurring" && cronExpression) {
+      const { calculateNextRun } = await import("./scheduler");
+      nextRunAt = calculateNextRun(cronExpression, timezone || "UTC");
+    }
+    const task = await storage.createScheduledTask({
+      userId,
+      agentId: resolvedAgentId,
+      roomId: roomId || null,
+      title,
+      description: description || null,
+      taskType,
+      cronExpression: cronExpression || null,
+      scheduledAt: scheduledAt || null,
+      nextRunAt,
+      timezone: timezone || "UTC",
+      maxRuns: maxRuns || null,
+      actionType: actionType || "message",
+      actionPayload: actionPayload ? (typeof actionPayload === "string" ? actionPayload : JSON.stringify(actionPayload)) : null,
+    });
+    res.json(task);
+  }));
+
+  // GET /api/tasks/:id — get single task
+  app.get("/api/tasks/:id", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const task = await storage.getScheduledTaskById(Number(req.params.id), userId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    res.json(task);
+  }));
+
+  // PATCH /api/tasks/:id — update task (pause/resume/edit)
+  app.patch("/api/tasks/:id", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const taskId = Number(req.params.id);
+    const updates = req.body;
+    // If resuming a recurring task, recalculate next_run_at
+    if (updates.status === "active") {
+      const existing = await storage.getScheduledTaskById(taskId, userId);
+      if (existing && existing.taskType === "recurring" && existing.cronExpression) {
+        const { calculateNextRun } = await import("./scheduler");
+        updates.next_run_at = calculateNextRun(existing.cronExpression, existing.timezone || "UTC");
+      } else if (existing && existing.scheduledAt) {
+        updates.next_run_at = existing.scheduledAt;
+      }
+    }
+    const task = await storage.updateScheduledTask(taskId, userId, updates);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    res.json(task);
+  }));
+
+  // DELETE /api/tasks/:id — delete task
+  app.delete("/api/tasks/:id", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const deleted = await storage.deleteScheduledTask(Number(req.params.id), userId);
+    if (!deleted) return res.status(404).json({ error: "Task not found" });
+    res.json({ ok: true });
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {

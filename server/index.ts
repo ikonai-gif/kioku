@@ -19,6 +19,7 @@ import { rateLimitMiddleware } from "./ratelimit";
 import { applySecurityMiddleware } from "./security";
 import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
+import { startScheduler } from "./scheduler";
 import logger, { generateRequestId } from "./logger";
 
 // SECURITY: Constant-time string comparison to prevent timing attacks on secrets
@@ -253,6 +254,9 @@ app.use((req, res, next) => {
 
   // Start internal watchdog monitor
   startMonitor();
+
+  // Start task scheduler (Phase 4: Scheduling & Automation)
+  startScheduler();
 
   // Auto-purge old request logs every 24 hours (GDPR compliance)
   setInterval(async () => {
