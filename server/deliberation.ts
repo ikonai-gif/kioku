@@ -410,6 +410,34 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: [],
     },
   },
+  {
+    name: "generate_document",
+    description: "Generate a professional document (PDF, DOCX, Excel spreadsheet, or ZIP archive). Use this when the user asks you to create a report, document, spreadsheet, or package of files. The document is generated in a sandbox and returned as a downloadable file.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        format: { type: "string", enum: ["pdf", "docx", "xlsx", "zip"], description: "Output format" },
+        title: { type: "string", description: "Document title" },
+        content: { type: "string", description: "Document content in Markdown format (for PDF/DOCX) or JSON array of objects (for XLSX) or description of files to package (for ZIP)" },
+        styling: { type: "string", description: "Optional styling instructions (e.g., 'professional dark theme', 'corporate blue header')" },
+      },
+      required: ["format", "title", "content"],
+    },
+  },
+  {
+    name: "convert_file",
+    description: "Convert a file from one format to another. Supported: CSV→XLSX, MD→PDF, MD→DOCX, JSON→XLSX, TXT→PDF, HTML→PDF",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        source_text: { type: "string", description: "The source file content (text)" },
+        source_format: { type: "string", description: "Source format (csv, md, json, txt, html)" },
+        target_format: { type: "string", description: "Target format (pdf, docx, xlsx)" },
+        filename: { type: "string", description: "Output filename without extension" },
+      },
+      required: ["source_text", "source_format", "target_format"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -1309,6 +1337,577 @@ async function executePartnerTool(
           return "Sandbox reset successfully. A fresh sandbox will be created on your next code execution.";
         } catch (err: any) {
           return `Failed to reset sandbox: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "generate_document": {
+        const format = toolInput.format;
+        const title = toolInput.title;
+        const content = toolInput.content;
+        const styling = toolInput.styling || "";
+        if (!format || !title || !content) return "Missing required fields: format, title, content.";
+
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const outputPath = `/tmp/output.${format}`;
+          let pythonCode = "";
+
+          if (format === "pdf") {
+            // Install packages
+            await sbx.commands.run("pip install reportlab markdown2", { timeoutMs: 60_000 });
+            // Escape content for Python triple-quoted string
+            const escapedContent = content.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+            const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            const escapedStyling = styling.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            pythonCode = `
+import markdown2
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+import re
+
+content = """${escapedContent}"""
+title = "${escapedTitle}"
+styling_hint = "${escapedStyling}"
+
+doc = SimpleDocTemplate("${outputPath}", pagesize=letter,
+    topMargin=0.75*inch, bottomMargin=0.75*inch,
+    leftMargin=0.75*inch, rightMargin=0.75*inch)
+
+styles = getSampleStyleSheet()
+styles.add(ParagraphStyle(name='DocTitle', parent=styles['Title'],
+    fontSize=22, spaceAfter=20, textColor=colors.HexColor('#1a1a2e')))
+styles.add(ParagraphStyle(name='DocHeading', parent=styles['Heading1'],
+    fontSize=16, spaceAfter=10, spaceBefore=16, textColor=colors.HexColor('#16213e')))
+styles.add(ParagraphStyle(name='DocHeading2', parent=styles['Heading2'],
+    fontSize=13, spaceAfter=8, spaceBefore=12, textColor=colors.HexColor('#0f3460')))
+styles.add(ParagraphStyle(name='DocBody', parent=styles['Normal'],
+    fontSize=11, leading=15, spaceAfter=8))
+
+story = []
+story.append(Paragraph(title, styles['DocTitle']))
+story.append(Spacer(1, 12))
+
+lines = content.split('\\n')
+for line in lines:
+    stripped = line.strip()
+    if not stripped:
+        story.append(Spacer(1, 6))
+    elif stripped.startswith('### '):
+        story.append(Paragraph(stripped[4:], styles['DocHeading2']))
+    elif stripped.startswith('## '):
+        story.append(Paragraph(stripped[3:], styles['DocHeading']))
+    elif stripped.startswith('# '):
+        story.append(Paragraph(stripped[2:], styles['DocHeading']))
+    elif stripped.startswith('- ') or stripped.startswith('* '):
+        bullet_text = stripped[2:]
+        story.append(Paragraph(f'\\u2022 {bullet_text}', styles['DocBody']))
+    else:
+        # Handle bold (**text**) and italic (*text*)
+        text = re.sub(r'\\*\\*(.+?)\\*\\*', r'<b>\\1</b>', stripped)
+        text = re.sub(r'\\*(.+?)\\*', r'<i>\\1</i>', text)
+        story.append(Paragraph(text, styles['DocBody']))
+
+doc.build(story)
+print(f"PDF generated: ${outputPath}")
+`;
+          } else if (format === "docx") {
+            await sbx.commands.run("pip install python-docx markdown2", { timeoutMs: 60_000 });
+            const escapedContent = content.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+            const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            pythonCode = `
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+import re
+
+content = """${escapedContent}"""
+title = "${escapedTitle}"
+
+doc = Document()
+
+# Style the document
+style = doc.styles['Normal']
+font = style.font
+font.name = 'Calibri'
+font.size = Pt(11)
+
+# Title
+title_para = doc.add_heading(title, level=0)
+title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+lines = content.split('\\n')
+for line in lines:
+    stripped = line.strip()
+    if not stripped:
+        doc.add_paragraph('')
+    elif stripped.startswith('### '):
+        doc.add_heading(stripped[4:], level=3)
+    elif stripped.startswith('## '):
+        doc.add_heading(stripped[3:], level=2)
+    elif stripped.startswith('# '):
+        doc.add_heading(stripped[2:], level=1)
+    elif stripped.startswith('- ') or stripped.startswith('* '):
+        doc.add_paragraph(stripped[2:], style='List Bullet')
+    elif re.match(r'^\\d+\\.\\s', stripped):
+        text = re.sub(r'^\\d+\\.\\s', '', stripped)
+        doc.add_paragraph(text, style='List Number')
+    else:
+        para = doc.add_paragraph()
+        # Handle bold and italic
+        parts = re.split(r'(\\*\\*.+?\\*\\*|\\*.+?\\*)', stripped)
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'):
+                run = para.add_run(part[2:-2])
+                run.bold = True
+            elif part.startswith('*') and part.endswith('*'):
+                run = para.add_run(part[1:-1])
+                run.italic = True
+            else:
+                para.add_run(part)
+
+doc.save("${outputPath}")
+print(f"DOCX generated: ${outputPath}")
+`;
+          } else if (format === "xlsx") {
+            await sbx.commands.run("pip install openpyxl", { timeoutMs: 60_000 });
+            const escapedContent = content.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+            const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            pythonCode = `
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import json
+
+content_str = """${escapedContent}"""
+title = "${escapedTitle}"
+
+wb = Workbook()
+ws = wb.active
+ws.title = title[:31]  # Excel sheet name limit
+
+# Styling
+header_font = Font(name='Calibri', bold=True, size=12, color='FFFFFF')
+header_fill = PatternFill(start_color='1a1a2e', end_color='1a1a2e', fill_type='solid')
+cell_font = Font(name='Calibri', size=11)
+thin_border = Border(
+    left=Side(style='thin', color='cccccc'),
+    right=Side(style='thin', color='cccccc'),
+    top=Side(style='thin', color='cccccc'),
+    bottom=Side(style='thin', color='cccccc')
+)
+
+try:
+    data = json.loads(content_str)
+    if isinstance(data, list) and len(data) > 0:
+        # Get headers from first object
+        if isinstance(data[0], dict):
+            headers = list(data[0].keys())
+        else:
+            headers = [f"Column {i+1}" for i in range(len(data[0]))]
+
+        # Write headers
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=str(header))
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+            cell.border = thin_border
+
+        # Write data
+        for row_idx, row_data in enumerate(data, 2):
+            if isinstance(row_data, dict):
+                for col, header in enumerate(headers, 1):
+                    cell = ws.cell(row=row_idx, column=col, value=row_data.get(header, ''))
+                    cell.font = cell_font
+                    cell.border = thin_border
+            elif isinstance(row_data, list):
+                for col, value in enumerate(row_data, 1):
+                    cell = ws.cell(row=row_idx, column=col, value=value)
+                    cell.font = cell_font
+                    cell.border = thin_border
+
+        # Auto-width columns
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_length + 4, 50)
+except (json.JSONDecodeError, TypeError):
+    # Fallback: treat as plain text rows
+    lines = content_str.strip().split('\\n')
+    for row_idx, line in enumerate(lines, 1):
+        cols = line.split('\\t') if '\\t' in line else line.split(',')
+        for col_idx, value in enumerate(cols, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value.strip())
+            if row_idx == 1:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center')
+            else:
+                cell.font = cell_font
+            cell.border = thin_border
+
+wb.save("${outputPath}")
+print(f"XLSX generated: ${outputPath}")
+`;
+          } else if (format === "zip") {
+            const escapedContent = content.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+            pythonCode = `
+import zipfile
+import os
+
+content = """${escapedContent}"""
+
+# Create a temporary directory for files
+os.makedirs("/tmp/zipproject", exist_ok=True)
+
+# Parse content as file descriptions (format: "filename: content" per line or section)
+sections = content.split('---')
+files_created = []
+for section in sections:
+    section = section.strip()
+    if not section:
+        continue
+    lines = section.split('\\n')
+    if ':' in lines[0]:
+        fname = lines[0].split(':')[0].strip()
+        fcontent = '\\n'.join(lines[1:]).strip() if len(lines) > 1 else lines[0].split(':', 1)[1].strip()
+    else:
+        fname = lines[0].strip().replace(' ', '_') + '.txt'
+        fcontent = '\\n'.join(lines[1:]).strip() if len(lines) > 1 else section
+    fpath = os.path.join("/tmp/zipproject", fname)
+    os.makedirs(os.path.dirname(fpath) if os.path.dirname(fpath) != '/tmp/zipproject' else '/tmp/zipproject', exist_ok=True)
+    with open(fpath, 'w') as f:
+        f.write(fcontent)
+    files_created.append(fname)
+
+# Create ZIP
+with zipfile.ZipFile("${outputPath}", 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk("/tmp/zipproject"):
+        for file in files:
+            file_path = os.path.join(root, file)
+            arcname = os.path.relpath(file_path, "/tmp/zipproject")
+            zf.write(file_path, arcname)
+
+print(f"ZIP generated with {len(files_created)} files: {', '.join(files_created)}")
+`;
+          } else {
+            return `Unsupported format: ${format}. Use pdf, docx, xlsx, or zip.`;
+          }
+
+          // Execute the Python code
+          const execution = await sbx.runCode(pythonCode, { language: "python" as any });
+          const stdout = execution.logs?.stdout?.join("\n") || "";
+          const stderr = execution.logs?.stderr?.join("\n") || "";
+          const error = execution.error;
+
+          if (error) {
+            return `Document generation failed: ${error.name}: ${error.value}\n${error.traceback}`;
+          }
+
+          // Read the output file as bytes
+          const fileBytes = await sbx.files.read(outputPath, { format: "bytes" });
+          const base64Content = Buffer.from(fileBytes).toString("base64");
+          const filename = `${title.replace(/[^a-zA-Z0-9_\- ]/g, "").replace(/\s+/g, "_").slice(0, 80)}.${format}`;
+
+          const mimeTypes: Record<string, string> = {
+            pdf: "application/pdf",
+            docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            zip: "application/zip",
+          };
+
+          // Save to gallery
+          const item = await (storage as any).addGalleryItem({
+            userId,
+            agentId,
+            type: "file",
+            title: filename,
+            contentText: base64Content,
+            prompt: `${title}: ${content.slice(0, 200)}`,
+            metadata: {
+              filename,
+              mimeType: mimeTypes[format] || "application/octet-stream",
+              format,
+              size: fileBytes.length,
+              isBase64: true,
+              source: "generate_document",
+            },
+          });
+
+          // Save creation memory
+          storage.createMemory({
+            userId,
+            agentId,
+            content: `[Document generated] ${format.toUpperCase()}: ${title}`,
+            type: "episodic",
+            importance: 0.7,
+            namespace: "_creations",
+          }).catch(() => {});
+
+          const downloadUrl = item?.id ? `/api/files/${item.id}/download` : null;
+          return `Document generated: ${filename} (${(fileBytes.length / 1024).toFixed(1)} KB)${downloadUrl ? `\n[Download: ${filename}](${downloadUrl})` : ""}`;
+        } catch (err: any) {
+          await sandboxManager.kill(userId).catch(() => {});
+          return `Document generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "convert_file": {
+        const sourceText = toolInput.source_text;
+        const sourceFormat = toolInput.source_format;
+        const targetFormat = toolInput.target_format;
+        const filename = toolInput.filename || "converted";
+        if (!sourceText || !sourceFormat || !targetFormat) return "Missing required fields: source_text, source_format, target_format.";
+
+        const supportedConversions: Record<string, string[]> = {
+          csv: ["xlsx"],
+          md: ["pdf", "docx"],
+          json: ["xlsx"],
+          txt: ["pdf"],
+          html: ["pdf"],
+        };
+        if (!supportedConversions[sourceFormat]?.includes(targetFormat)) {
+          return `Unsupported conversion: ${sourceFormat}→${targetFormat}. Supported: ${Object.entries(supportedConversions).map(([k, v]) => v.map(t => `${k}→${t}`).join(", ")).join(", ")}`;
+        }
+
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const outputPath = `/tmp/output.${targetFormat}`;
+          const sourcePath = `/tmp/input.${sourceFormat}`;
+
+          // Write source file to sandbox
+          await sbx.files.write(sourcePath, sourceText);
+
+          let pythonCode = "";
+
+          if (sourceFormat === "csv" && targetFormat === "xlsx") {
+            await sbx.commands.run("pip install openpyxl", { timeoutMs: 60_000 });
+            pythonCode = `
+import csv
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+
+header_font = Font(name='Calibri', bold=True, size=12, color='FFFFFF')
+header_fill = PatternFill(start_color='1a1a2e', end_color='1a1a2e', fill_type='solid')
+thin_border = Border(
+    left=Side(style='thin', color='cccccc'), right=Side(style='thin', color='cccccc'),
+    top=Side(style='thin', color='cccccc'), bottom=Side(style='thin', color='cccccc'))
+
+with open("${sourcePath}", 'r') as f:
+    reader = csv.reader(f)
+    for row_idx, row in enumerate(reader, 1):
+        for col_idx, value in enumerate(row, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            if row_idx == 1:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center')
+
+for col in ws.columns:
+    max_length = max(len(str(cell.value or '')) for cell in col)
+    ws.column_dimensions[col[0].column_letter].width = min(max_length + 4, 50)
+
+wb.save("${outputPath}")
+print("Converted CSV to XLSX")
+`;
+          } else if (sourceFormat === "json" && targetFormat === "xlsx") {
+            await sbx.commands.run("pip install openpyxl", { timeoutMs: 60_000 });
+            pythonCode = `
+import json
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+with open("${sourcePath}", 'r') as f:
+    data = json.load(f)
+
+wb = Workbook()
+ws = wb.active
+ws.title = "Data"
+
+header_font = Font(name='Calibri', bold=True, size=12, color='FFFFFF')
+header_fill = PatternFill(start_color='1a1a2e', end_color='1a1a2e', fill_type='solid')
+thin_border = Border(
+    left=Side(style='thin', color='cccccc'), right=Side(style='thin', color='cccccc'),
+    top=Side(style='thin', color='cccccc'), bottom=Side(style='thin', color='cccccc'))
+
+if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+    headers = list(data[0].keys())
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center')
+        cell.border = thin_border
+    for row_idx, item in enumerate(data, 2):
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=row_idx, column=col, value=item.get(h, ''))
+            cell.border = thin_border
+
+    for col in ws.columns:
+        max_length = max(len(str(cell.value or '')) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max_length + 4, 50)
+
+wb.save("${outputPath}")
+print("Converted JSON to XLSX")
+`;
+          } else if ((sourceFormat === "md" || sourceFormat === "txt" || sourceFormat === "html") && targetFormat === "pdf") {
+            await sbx.commands.run("pip install reportlab markdown2", { timeoutMs: 60_000 });
+            pythonCode = `
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+import re
+
+with open("${sourcePath}", 'r') as f:
+    content = f.read()
+
+doc = SimpleDocTemplate("${outputPath}", pagesize=letter,
+    topMargin=0.75*inch, bottomMargin=0.75*inch,
+    leftMargin=0.75*inch, rightMargin=0.75*inch)
+
+styles = getSampleStyleSheet()
+styles.add(ParagraphStyle(name='DocHeading', parent=styles['Heading1'],
+    fontSize=16, spaceAfter=10, spaceBefore=16, textColor=colors.HexColor('#16213e')))
+styles.add(ParagraphStyle(name='DocHeading2', parent=styles['Heading2'],
+    fontSize=13, spaceAfter=8, spaceBefore=12, textColor=colors.HexColor('#0f3460')))
+styles.add(ParagraphStyle(name='DocBody', parent=styles['Normal'],
+    fontSize=11, leading=15, spaceAfter=8))
+
+story = []
+lines = content.split('\\n')
+for line in lines:
+    stripped = line.strip()
+    if not stripped:
+        story.append(Spacer(1, 6))
+    elif stripped.startswith('### '):
+        story.append(Paragraph(stripped[4:], styles['DocHeading2']))
+    elif stripped.startswith('## '):
+        story.append(Paragraph(stripped[3:], styles['DocHeading']))
+    elif stripped.startswith('# '):
+        story.append(Paragraph(stripped[2:], styles['DocHeading']))
+    elif stripped.startswith('- ') or stripped.startswith('* '):
+        story.append(Paragraph(f'\\u2022 {stripped[2:]}', styles['DocBody']))
+    else:
+        text = re.sub(r'\\*\\*(.+?)\\*\\*', r'<b>\\1</b>', stripped)
+        text = re.sub(r'\\*(.+?)\\*', r'<i>\\1</i>', text)
+        story.append(Paragraph(text, styles['DocBody']))
+
+doc.build(story)
+print("Converted to PDF")
+`;
+          } else if (sourceFormat === "md" && targetFormat === "docx") {
+            await sbx.commands.run("pip install python-docx markdown2", { timeoutMs: 60_000 });
+            pythonCode = `
+from docx import Document
+from docx.shared import Pt
+import re
+
+with open("${sourcePath}", 'r') as f:
+    content = f.read()
+
+doc = Document()
+style = doc.styles['Normal']
+style.font.name = 'Calibri'
+style.font.size = Pt(11)
+
+lines = content.split('\\n')
+for line in lines:
+    stripped = line.strip()
+    if not stripped:
+        doc.add_paragraph('')
+    elif stripped.startswith('### '):
+        doc.add_heading(stripped[4:], level=3)
+    elif stripped.startswith('## '):
+        doc.add_heading(stripped[3:], level=2)
+    elif stripped.startswith('# '):
+        doc.add_heading(stripped[2:], level=1)
+    elif stripped.startswith('- ') or stripped.startswith('* '):
+        doc.add_paragraph(stripped[2:], style='List Bullet')
+    elif re.match(r'^\\d+\\.\\s', stripped):
+        text = re.sub(r'^\\d+\\.\\s', '', stripped)
+        doc.add_paragraph(text, style='List Number')
+    else:
+        para = doc.add_paragraph()
+        parts = re.split(r'(\\*\\*.+?\\*\\*|\\*.+?\\*)', stripped)
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'):
+                run = para.add_run(part[2:-2])
+                run.bold = True
+            elif part.startswith('*') and part.endswith('*'):
+                run = para.add_run(part[1:-1])
+                run.italic = True
+            else:
+                para.add_run(part)
+
+doc.save("${outputPath}")
+print("Converted MD to DOCX")
+`;
+          } else {
+            return `Conversion ${sourceFormat}→${targetFormat} is not implemented.`;
+          }
+
+          const execution = await sbx.runCode(pythonCode, { language: "python" as any });
+          const error = execution.error;
+          if (error) {
+            return `File conversion failed: ${error.name}: ${error.value}\n${error.traceback}`;
+          }
+
+          const fileBytes = await sbx.files.read(outputPath, { format: "bytes" });
+          const base64Content = Buffer.from(fileBytes).toString("base64");
+          const outFilename = `${filename.replace(/[^a-zA-Z0-9_\- ]/g, "").replace(/\s+/g, "_").slice(0, 80)}.${targetFormat}`;
+
+          const mimeTypes: Record<string, string> = {
+            pdf: "application/pdf",
+            docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          };
+
+          const item = await (storage as any).addGalleryItem({
+            userId,
+            agentId,
+            type: "file",
+            title: outFilename,
+            contentText: base64Content,
+            prompt: `Converted ${sourceFormat}→${targetFormat}: ${filename}`,
+            metadata: {
+              filename: outFilename,
+              mimeType: mimeTypes[targetFormat] || "application/octet-stream",
+              format: targetFormat,
+              size: fileBytes.length,
+              isBase64: true,
+              source: "convert_file",
+              sourceFormat,
+            },
+          });
+
+          storage.createMemory({
+            userId,
+            agentId,
+            content: `[File converted] ${sourceFormat}→${targetFormat}: ${outFilename}`,
+            type: "episodic",
+            importance: 0.6,
+            namespace: "_creations",
+          }).catch(() => {});
+
+          const downloadUrl = item?.id ? `/api/files/${item.id}/download` : null;
+          return `File converted: ${outFilename} (${(fileBytes.length / 1024).toFixed(1)} KB)${downloadUrl ? `\n[Download: ${outFilename}](${downloadUrl})` : ""}`;
+        } catch (err: any) {
+          await sandboxManager.kill(userId).catch(() => {});
+          return `File conversion failed: ${err?.message || String(err)}`;
         }
       }
 

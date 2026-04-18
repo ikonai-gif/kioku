@@ -189,6 +189,52 @@ function FileAttachmentCard({ fileName }: { fileName: string }) {
   );
 }
 
+// ── File download card for generated documents ─────────────────
+const FILE_TYPE_STYLES: Record<string, { icon: string; color: string; bg: string; border: string }> = {
+  pdf:  { icon: "📄", color: "text-red-400",    bg: "rgba(239,68,68,0.08)",  border: "rgba(239,68,68,0.25)" },
+  docx: { icon: "📝", color: "text-blue-400",   bg: "rgba(59,130,246,0.08)", border: "rgba(59,130,246,0.25)" },
+  xlsx: { icon: "📊", color: "text-green-400",  bg: "rgba(34,197,94,0.08)",  border: "rgba(34,197,94,0.25)" },
+  zip:  { icon: "📦", color: "text-yellow-400", bg: "rgba(234,179,8,0.08)",  border: "rgba(234,179,8,0.25)" },
+  csv:  { icon: "📊", color: "text-green-400",  bg: "rgba(34,197,94,0.08)",  border: "rgba(34,197,94,0.25)" },
+};
+
+function FileDownloadCard({ filename, url }: { filename: string; url: string }) {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  const style = FILE_TYPE_STYLES[ext] || { icon: "📁", color: "text-[#C9A340]", bg: "rgba(201,163,64,0.08)", border: "rgba(201,163,64,0.25)" };
+  const fullUrl = url.startsWith("/api/") ? `${API_BASE}${url}` : url;
+
+  return (
+    <a
+      href={fullUrl}
+      download={filename}
+      className="flex items-center gap-3 px-4 py-3 my-2 rounded-xl transition-all hover:scale-[1.01]"
+      style={{
+        background: `linear-gradient(135deg, rgba(10,15,46,0.95), ${style.bg})`,
+        border: `1px solid ${style.border}`,
+        boxShadow: `0 0 12px ${style.border}`,
+        textDecoration: "none",
+      }}
+    >
+      <span className="text-2xl flex-shrink-0">{style.icon}</span>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-foreground/90 truncate">{filename}</div>
+        <div className={`text-xs ${style.color} opacity-70 uppercase tracking-wider`}>{ext} document</div>
+      </div>
+      <div
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+        style={{
+          background: "rgba(201,163,64,0.15)",
+          border: "1px solid rgba(201,163,64,0.3)",
+          color: "#C9A340",
+        }}
+      >
+        <Download className="w-3.5 h-3.5" />
+        Download
+      </div>
+    </a>
+  );
+}
+
 // ── Code block renderer with syntax-highlighted dark theme ─────
 function CodeBlock({ code, language }: { code: string; language: string }) {
   const [copied, setCopied] = React.useState(false);
@@ -352,23 +398,31 @@ function renderInlineContent(content: string, startKey: number): { nodes: React.
     } else {
       // Resolve relative download links to full API URL
       const isDownload = url.startsWith("/api/files/") || url.includes("/download");
-      if (url.startsWith("/api/")) {
-        url = `${API_BASE}${url}`;
+
+      // Detect document downloads — render as styled FileDownloadCard
+      const docExt = (altOrText || url).match(/\.(pdf|docx|xlsx|zip|csv)$/i);
+      if (isDownload && docExt) {
+        const fname = altOrText?.replace(/^(Download:\s*|📥\s*)/, "") || `document.${docExt[1]}`;
+        parts.push(<FileDownloadCard key={key++} filename={fname} url={url} />);
+      } else {
+        if (url.startsWith("/api/")) {
+          url = `${API_BASE}${url}`;
+        }
+        const isExternal = url.startsWith("http://") || url.startsWith("https://");
+        parts.push(
+          <a
+            key={key++}
+            href={url}
+            target={isDownload ? "_self" : isExternal ? "_blank" : "_self"}
+            rel={isExternal ? "noopener noreferrer" : undefined}
+            download={isDownload ? (altOrText || true) : undefined}
+            className={`inline-flex items-center gap-1.5 ${isDownload ? "px-3 py-1.5 rounded-lg bg-[#C9A340]/15 border border-[#C9A340]/30 text-[#C9A340] hover:bg-[#C9A340]/25" : "text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a]"} transition-colors`}
+          >
+            {isDownload && <span className="text-sm">📥</span>}
+            {altOrText || url}
+          </a>
+        );
       }
-      const isExternal = url.startsWith("http://") || url.startsWith("https://");
-      parts.push(
-        <a
-          key={key++}
-          href={url}
-          target={isDownload ? "_self" : isExternal ? "_blank" : "_self"}
-          rel={isExternal ? "noopener noreferrer" : undefined}
-          download={isDownload ? (altOrText || true) : undefined}
-          className={`inline-flex items-center gap-1.5 ${isDownload ? "px-3 py-1.5 rounded-lg bg-[#C9A340]/15 border border-[#C9A340]/30 text-[#C9A340] hover:bg-[#C9A340]/25" : "text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a]"} transition-colors`}
-        >
-          {isDownload && <span className="text-sm">📥</span>}
-          {altOrText || url}
-        </a>
-      );
     }
 
     lastIndex = match.index + fullMatch.length;

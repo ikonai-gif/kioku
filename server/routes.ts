@@ -2874,6 +2874,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.send(buf);
     }
 
+    // Handle base64-encoded document files (PDF, DOCX, XLSX, ZIP from generate_document / convert_file)
+    if (file.type === 'file' && metadata.isBase64 && file.content_text) {
+      const buf = Buffer.from(file.content_text, 'base64');
+      const mimeType = metadata.mimeType || 'application/octet-stream';
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${metadata.filename || filename}"`);
+      return res.send(buf);
+    }
+
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
     res.send(file.content_text);
