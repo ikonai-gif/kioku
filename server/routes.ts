@@ -2032,10 +2032,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const plainTextExts = ["txt", "md", "csv", "json", "js", "ts", "py", "html", "css"];
 
       if (ext === "pdf") {
-        const pdfMod = await import("pdf-parse");
-        const pdfParse = (pdfMod as any).default || pdfMod;
+        // pdf-parse v1.1.1 — use require for CommonJS compatibility
+        const pdfParse = require("pdf-parse");
         const result = await pdfParse(file.buffer);
-        text = result.text;
+        text = result.text || "";
       } else if (ext === "docx") {
         const mammoth = await import("mammoth");
         const result = await mammoth.extractRawText({ buffer: file.buffer });
