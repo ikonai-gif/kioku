@@ -2404,25 +2404,95 @@ export async function triggerAgentResponses(
           // gpt-5+ and o-series models have different parameter requirements
           const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
           // gpt-5-mini uses reasoning tokens (hidden chain-of-thought), so needs higher limit
-          // At 300 tokens, reasoning alone consumes everything leaving no visible reply
-          const tokenLimit = isNewModel ? 2048 : (isPartnerChat ? 600 : 256);
-          const completion = await oaiClient.chat.completions.create({
-            model: resolvedModel,
-            ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
-            // gpt-5-mini only supports temperature=1, so omit for new models
-            ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
-            messages: [
-              { role: "system", content: systemPrompt },
-              ...chatHistory,
-              {
-                role: "user",
-                content: isPartnerChat
-                  ? sanitizeForPrompt(triggerContent)
-                  : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
-              },
-            ],
-          });
-          reply = completion.choices[0]?.message?.content?.trim();
+          // Partner chat with tools needs 4096 for reasoning + tool planning + visible reply
+          const tokenLimit = isNewModel ? (isPartnerChat ? 4096 : 2048) : (isPartnerChat ? 600 : 256);
+
+          // Build mutable messages array for tool-use conversation
+          const oaiMessages: any[] = [
+            { role: "system", content: systemPrompt },
+            ...chatHistory,
+            {
+              role: "user",
+              content: isPartnerChat
+                ? sanitizeForPrompt(triggerContent)
+                : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
+            },
+          ];
+          const generatedAssetsOai: string[] = [];
+
+          // Agent loop — multi-step tool calling (mirrors Claude tool loop)
+          const maxToolIterationsOai = 10;
+          for (let toolIter = 0; toolIter < maxToolIterationsOai; toolIter++) {
+            const completion = await oaiClient.chat.completions.create({
+              model: resolvedModel,
+              ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+              // gpt-5-mini only supports temperature=1, so omit for new models
+              ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
+              messages: oaiMessages,
+              ...(isPartnerChat ? {
+                tools: partnerTools.map(t => ({
+                  type: "function" as const,
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: (t as any).input_schema || { type: "object", properties: {} },
+                  }
+                }))
+              } : {}),
+            });
+
+            const choice = completion.choices[0];
+            const msg = choice?.message;
+
+            // If no tool calls, we have our final reply
+            if (!msg?.tool_calls || msg.tool_calls.length === 0) {
+              reply = msg?.content?.trim();
+              break;
+            }
+
+            // Append assistant message (with tool_calls) to conversation
+            oaiMessages.push(msg);
+
+            // Execute each tool call
+            for (const toolCall of msg.tool_calls) {
+              const toolName = toolCall.function.name;
+              let toolArgs: Record<string, any> = {};
+              try {
+                toolArgs = JSON.parse(toolCall.function.arguments || "{}");
+              } catch { toolArgs = {}; }
+
+              const result = await executePartnerTool(toolName, toolArgs, userId, agent.id);
+
+              // Track generated assets (images)
+              if (toolName === "generate_image" && result.includes("URL: ")) {
+                const urlMatch = result.match(/URL: (https:\/\/[^\s]+)/);
+                if (urlMatch) generatedAssetsOai.push(urlMatch[1]);
+              }
+
+              // Append tool result to conversation
+              oaiMessages.push({
+                role: "tool",
+                tool_call_id: toolCall.id,
+                content: result,
+              });
+            }
+
+            // If this was the last iteration, make one final call to get text response
+            if (toolIter === maxToolIterationsOai - 1) {
+              const finalCompletion = await oaiClient.chat.completions.create({
+                model: resolvedModel,
+                ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+                ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
+                messages: oaiMessages,
+              });
+              reply = finalCompletion.choices[0]?.message?.content?.trim();
+            }
+          }
+
+          // Append generated asset URLs to reply so user always sees them
+          if (reply && generatedAssetsOai.length > 0) {
+            reply += generatedAssetsOai.map(url => `\n${url}`).join("");
+          }
         }
 
         if (!reply) continue;
