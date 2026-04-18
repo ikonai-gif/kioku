@@ -6,6 +6,11 @@
 import { pool } from "./storage";
 import logger from "./logger";
 
+/** Escape non-ASCII chars for HTTP headers (Dropbox-API-Arg requirement) */
+function asciiSafe(s: string): string {
+  return s.replace(/[\u0080-\uffff]/g, (c) => `\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 // ── Environment ──────────────────────────────────────────────────
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -256,7 +261,7 @@ export async function readDropboxFile(userId: number, path: string): Promise<{ f
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
-      "Dropbox-API-Arg": JSON.stringify({ path }),
+      "Dropbox-API-Arg": asciiSafe(JSON.stringify({ path })),
     },
     signal: AbortSignal.timeout(20000),
   });
