@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -775,6 +775,10 @@ export default function PartnerChat() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   // ── Fetch partner status (emotion + relationship) ─────────────
   const { data: partnerStatus } = useQuery<any>({
@@ -1095,6 +1099,44 @@ export default function PartnerChat() {
     setImageBase64(null);
   };
 
+  // ── Document File Handler ───────────────────────────────────
+  const handleDocSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File too large (max 10MB)", variant: "destructive" });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result as string;
+      const truncated = text.length > 8000 ? text.slice(0, 8000) + "\n...(truncated)" : text;
+      setInput(`[File: ${file.name}]\n${truncated}`);
+      toast({ title: `${file.name} attached` });
+    };
+    reader.onerror = () => toast({ title: "Failed to read file", variant: "destructive" });
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  // ── Clear Chat ──────────────────────────────────────────────
+  const clearChat = async () => {
+    if (!partnerRoomId) return;
+    try {
+      const token = getSessionToken();
+      await fetch(`${API_BASE}/api/rooms/${partnerRoomId}/messages`, {
+        method: "DELETE",
+        headers: token ? { "x-session-token": token } : {},
+        credentials: "include",
+      });
+      queryClient.invalidateQueries({ queryKey: [`/api/rooms/${partnerRoomId}/messages`] });
+      toast({ title: "Chat cleared" });
+    } catch {
+      toast({ title: "Failed to clear chat", variant: "destructive" });
+    }
+    setHeaderMenuOpen(false);
+  };
+
   // ── Creative Mode ────────────────────────────────────────────
   const handleCreativeSelect = (mode: string, subType?: string) => {
     if (mode === "write") {
@@ -1150,7 +1192,7 @@ export default function PartnerChat() {
     >
       {/* ── Top Bar ──────────────────────────────────────────── */}
       <header
-        className="flex items-center gap-3 px-4 py-3 flex-shrink-0"
+        className="flex items-center gap-3 px-4 py-3 flex-shrink-0 relative"
         style={{
           background: "rgba(10, 15, 30, 0.85)",
           borderBottom: "1px solid rgba(255,255,255,0.06)",
@@ -1190,18 +1232,76 @@ export default function PartnerChat() {
           }}
           title={voiceMode ? "Voice mode ON — auto-plays responses" : "Voice mode OFF"}
         >
-          {voiceMode ? <Volume2 className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-          <span className="hidden sm:inline">{voiceMode ? "Voice" : "Voice"}</span>
+          <Volume2 className="w-3.5 h-3.5" />
         </button>
 
-        {/* Phase 8: Taste Profile */}
-        <TasteProfilePanel />
+        {/* Header Menu Button */}
+        <button
+          onClick={() => setHeaderMenuOpen(!headerMenuOpen)}
+          className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+        >
+          <MoreVertical className="w-4 h-4" />
+        </button>
 
-        <Link href="/rooms">
-          <a className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-white/5">
-            <Menu className="w-4 h-4" />
-          </a>
-        </Link>
+        {/* Header Dropdown Menu */}
+        <AnimatePresence>
+          {headerMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setHeaderMenuOpen(false)} />
+              <motion.div
+                initial={{ opacity: 0, y: -8, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.95 }}
+                transition={{ duration: 0.15 }}
+                className="absolute right-4 top-full mt-1 z-50 rounded-xl overflow-hidden min-w-[200px]"
+                style={{
+                  background: "rgba(15,27,61,0.98)",
+                  border: "1px solid rgba(201,163,64,0.2)",
+                  backdropFilter: "blur(20px)",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                }}
+              >
+                <div className="p-1.5">
+                  <Link href="/rooms">
+                    <a
+                      onClick={() => setHeaderMenuOpen(false)}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <Menu className="w-4 h-4 text-[#C9A340]" />
+                      <span className="text-sm text-foreground">Rooms</span>
+                    </a>
+                  </Link>
+                  <Link href="/gallery">
+                    <a
+                      onClick={() => setHeaderMenuOpen(false)}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <ImagePlus className="w-4 h-4 text-[#C9A340]" />
+                      <span className="text-sm text-foreground">Gallery</span>
+                    </a>
+                  </Link>
+                  <Link href="/knowledge">
+                    <a
+                      onClick={() => setHeaderMenuOpen(false)}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <Search className="w-4 h-4 text-[#C9A340]" />
+                      <span className="text-sm text-foreground">Knowledge</span>
+                    </a>
+                  </Link>
+                  <div className="my-1 border-t border-white/5" />
+                  <button
+                    onClick={clearChat}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-red-500/10 transition-colors text-left"
+                  >
+                    <Trash2 className="w-4 h-4 text-red-400" />
+                    <span className="text-sm text-red-400">Clear Chat</span>
+                  </button>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
       </header>
 
       {/* ── Messages Area ────────────────────────────────────── */}
@@ -1332,67 +1432,97 @@ export default function PartnerChat() {
           )}
         </AnimatePresence>
 
-        {/* Input Row: [ Mic ] [ Image ] [ Create ] [ Text input ] [ Send ] */}
+        {/* Input Row: [ + Attach ] [ Text input ] [ Mic ] [ Send ] */}
         <div className="flex items-end gap-1.5 relative">
-          {/* Mic Button */}
-          <button
-            onClick={toggleRecording}
+          {/* Attach Menu Button */}
+          <motion.button
+            onClick={() => { setAttachMenuOpen(!attachMenuOpen); setCreativeMenuOpen(false); }}
             className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
             style={{
-              background: isRecording ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.05)",
-              border: `1px solid ${isRecording ? "rgba(239,68,68,0.4)" : "rgba(255,255,255,0.08)"}`,
-              color: isRecording ? "#EF4444" : "rgba(255,255,255,0.5)",
+              background: attachMenuOpen ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${attachMenuOpen ? "rgba(201,163,64,0.4)" : "rgba(255,255,255,0.08)"}`,
+              color: attachMenuOpen ? "#C9A340" : "rgba(255,255,255,0.5)",
             }}
-            title={isRecording ? "Stop recording" : "Voice input"}
+            animate={{ rotate: attachMenuOpen ? 45 : 0 }}
+            transition={{ duration: 0.2 }}
           >
-            {isRecording ? (
-              <motion.div
-                animate={{ scale: [1, 1.2, 1] }}
-                transition={{ duration: 1, repeat: Infinity }}
-              >
-                <MicOff className="w-4 h-4" />
-              </motion.div>
-            ) : (
-              <Mic className="w-4 h-4" />
+            <Plus className="w-5 h-5" />
+          </motion.button>
+
+          {/* Hidden file inputs */}
+          <input ref={fileInputRef} type="file" accept="image/*,video/*" onChange={handleImageSelect} className="hidden" />
+          <input ref={cameraInputRef} type="file" accept="image/*,video/*" capture="environment" onChange={handleImageSelect} className="hidden" />
+          <input ref={docInputRef} type="file" accept=".pdf,.txt,.doc,.docx,.csv,.json,.md,.py,.js,.ts,.html,.css" onChange={handleDocSelect} className="hidden" />
+
+          {/* Attach Menu Popover */}
+          <AnimatePresence>
+            {attachMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setAttachMenuOpen(false)} />
+                <motion.div
+                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute bottom-full left-0 mb-2 z-40 rounded-xl overflow-hidden min-w-[220px]"
+                  style={{
+                    background: "rgba(15,27,61,0.98)",
+                    border: "1px solid rgba(201,163,64,0.2)",
+                    backdropFilter: "blur(20px)",
+                    boxShadow: "0 -8px 32px rgba(0,0,0,0.4)",
+                  }}
+                >
+                  <div className="p-1.5">
+                    <p className="px-3 py-1.5 text-[10px] font-medium text-[#C9A340]/60 uppercase tracking-wider">Attach</p>
+                    <button
+                      onClick={() => { cameraInputRef.current?.click(); setAttachMenuOpen(false); }}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <Camera className="w-4 h-4 text-[#C9A340]" />
+                      <div>
+                        <div className="text-sm text-foreground">Camera</div>
+                        <div className="text-[10px] text-muted-foreground/50">Take photo or video</div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { fileInputRef.current?.click(); setAttachMenuOpen(false); }}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <ImagePlus className="w-4 h-4 text-[#C9A340]" />
+                      <div>
+                        <div className="text-sm text-foreground">Photo & Video</div>
+                        <div className="text-[10px] text-muted-foreground/50">Choose from library</div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { docInputRef.current?.click(); setAttachMenuOpen(false); }}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <File className="w-4 h-4 text-[#C9A340]" />
+                      <div>
+                        <div className="text-sm text-foreground">File</div>
+                        <div className="text-[10px] text-muted-foreground/50">PDF, TXT, CSV, code</div>
+                      </div>
+                    </button>
+                    <div className="my-1 border-t border-white/5" />
+                    <p className="px-3 py-1.5 text-[10px] font-medium text-[#C9A340]/60 uppercase tracking-wider">Create</p>
+                    <button
+                      onClick={() => { setAttachMenuOpen(false); setCreativeMenuOpen(true); }}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <Sparkles className="w-4 h-4 text-[#C9A340]" />
+                      <div>
+                        <div className="text-sm text-foreground">Create</div>
+                        <div className="text-[10px] text-muted-foreground/50">Write or draw with AI</div>
+                      </div>
+                    </button>
+                  </div>
+                </motion.div>
+              </>
             )}
-          </button>
+          </AnimatePresence>
 
-          {/* Image Button */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
-            style={{
-              background: imagePreview ? "rgba(201,163,64,0.15)" : "rgba(255,255,255,0.05)",
-              border: `1px solid ${imagePreview ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
-              color: imagePreview ? "#C9A340" : "rgba(255,255,255,0.5)",
-            }}
-            title="Attach image"
-          >
-            <ImagePlus className="w-4 h-4" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleImageSelect}
-            className="hidden"
-          />
-
-          {/* Create Button */}
-          <button
-            onClick={() => setCreativeMenuOpen(!creativeMenuOpen)}
-            className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
-            style={{
-              background: creativeMenuOpen || creativeMode ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
-              border: `1px solid ${creativeMenuOpen || creativeMode ? "rgba(201,163,64,0.4)" : "rgba(255,255,255,0.08)"}`,
-              color: creativeMenuOpen || creativeMode ? "#C9A340" : "rgba(255,255,255,0.5)",
-            }}
-            title="Create — write or draw"
-          >
-            <Sparkles className="w-4 h-4" />
-          </button>
-
-          {/* Creative Menu Popover */}
+          {/* Creative Menu Popover (sub-menu from Create) */}
           <AnimatePresence>
             {creativeMenuOpen && (
               <CreativeMenu
@@ -1422,6 +1552,29 @@ export default function PartnerChat() {
               target.style.height = Math.min(target.scrollHeight, 120) + "px";
             }}
           />
+
+          {/* Mic Button */}
+          <button
+            onClick={toggleRecording}
+            className="flex-shrink-0 flex items-center justify-center w-11 h-11 rounded-xl transition-colors"
+            style={{
+              background: isRecording ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${isRecording ? "rgba(239,68,68,0.4)" : "rgba(255,255,255,0.08)"}`,
+              color: isRecording ? "#EF4444" : "rgba(255,255,255,0.5)",
+            }}
+            title={isRecording ? "Stop recording" : "Voice input"}
+          >
+            {isRecording ? (
+              <motion.div
+                animate={{ scale: [1, 1.2, 1] }}
+                transition={{ duration: 1, repeat: Infinity }}
+              >
+                <MicOff className="w-4 h-4" />
+              </motion.div>
+            ) : (
+              <Mic className="w-4 h-4" />
+            )}
+          </button>
 
           {/* Send Button */}
           <Button

@@ -2754,6 +2754,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(result.rows);
   }));
 
+  // ── Clear room messages ─────────────────────────────────
+  app.delete("/api/rooms/:roomId/messages", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.roomId);
+    // Verify room belongs to user
+    const room = await pool.query('SELECT id FROM rooms WHERE id = $1 AND user_id = $2', [roomId, userId]);
+    if (room.rows.length === 0) return res.status(404).json({ error: "Room not found" });
+    await pool.query('DELETE FROM messages WHERE room_id = $1', [roomId]);
+    res.json({ success: true });
+  }));
+
   // ── File download (Agent O create_file) ─────────────────────────
   app.get("/api/files/:id/download", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
