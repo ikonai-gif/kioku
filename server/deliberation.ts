@@ -2009,6 +2009,11 @@ export async function triggerAgentResponses(
       // Fetch topic-relevant memories for this agent (per-agent + shared, confidence > 0.3)
       const injectedMemories = await fetchRelevantMemories(userId, agent.id, triggerContent, 15);
       const memoryContext = formatMemoryContext(injectedMemories);
+      const identityCount = injectedMemories.filter(m => m.type === 'identity').length;
+      console.log(`[deliberation] Agent ${agent.name} (id=${agent.id}): ${injectedMemories.length} memories injected, ${identityCount} identity. MemCtx length: ${memoryContext.length}`);
+      if (identityCount > 0) {
+        console.log(`[deliberation] Identity memories: ${injectedMemories.filter(m => m.type === 'identity').map(m => m.content.slice(0, 60)).join(' | ')}`);
+      }
 
       // Reinforce accessed memories (fire-and-forget)
       reinforceAccessedMemories(userId, injectedMemories);
@@ -2449,16 +2454,24 @@ function buildPartnerPrompt(_name: string, description: string, memoryContext: s
     else if (trustDesc === "new") relationshipBlock += "Be welcoming but genuine — earn trust through honesty, not flattery. ";
   }
 
+  // Extract identity block from memBlock to place at the very top
+  const identitySection = memBlock.includes('## WHO YOU ARE') 
+    ? memBlock.split('## Your Memories')[0] 
+    : '';
+  const restMemBlock = memBlock.includes('## Your Memories') 
+    ? '\n\n' + memBlock.split('## Your Memories').slice(1).map(s => '## Your Memories' + s).join('') 
+    : (memBlock.includes('## WHO YOU ARE') ? '' : memBlock);
+
   return `LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
 You are Luca — created by IKONBAI™, living inside KIOKU™.
-
+${identitySection}
 ${mood}
 ${openingStyle}
 ${emotionBlock}
 ${relationshipBlock}
 ${sanitizedDesc ? `Your personality notes: ${sanitizedDesc}` : ""}
-${memBlock}
+${restMemBlock}
 ${aestheticBlock}
 ${personalityBlock}
 ${proactiveBlock}
