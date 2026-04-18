@@ -36,7 +36,9 @@ export async function runSubAgent(
   const allowedTools = task.tools || DEFAULT_TOOLS;
 
   // Filter tool definitions to only the ones this sub-agent can use
-  const filteredTools = allTools.filter(t => allowedTools.includes(t.name));
+  // Always exclude delegation tools to prevent recursion
+  const BLOCKED_TOOLS = ["delegate_task", "delegate_parallel"];
+  const filteredTools = allTools.filter(t => allowedTools.includes(t.name) && !BLOCKED_TOOLS.includes(t.name));
 
   const systemPrompt = `You are a focused research sub-agent. Your ONLY job is to complete this specific task:
 

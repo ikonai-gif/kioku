@@ -551,6 +551,28 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "delegate_parallel",
+    description: "Run multiple subtasks in parallel using sub-agents. Each task runs independently and simultaneously — much faster than calling delegate_task multiple times. Use for: researching multiple topics at once, comparing multiple items, gathering data from several sources. Returns all results together. Maximum 5 parallel tasks.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tasks: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              objective: { type: "string", description: "Clear task description for the sub-agent" },
+              tools: { type: "array", items: { type: "string" }, description: "Optional: which tools this sub-agent can use" },
+            },
+            required: ["objective"],
+          },
+          description: "Array of tasks to run in parallel (max 5)",
+        },
+      },
+      required: ["tasks"],
+    },
+  },
+  {
     name: "browse_website",
     description: "Open a website in a real browser (Chromium with Playwright), extract text content, take screenshots, or interact with the page. Use this when you need to: check if a website works, extract content from JavaScript-heavy pages that read_url can't handle, take visual screenshots, or verify web applications. Supports SPAs, dynamic content, and JavaScript rendering.",
     input_schema: {
@@ -2269,7 +2291,7 @@ print("Converted MD to DOCX")
         try {
           const { runSubAgent } = await import("./sub-agent");
           const toolDefs = partnerTools
-            .filter(t => t.name !== "delegate_task")
+            .filter(t => t.name !== "delegate_task" && t.name !== "delegate_parallel")
             .map(t => ({ name: t.name, description: t.description || "", input_schema: (t as any).input_schema }));
           const result = await runSubAgent(
             { objective, tools: toolInput.tools },
@@ -2281,6 +2303,52 @@ print("Converted MD to DOCX")
           return `[Sub-agent completed] (${result.iterations} iteration${result.iterations !== 1 ? "s" : ""}, tools used: ${result.toolsUsed.join(", ") || "none"})\n\n${result.result}`;
         } catch (err: any) {
           return `Sub-agent failed: ${err.message || String(err)}`;
+        }
+      }
+
+      case "delegate_parallel": {
+        const tasks = toolInput.tasks;
+        if (!tasks || !Array.isArray(tasks) || tasks.length === 0) return "No tasks provided.";
+        if (tasks.length > 5) return "Maximum 5 parallel tasks allowed.";
+
+        try {
+          const { runSubAgent } = await import("./sub-agent");
+          const toolDefs = partnerTools
+            .filter(t => t.name !== "delegate_task" && t.name !== "delegate_parallel")
+            .map(t => ({ name: t.name, description: t.description || "", input_schema: (t as any).input_schema }));
+
+          const promises = tasks.map((t: any, i: number) =>
+            runSubAgent(
+              { objective: t.objective, tools: t.tools },
+              userId,
+              agentId,
+              executePartnerTool,
+              toolDefs
+            ).then(result => ({
+              taskIndex: i + 1,
+              objective: t.objective.slice(0, 100),
+              ...result
+            })).catch(err => ({
+              taskIndex: i + 1,
+              objective: t.objective.slice(0, 100),
+              success: false,
+              result: `Error: ${err.message || String(err)}`,
+              toolsUsed: [] as string[],
+              iterations: 0
+            }))
+          );
+
+          const results = await Promise.all(promises);
+
+          let response = `[Parallel sub-agents completed: ${results.length} tasks]\n\n`;
+          for (const r of results) {
+            response += `--- Task ${r.taskIndex}: ${r.objective}...\n`;
+            response += `Status: ${r.success ? 'OK' : 'FAILED'} | Iterations: ${r.iterations} | Tools: ${r.toolsUsed?.join(', ') || 'none'}\n`;
+            response += `${r.result}\n\n`;
+          }
+          return response;
+        } catch (err: any) {
+          return `Parallel delegation failed: ${err.message || String(err)}`;
         }
       }
 
@@ -2309,7 +2377,15 @@ print("Converted MD to DOCX")
 
           let response = `[Browser] Page: ${result.title || "Unknown"}\nURL: ${result.url || url}\n`;
           if (result.text) response += `\nContent:\n${result.text}`;
-          if (result.screenshot) response += `\n[Screenshot captured: ${result.screenshot.length} chars base64 PNG]`;
+          if (result.screenshot && (toolInput.action === "screenshot")) {
+            try {
+              const { analyzeScreenshot } = await import("./browser-agent");
+              const description = await analyzeScreenshot(result.screenshot);
+              response += `\nVisual analysis:\n${description}`;
+            } catch {}
+          } else if (result.screenshot) {
+            response += `\n[Screenshot captured]`;
+          }
           return response;
         } catch (err: any) {
           return `Browser failed: ${err?.message || String(err)}`;

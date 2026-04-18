@@ -101,6 +101,25 @@ export async function browseWebsite(
   }
 }
 
+export async function analyzeScreenshot(base64Png: string): Promise<string> {
+  const OpenAI = (await import("openai")).default;
+  const openai = new OpenAI();
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    max_tokens: 500,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "Describe what you see on this web page screenshot. Focus on: page title, main content, navigation, any important information visible. Be concise." },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${base64Png}` } }
+      ]
+    }]
+  });
+
+  return response.choices[0]?.message?.content || "Could not analyze screenshot.";
+}
+
 function generatePuppeteerScript(task: BrowseTask, timeout: number): string {
   const url = JSON.stringify(task.url);
   const action = task.action || "extract_text";
