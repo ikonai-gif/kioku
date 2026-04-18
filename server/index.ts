@@ -55,7 +55,7 @@ applySecurityMiddleware(app);
 
 app.use(
   express.json({
-    limit: "512kb",
+    limit: "10mb", // Large limit needed for base64 image uploads (camera photos → vision API)
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },

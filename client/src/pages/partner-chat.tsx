@@ -1025,14 +1025,39 @@ export default function PartnerChat() {
   };
 
   // ── Image Handling ────────────────────────────────────────────
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Compress image to max 1024px and JPEG quality 0.7 for fast upload
+  const compressImage = (file: File): Promise<{ preview: string; base64: string }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1024;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { reject(new Error("Canvas not supported")); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+        resolve({ preview: dataUrl, base64: dataUrl.split(",")[1] });
+      };
+      img.onerror = () => reject(new Error("Failed to load image"));
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) {
       console.warn("No file selected");
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      toast({ title: "Image too large (max 10MB)", variant: "destructive" });
+    if (file.size > 20 * 1024 * 1024) {
+      toast({ title: "Image too large (max 20MB)", variant: "destructive" });
       return;
     }
     if (!file.type.startsWith("image/")) {
@@ -1040,20 +1065,27 @@ export default function PartnerChat() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      setImagePreview(result);
-      // Extract base64 data without the data URL prefix
-      const base64 = result.split(",")[1];
+    try {
+      const { preview, base64 } = await compressImage(file);
+      setImagePreview(preview);
       setImageBase64(base64);
       toast({ title: "Image attached — tap send" });
-    };
-    reader.onerror = () => {
-      console.error("FileReader error:", reader.error);
-      toast({ title: "Failed to read image", variant: "destructive" });
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      console.error("Image compression failed:", err);
+      // Fallback: read raw file
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        setImagePreview(result);
+        setImageBase64(result.split(",")[1]);
+        toast({ title: "Image attached — tap send" });
+      };
+      reader.onerror = () => {
+        console.error("FileReader error:", reader.error);
+        toast({ title: "Failed to read image", variant: "destructive" });
+      };
+      reader.readAsDataURL(file);
+    }
     // Reset file input so same file can be re-selected
     e.target.value = "";
   };
