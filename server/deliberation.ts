@@ -884,7 +884,7 @@ async function executePartnerTool(
       case "read_own_prompt": {
         const section = toolInput.section || "full";
         // Build the current system prompt so Luca can see it
-        const ownPrompt = buildPartnerPrompt("Luca", "", "", null, null, "", [], [], []);
+        const ownPrompt = buildPartnerPrompt("Luca", "", "", null, null, "", [], [], [], "");
         if (section === "identity") {
           const match = ownPrompt.match(/## YOUR IDENTITY[\s\S]*?(?=## |$)/);
           return match ? `Here is your IDENTITY section:\n${match[0]}` : "Identity section not found.";
@@ -2560,13 +2560,19 @@ function buildPartnerPrompt(_name: string, description: string, memoryContext: s
     else if (trustDesc === "new") relationshipBlock += "Be welcoming but genuine — earn trust through honesty, not flattery. ";
   }
 
-  // Extract identity block from memBlock to place at the very top
-  const identitySection = memBlock.includes('## WHO YOU ARE') 
-    ? memBlock.split('## Your Memories')[0] 
-    : '';
-  const restMemBlock = memBlock.includes('## Your Memories') 
-    ? '\n\n' + memBlock.split('## Your Memories').slice(1).map(s => '## Your Memories' + s).join('') 
-    : (memBlock.includes('## WHO YOU ARE') ? '' : memBlock);
+  // Extract sections from memBlock by header markers
+  const extractSection = (text: string, header: string): string => {
+    const idx = text.indexOf(header);
+    if (idx === -1) return '';
+    // Find the next ## header after this one
+    const afterHeader = text.indexOf('\n## ', idx + header.length);
+    return afterHeader === -1 ? text.slice(idx) : text.slice(idx, afterHeader);
+  };
+
+  const identitySection = extractSection(memBlock, '## WHO YOU ARE');
+  const episodesSection = extractSection(memBlock, '## RECENT CONVERSATIONS');
+  const topicMemSection = extractSection(memBlock, '## Your Memories');
+  const restMemBlock = [episodesSection, topicMemSection].filter(Boolean).join('\n\n');
 
   return `LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
