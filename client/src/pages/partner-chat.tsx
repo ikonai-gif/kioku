@@ -1078,6 +1078,7 @@ export default function PartnerChat() {
   };
 
   // ── Image Handling ────────────────────────────────────────────
+  // ── Paste Handler (images + text from clipboard) ─────────────
   // Compress image to max 1024px and JPEG quality 0.7 for fast upload
   const compressImage = (file: File): Promise<{ preview: string; base64: string }> => {
     return new Promise((resolve, reject) => {
@@ -1101,6 +1102,36 @@ export default function PartnerChat() {
       img.onerror = () => reject(new Error("Failed to load image"));
       img.src = URL.createObjectURL(file);
     });
+  };
+
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) return;
+        try {
+          const { preview, base64 } = await compressImage(file);
+          setImagePreview(preview);
+          setImageBase64(base64);
+          toast({ title: "Image pasted — tap send" });
+        } catch {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            setImagePreview(result);
+            setImageBase64(result.split(",")[1]);
+            toast({ title: "Image pasted — tap send" });
+          };
+          reader.readAsDataURL(file);
+        }
+        return;
+      }
+    }
   };
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1599,6 +1630,7 @@ export default function PartnerChat() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={creativeMode
               ? creativeMode.mode === "draw"
                 ? "Describe what you'd like me to create..."
