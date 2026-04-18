@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle, CheckCircle2, AlertCircle, XCircle, ChevronDown, ChevronUp, Database, Cpu, CreditCard } from "lucide-react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Brain, Bot, Activity, Zap, ArrowRight, Plus, MessageSquare, GitBranch, AlertTriangle, CheckCircle2, AlertCircle, XCircle, ChevronDown, ChevronUp, Database, Cpu, CreditCard, Lightbulb, Check, X as XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Link } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 function StatCard({ icon: Icon, label, value, sub, color }: {
@@ -139,6 +139,9 @@ export default function DashboardPage() {
       {/* Usage Summary */}
       <UsageSummaryWidget />
 
+      {/* Upgrade Proposals */}
+      <UpgradeProposalsWidget />
+
       {/* Agents + Feed */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {/* Agent status */}
@@ -218,6 +221,95 @@ export default function DashboardPage() {
 
       {/* API Key */}
       <APIKeyCard />
+    </div>
+  );
+}
+
+function UpgradeProposalsWidget() {
+  const { data: proposals = [] } = useQuery<any[]>({
+    queryKey: ["/api/upgrades/pending"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/upgrades/pending");
+      return r.json();
+    },
+  });
+  const { toast } = useToast();
+
+  const approveMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/upgrades/${id}/approve`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/upgrades/pending"] });
+      toast({ title: "Proposal approved", description: "Luca will be notified." });
+    },
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/upgrades/${id}/reject`, { reason: "Not needed right now" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/upgrades/pending"] });
+      toast({ title: "Proposal rejected", description: "Luca will be notified." });
+    },
+  });
+
+  const pendingProposals = (proposals as any[]).filter((p: any) => p.status === 'pending');
+  if (pendingProposals.length === 0) return null;
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <Lightbulb className="w-4 h-4 text-yellow-400" />
+        <h2 className="text-sm font-semibold text-foreground">Luca's Upgrade Proposals</h2>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-400/10 text-yellow-400 font-medium">
+          {pendingProposals.length} pending
+        </span>
+      </div>
+      <div className="space-y-3">
+        {pendingProposals.map((proposal: any) => {
+          // Parse the proposal content
+          const whatMatch = proposal.content.match(/What: (.+?)(?:\n|$)/);
+          const whyMatch = proposal.content.match(/Why: (.+?)(?:\n|$)/);
+          const howMatch = proposal.content.match(/How: (.+?)(?:\n|$)/);
+          const categoryMatch = proposal.content.match(/\[SELF-IMPROVEMENT PROPOSAL — (.+?)\]/);
+
+          return (
+            <div key={proposal.id} className="border border-border rounded-lg p-4 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    {categoryMatch && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-400/10 text-purple-400 font-medium uppercase">
+                        {categoryMatch[1]}
+                      </span>
+                    )}
+                    <span className="text-[10px] text-muted-foreground">
+                      {proposal.createdAt ? new Date(proposal.createdAt).toLocaleDateString() : ''}
+                    </span>
+                  </div>
+                  {whatMatch && <div className="text-sm font-medium text-foreground">{whatMatch[1]}</div>}
+                  {whyMatch && <div className="text-xs text-muted-foreground mt-1">Why: {whyMatch[1]}</div>}
+                  {howMatch && <div className="text-xs text-muted-foreground mt-0.5">How: {howMatch[1]}</div>}
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={() => approveMutation.mutate(proposal.id)}
+                    disabled={approveMutation.isPending}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-green-400/10 text-green-400 hover:bg-green-400/20 transition-colors"
+                  >
+                    <Check className="w-3 h-3" /> Approve
+                  </button>
+                  <button
+                    onClick={() => rejectMutation.mutate(proposal.id)}
+                    disabled={rejectMutation.isPending}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-red-400/10 text-red-400 hover:bg-red-400/20 transition-colors"
+                  >
+                    <XIcon className="w-3 h-3" /> Reject
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

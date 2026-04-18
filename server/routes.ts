@@ -1175,6 +1175,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ message });
   }));
 
+  // ── Self-Improvement Pipeline — Upgrade Proposals ────────────
+  app.get("/api/upgrades/pending", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const allMemories = await storage.getMemories(userId, 500);
+    const proposals = allMemories
+      .filter((m: any) => m.namespace === '_self_improvements')
+      .map((m: any) => ({
+        id: m.id,
+        content: m.content,
+        createdAt: m.createdAt,
+        status: m.content.includes('Status: APPROVED') ? 'approved'
+          : m.content.includes('Status: REJECTED') ? 'rejected'
+          : 'pending',
+      }));
+    res.json(proposals);
+  }));
+
+  app.post("/api/upgrades/:id/approve", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const memoryId = Number(req.params.id);
+    const allMemories = await storage.getMemories(userId, 500);
+    const memory = allMemories.find((m: any) => m.id === memoryId && m.namespace === '_self_improvements');
+    if (!memory) return res.status(404).json({ error: "Proposal not found" });
+
+    // Update the memory content to mark as approved
+    const updatedContent = memory.content.replace('Status: PENDING BOSS APPROVAL', 'Status: APPROVED');
+    await pool.query(
+      `UPDATE memories SET content = $1 WHERE id = $2 AND user_id = $3`,
+      [updatedContent, memoryId, userId]
+    );
+
+    // Create a notification memory for Luca
+    const titleMatch = memory.content.match(/What: (.+?)(?:\n|$)/);
+    const title = titleMatch ? titleMatch[1] : 'your proposal';
+    await storage.createMemory({
+      userId,
+      agentId: memory.agentId,
+      content: `[Boss approved my proposal] "${title}" — it will be implemented. I should acknowledge this in our next conversation.`,
+      type: "episodic",
+      importance: 0.85,
+      namespace: "_boss_decisions",
+    });
+
+    res.json({ success: true, status: 'approved' });
+  }));
+
+  app.post("/api/upgrades/:id/reject", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const memoryId = Number(req.params.id);
+    const reason = req.body?.reason || "No reason given";
+    const allMemories = await storage.getMemories(userId, 500);
+    const memory = allMemories.find((m: any) => m.id === memoryId && m.namespace === '_self_improvements');
+    if (!memory) return res.status(404).json({ error: "Proposal not found" });
+
+    // Update the memory content to mark as rejected
+    const updatedContent = memory.content.replace('Status: PENDING BOSS APPROVAL', `Status: REJECTED\nReason: ${reason}`);
+    await pool.query(
+      `UPDATE memories SET content = $1 WHERE id = $2 AND user_id = $3`,
+      [updatedContent, memoryId, userId]
+    );
+
+    // Create a notification memory for Luca
+    const titleMatch = memory.content.match(/What: (.+?)(?:\n|$)/);
+    const title = titleMatch ? titleMatch[1] : 'your proposal';
+    await storage.createMemory({
+      userId,
+      agentId: memory.agentId,
+      content: `[Boss rejected my proposal] "${title}" — reason: ${reason}. I should learn from this feedback.`,
+      type: "episodic",
+      importance: 0.7,
+      namespace: "_boss_decisions",
+    });
+
+    res.json({ success: true, status: 'rejected' });
+  }));
+
   // ── Logs / Live Feed ──────────────────────────────────────────
   app.get("/api/logs", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
