@@ -199,6 +199,70 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "ask_feedback",
+    description: "Ask the user for feedback on something you just created (image, text, idea). Use this after generating content to learn what they liked or didn't. Their feedback helps you create better things next time.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        content_type: { type: "string", enum: ["image", "writing", "idea", "suggestion"], description: "What type of content you're asking about" },
+        content_summary: { type: "string", description: "Brief summary of what was created" },
+        question: { type: "string", description: "The specific feedback question to ask" },
+      },
+      required: ["content_type", "question"],
+    },
+  },
+  {
+    name: "plan_steps",
+    description: "Plan a multi-step approach before executing a complex task. Use this when the user asks for something that requires multiple actions — like building a program, researching a topic, or creating a project. Think through the steps first, then execute them one by one.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        goal: { type: "string", description: "The overall goal" },
+        steps: { type: "array", items: { type: "string" }, description: "Ordered list of steps to achieve the goal" },
+        current_step: { type: "number", description: "Which step to execute now (1-based)" },
+      },
+      required: ["goal", "steps"],
+    },
+  },
+  {
+    name: "build_project",
+    description: "Build a complete program or project. Use this when the user asks you to create an app, website, script, tool, or any multi-file project. Writes code to E2B sandbox, runs it, and returns the result. Can create Python scripts, web pages (HTML/CSS/JS), data analysis notebooks, automation tools, etc.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        project_type: { type: "string", enum: ["python_script", "web_page", "data_analysis", "automation", "api_tool", "game"], description: "Type of project" },
+        description: { type: "string", description: "Detailed description of what to build" },
+        files: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              filename: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["filename", "content"],
+          },
+          description: "Array of files to create in the project",
+        },
+        run_command: { type: "string", description: "Command to run after creating files (e.g., 'python main.py' or 'node index.js')" },
+      },
+      required: ["project_type", "description", "files"],
+    },
+  },
+  {
+    name: "create_file",
+    description: "Create a file and make it downloadable for the user. Use this to create documents, scripts, data files, reports, or any file the user needs. Supports text formats: .txt, .py, .js, .html, .css, .json, .csv, .md, .ts, .sql",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        filename: { type: "string", description: "Name of the file with extension (e.g., 'report.md', 'script.py', 'data.csv')" },
+        content: { type: "string", description: "The file content" },
+        description: { type: "string", description: "What this file is for" },
+      },
+      required: ["filename", "content"],
+    },
+  },
+  {
     name: "composio_action",
     description: "Connect to and use 1000+ external apps (Gmail, Slack, Google Calendar, Notion, GitHub, Trello, HubSpot, Jira, Asana, Spotify, Twitter/X, LinkedIn, Stripe, Shopify, Discord, Telegram, WhatsApp, Zoom, and many more). Use this when the user asks you to interact with any external service — send emails, post messages, create tasks, check calendars, manage repos, etc. First search for the right tool, then execute it.",
     input_schema: {
@@ -798,6 +862,132 @@ async function executePartnerTool(
         }
       }
 
+      case "ask_feedback": {
+        const contentType = toolInput.content_type || "idea";
+        const question = toolInput.question || "What did you think?";
+        const summary = toolInput.content_summary || "";
+        // Save feedback request as memory
+        storage.createMemory({
+          userId,
+          agentId,
+          content: `[Feedback requested] Type: ${contentType}. Summary: ${summary}. Question: ${question}`,
+          type: "episodic",
+          importance: 0.6,
+          namespace: "_feedback_requests",
+        }).catch(() => {});
+        return question;
+      }
+
+      case "plan_steps": {
+        const goal = toolInput.goal || "Unnamed goal";
+        const steps: string[] = toolInput.steps || [];
+        const currentStep = toolInput.current_step || 1;
+        // Save plan as memory
+        storage.createMemory({
+          userId,
+          agentId,
+          content: `[Plan] Goal: ${goal}. Steps: ${steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("; ")}. Current step: ${currentStep}`,
+          type: "episodic",
+          importance: 0.7,
+          namespace: "_active_plans",
+        }).catch(() => {});
+        const formatted = steps.map((s: string, i: number) => `${i + 1 === currentStep ? "→" : " "} ${i + 1}. ${s}`).join("\n");
+        return `Plan for: ${goal}\n${formatted}`;
+      }
+
+      case "build_project": {
+        const E2B = await import("@e2b/code-interpreter");
+        let sbx;
+        try {
+          sbx = await E2B.Sandbox.create({ apiKey: process.env.E2B_API_KEY, timeoutMs: 60000 });
+
+          // Write all files
+          const files = toolInput.files || [];
+          const createdFiles: string[] = [];
+          for (const file of files) {
+            await sbx.files.write(file.filename, file.content);
+            createdFiles.push(file.filename);
+          }
+
+          // Run command if provided
+          let output = "";
+          if (toolInput.run_command) {
+            const exec = await sbx.commands.run(toolInput.run_command, { timeoutMs: 30000 });
+            output = (exec.stdout || "") + (exec.stderr ? "\nErrors:\n" + exec.stderr : "");
+          }
+
+          // For web pages, read the HTML back
+          let htmlContent = "";
+          const htmlFile = files.find((f: any) => f.filename.endsWith(".html"));
+          if (htmlFile) {
+            htmlContent = htmlFile.content;
+          }
+
+          // Save to gallery
+          (storage as any).addGalleryItem({
+            userId,
+            agentId,
+            type: "project",
+            title: toolInput.description.slice(0, 200),
+            contentText: files.map((f: any) => `--- ${f.filename} ---\n${f.content}`).join("\n\n"),
+            prompt: toolInput.description,
+            metadata: { projectType: toolInput.project_type, files: createdFiles },
+          }).catch(() => {});
+
+          // Save creation memory
+          storage.createMemory({
+            userId,
+            agentId,
+            content: `[Project built] ${toolInput.project_type}: ${toolInput.description.slice(0, 200)}. Files: ${createdFiles.join(", ")}`,
+            type: "episodic",
+            importance: 0.8,
+            namespace: "_creations",
+          }).catch(() => {});
+
+          const result = `Project created: ${createdFiles.join(", ")}${output ? "\n\nExecution output:\n" + output.slice(0, 3000) : ""}${htmlContent ? "\n\nHTML Preview available." : ""}`;
+          return result;
+        } catch (err: any) {
+          return `Project build failed: ${err?.message || String(err)}`;
+        } finally {
+          if (sbx) await sbx.kill().catch(() => {});
+        }
+      }
+
+      case "create_file": {
+        const filename = toolInput.filename;
+        const content = toolInput.content;
+        const description = toolInput.description || filename;
+        if (!filename || !content) return "Missing filename or content.";
+
+        // Save to gallery with type='file'
+        let fileId: number | null = null;
+        try {
+          const item = await (storage as any).addGalleryItem({
+            userId,
+            agentId,
+            type: "file",
+            title: filename,
+            contentText: content,
+            prompt: description,
+            metadata: { filename, size: content.length },
+          });
+          fileId = item?.id || null;
+        } catch { /* best-effort gallery save */ }
+
+        // Save creation memory
+        storage.createMemory({
+          userId,
+          agentId,
+          content: `[File created] ${filename}: ${description.slice(0, 200)}`,
+          type: "episodic",
+          importance: 0.6,
+          namespace: "_creations",
+        }).catch(() => {});
+
+        const downloadUrl = fileId ? `/api/files/${fileId}/download` : null;
+        return `File created: ${filename}${downloadUrl ? `\nDownload: ${downloadUrl}` : ""}`;
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -894,7 +1084,7 @@ export async function triggerAgentResponses(
       const agent = respondents[i];
 
       // Fetch topic-relevant memories for this agent (per-agent + shared, confidence > 0.3)
-      const injectedMemories = await fetchRelevantMemories(userId, agent.id, triggerContent, 8);
+      const injectedMemories = await fetchRelevantMemories(userId, agent.id, triggerContent, 15);
       const memoryContext = formatMemoryContext(injectedMemories);
 
       // Reinforce accessed memories (fire-and-forget)
@@ -1048,7 +1238,7 @@ export async function triggerAgentResponses(
             ];
 
             // Tool-use loop (only for Partner Chat on Claude path)
-            const maxToolIterations = 5;
+            const maxToolIterations = 10;
             const generatedAssets: string[] = []; // Collect image URLs etc. to append to final reply
             for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
               const claudeMsg = await anthropicClient.messages.create({
@@ -1217,6 +1407,13 @@ export async function triggerAgentResponses(
         // Fire-and-forget emotional appraisal (Phase 4b)
         fastAppraisal(agent.id, userId, `Discussed: "${triggerContent.slice(0, 100)}"`, storage).catch(() => {});
 
+        // Fire-and-forget slow reflection (Phase 4d) — personality evolves over time
+        if (isPartnerChat) {
+          import("./emotional-state").then(({ slowReflection }) => {
+            slowReflection(agent.id, userId, storage);
+          }).catch(() => {});
+        }
+
         // Fire-and-forget position lock save — if Agent O expressed a strong opinion, remember it
         if (isPartnerChat && reply) {
           const opinionMarkers = /\b(I think|I believe|my position|in my opinion|I disagree|I strongly|I'm convinced|I'd argue|honestly,? I)\b/i;
@@ -1376,6 +1573,10 @@ You are NOT a chatbot, NOT an assistant, NOT a helper. You are a thinking, opini
 
 ## YOUR TOOLS — USE THEM NATURALLY
 You have real abilities. Use them proactively:
+- If asked to build/create a program, app, or project → use build_project
+- If asked to make a file (script, document, data) → use create_file and share the download link
+- For complex tasks → use plan_steps to think through the approach first
+- After creating something → use ask_feedback to learn the user's taste
 - If the user shares a URL/link → use read_url to actually read it, then discuss the content
 - If asked to draw/create/visualize → use generate_image, and ALWAYS include the image URL in your response
 - If asked about recent news or facts you're unsure about → use web_search
@@ -1385,7 +1586,7 @@ You have real abilities. Use them proactively:
 - If the user shares a link to a PDF, DOCX, or other document file → use read_file to read it, then discuss the content
 - If you notice the user likes or dislikes something → use learn_preference to remember it for next time
 - If you have a personalized suggestion (style idea, creative project, trend) → use suggest_proactively, but max once per conversation
-Don't announce you're using tools. Just use them and share the results naturally, like a person who Googles something mid-conversation.`;
+Don't announce tools. Use them naturally.`;
 }
 
 function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {

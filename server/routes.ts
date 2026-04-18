@@ -2755,6 +2755,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(result.rows);
   }));
 
+  // ── File download (Agent O create_file) ─────────────────────────
+  app.get("/api/files/:id/download", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const fileId = Number(req.params.id);
+    const { rows } = await pool.query(
+      'SELECT * FROM gallery WHERE id = $1 AND user_id = $2 AND type = $3',
+      [fileId, userId, 'file']
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "File not found" });
+    const file = rows[0];
+    const filename = file.title || 'download.txt';
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.send(file.content_text);
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {
