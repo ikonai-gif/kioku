@@ -284,8 +284,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Auth ──────────────────────────────────────────────────────
   // ── Debug — env var check (master key only) ──────────────────
   app.get("/api/debug/env-check", asyncHandler(async (req, res) => {
-    const mk = req.headers["x-master-key"] || req.query.mk;
-    if (mk !== process.env.KIOKU_MASTER_KEY) return res.status(403).json({ error: "Forbidden" });
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
     res.json({
       OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
       ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
@@ -310,7 +311,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
     await sendMagicLinkEmail(email, token);
-    const isDev = !process.env.BREVO_API_KEY;
+    const isDev = process.env.NODE_ENV !== 'production';
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   }));
 
@@ -341,7 +342,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
     await sendMagicLinkEmail(email, token);
-    const isDev = !process.env.BREVO_API_KEY;
+    const isDev = process.env.NODE_ENV !== 'production';
     res.json({ ok: true, ...(isDev && { token }), message: isDev ? "Dev mode: token included" : "Magic link sent to your email" });
   }));
 
@@ -2533,6 +2534,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const domain = await storage.getKnowledgeDomain(userId, slug);
     if (!domain) return res.status(404).json({ error: "Domain not found" });
 
+    // Check memory limits before loading
+    const [loadPlan, loadCounts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const loadLimits = getLimits(loadPlan);
+    const remainingMemory = loadLimits.memories - loadCounts.memories;
+    if (remainingMemory <= 0) {
+      return res.status(429).json({ error: `Plan limit reached: ${loadLimits.memories} memories (${loadPlan} plan)` });
+    }
+
     // Respond immediately
     res.json({ status: "loading", message: "Knowledge is being processed" });
 
@@ -2546,14 +2558,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Process in background
     (async () => {
       try {
-        const textChunks = chunks || splitIntoChunks(content, 500);
+        const textChunks = (chunks || splitIntoChunks(content, 500)).slice(0, remainingMemory);
         let loaded = 0;
 
         for (const chunk of textChunks) {
           await storage.createMemory({
             userId,
             agentId: primaryAgent?.id || null,
-            content: chunk,
+            content: sanitizeHtml(chunk),
             type: "semantic",
             importance: 0.9,
             namespace: `knowledge:${slug}`,
@@ -2580,6 +2592,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/knowledge/domains/:slug/generate", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    // Check memory limits before generating
+    const [genPlan, genCounts] = await Promise.all([
+      storage.getUserPlan(userId),
+      storage.getUserResourceCounts(userId),
+    ]);
+    const genLimits = getLimits(genPlan);
+    if (genCounts.memories >= genLimits.memories) {
+      return res.status(429).json({ error: `Plan limit reached: ${genLimits.memories} memories (${genPlan} plan)` });
+    }
 
     const { slug } = req.params;
     const domain = await storage.getKnowledgeDomain(userId, slug);
@@ -2639,8 +2661,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           return;
         }
 
-        // Load generated content as chunks
-        const textChunks = splitIntoChunks(generatedContent, 500);
+        // Load generated content as chunks (capped to remaining memory quota)
+        const genRemaining = genLimits.memories - genCounts.memories;
+        const textChunks = splitIntoChunks(generatedContent, 500).slice(0, genRemaining);
         const userAgents = await storage.getAgents(userId);
         const primaryAgent = userAgents.find((a: any) =>
           a.name.toLowerCase().includes("agent o") ||
@@ -2652,7 +2675,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           await storage.createMemory({
             userId,
             agentId: primaryAgent?.id || null,
-            content: chunk,
+            content: sanitizeHtml(chunk),
             type: "semantic",
             importance: 0.9,
             namespace: `knowledge:${slug}`,
@@ -2701,8 +2724,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Load knowledge packs
   app.post("/api/knowledge/load", asyncHandler(async (req, res) => {
-    const masterKey = req.headers["x-master-key"] as string;
-    if (masterKey !== process.env.KIOKU_MASTER_KEY) return res.status(403).json({ error: "Forbidden" });
+    const masterKey = req.headers["x-master-key"] as string || "";
+    const envMasterKey = process.env.KIOKU_MASTER_KEY;
+    if (!envMasterKey || !safeCompare(masterKey, envMasterKey)) return res.status(403).json({ error: "Forbidden" });
     const { userId, agentId, packs } = req.body as { userId: number; agentId: number; packs: string[] };
     if (!userId || !agentId || !packs?.length) return res.status(400).json({ error: "userId, agentId, packs required" });
 

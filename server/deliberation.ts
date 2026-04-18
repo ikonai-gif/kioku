@@ -14,6 +14,52 @@ import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories }
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { checkSycophancy } from "./sycophancy-checker";
+import dns from "dns/promises";
+
+// ── SSRF Protection: validate URLs before fetching ─────────────────────────
+async function validateUrl(url: string): Promise<void> {
+  const parsed = new URL(url);
+  // Only allow http and https
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Only http and https URLs are allowed.");
+  }
+  // Block metadata endpoints by hostname
+  const blockedHosts = ["metadata.google.internal", "metadata.gcp.internal"];
+  if (blockedHosts.includes(parsed.hostname)) {
+    throw new Error("Access to metadata endpoints is blocked.");
+  }
+  // Resolve DNS and check for private IPs
+  const hostname = parsed.hostname;
+  let addresses: string[];
+  try {
+    const result = await dns.resolve4(hostname);
+    addresses = result;
+  } catch {
+    // If DNS resolution fails for IP literals, check directly
+    addresses = [hostname];
+  }
+  for (const addr of addresses) {
+    if (isPrivateIp(addr)) {
+      throw new Error("Access to private/internal network addresses is blocked.");
+    }
+  }
+}
+
+function isPrivateIp(ip: string): boolean {
+  // IPv6 loopback
+  if (ip === "::1" || ip === "::") return true;
+  // IPv4 checks
+  const parts = ip.split(".").map(Number);
+  if (parts.length !== 4 || parts.some(p => isNaN(p))) return false;
+  const [a, b] = parts;
+  if (a === 127) return true;                          // 127.0.0.0/8
+  if (a === 10) return true;                           // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12
+  if (a === 192 && b === 168) return true;             // 192.168.0.0/16
+  if (a === 169 && b === 254) return true;             // 169.254.0.0/16 (link-local + metadata)
+  if (a === 0) return true;                            // 0.0.0.0/8
+  return false;
+}
 
 // ── Partner Tool Definitions (Claude tool-use) ─────────────────────
 const partnerTools: Anthropic.Messages.Tool[] = [
@@ -353,30 +399,18 @@ async function executePartnerTool(
             await sbx.kill().catch(() => {});
           }
         } catch (err: any) {
-          // Fallback to local vm for simple JS if E2B fails
-          if (lang === "js") {
-            try {
-              const vm = await import("vm");
-              const logs: string[] = [];
-              const sandbox = {
-                console: { log: (...a: any[]) => logs.push(a.map(x => typeof x === "object" ? JSON.stringify(x, null, 2) : String(x)).join(" ")) },
-                JSON, Math, Date, Array, Object, String, Number, Boolean, RegExp, Map, Set, parseInt, parseFloat, isNaN, isFinite,
-              };
-              const ctx = vm.createContext(sandbox);
-              const result = new vm.Script(code, { timeout: 10000 }).runInContext(ctx);
-              const output = logs.length > 0 ? logs.join("\n") : (result !== undefined ? String(result) : "(no output)");
-              return `Code executed (local fallback):\n${output.slice(0, 5000)}`;
-            } catch (vmErr: any) {
-              return `Code execution error: ${vmErr?.message || String(vmErr)}`;
-            }
-          }
-          return `Code execution error: ${err?.message || String(err)}`;
+          return `Code execution unavailable: sandbox service is not reachable. ${err?.message || String(err)}`;
         }
       }
 
       case "read_url": {
         const url = toolInput.url;
         if (!url || typeof url !== "string") return "No URL provided.";
+        try {
+          await validateUrl(url);
+        } catch (e: any) {
+          return `URL blocked: ${e.message}`;
+        }
         try {
           // Fetch the page with timeout
           const controller = new AbortController();
@@ -453,6 +487,11 @@ async function executePartnerTool(
         const fileUrl = toolInput.url;
         if (!fileUrl) return "No file URL provided.";
         try {
+          await validateUrl(fileUrl);
+        } catch (e: any) {
+          return `URL blocked: ${e.message}`;
+        }
+        try {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 20000);
           const resp = await fetch(fileUrl, {
@@ -515,6 +554,11 @@ async function executePartnerTool(
       case "watch_video": {
         const videoUrl = toolInput.url;
         if (!videoUrl || typeof videoUrl !== "string") return "No video URL provided.";
+        try {
+          await validateUrl(videoUrl);
+        } catch (e: any) {
+          return `URL blocked: ${e.message}`;
+        }
         const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY;
         if (!geminiKey) return "Video understanding requires GEMINI_API_KEY. Please ask the admin to configure it.";
         try {
@@ -687,6 +731,11 @@ async function executePartnerTool(
       case "listen_audio": {
         const audioUrl = toolInput.url;
         if (!audioUrl || typeof audioUrl !== "string") return "No audio URL provided.";
+        try {
+          await validateUrl(audioUrl);
+        } catch (e: any) {
+          return `URL blocked: ${e.message}`;
+        }
         try {
           const OAI = (await import("openai")).default;
           const oaiClient = new OAI();

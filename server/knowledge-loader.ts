@@ -13,15 +13,26 @@ interface KnowledgeChunk {
   tags: string[];
 }
 
+/** Sanitize content to prevent stored XSS */
+function sanitizeHtml(input: string): string {
+  return input
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
 /** Load a knowledge pack into memory for a specific user */
 export async function loadKnowledgePack(userId: number, agentId: number, chunks: KnowledgeChunk[]): Promise<number> {
   let loaded = 0;
   for (const chunk of chunks) {
     try {
+      const sanitizedContent = sanitizeHtml(`[${chunk.domain}/${chunk.category}] ${chunk.title}: ${chunk.content}`);
       await pool.query(
         `INSERT INTO memories (user_id, agent_id, content, type, importance, namespace, created_at)
          VALUES ($1, $2, $3, 'semantic', $4, $5, $6)`,
-        [userId, agentId, `[${chunk.domain}/${chunk.category}] ${chunk.title}: ${chunk.content}`, chunk.importance, `_knowledge_${chunk.domain}`, Date.now()]
+        [userId, agentId, sanitizedContent, chunk.importance, `_knowledge_${chunk.domain}`, Date.now()]
       );
       loaded++;
     } catch { /* skip duplicates */ }

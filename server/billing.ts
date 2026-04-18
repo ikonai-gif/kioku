@@ -114,7 +114,7 @@ export function registerBilling(app: Express) {
         const customer = await stripe.customers.create({
           email: user.email,
           name:  user.name,
-          metadata: { kioku_user_id: String(userId), api_key: user.apiKey },
+          metadata: { kioku_user_id: String(userId) },
         });
         customerId = customer.id;
         await storage.updateStripeCustomerId(userId, customerId);

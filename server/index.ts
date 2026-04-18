@@ -21,10 +21,16 @@ import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
 import logger, { generateRequestId } from "./logger";
 
-// SECURITY: Timing-safe string comparison to prevent timing attacks on secrets
+// SECURITY: Constant-time string comparison to prevent timing attacks on secrets
 export function safeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  const maxLen = Math.max(bufA.length, bufB.length);
+  const paddedA = Buffer.alloc(maxLen);
+  const paddedB = Buffer.alloc(maxLen);
+  bufA.copy(paddedA);
+  bufB.copy(paddedB);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(paddedA, paddedB);
 }
 
 // SECURITY: Require JWT_SECRET in production — prevents JWT forgery with fallback secrets
