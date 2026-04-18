@@ -77,11 +77,11 @@ class SandboxManager {
     if (entry) {
       entry.lastUsed = Date.now();
       // Refresh sandbox timeout so E2B doesn't kill it
-      try { await entry.sandbox.setTimeoutMs(300_000); } catch {}
+      try { await entry.sandbox.setTimeoutMs(900_000); } catch {}
       return entry.sandbox;
     }
     const { Sandbox } = await import("@e2b/code-interpreter");
-    const sbx = await Sandbox.create({ timeoutMs: 300_000 });
+    const sbx = await Sandbox.create({ timeoutMs: 900_000 });
     this.sandboxes.set(userId, { sandbox: sbx, lastUsed: Date.now() });
     return sbx;
   }
@@ -96,7 +96,7 @@ class SandboxManager {
 
   private async cleanup() {
     const now = Date.now();
-    const IDLE_LIMIT = 5 * 60 * 1000; // 5 min
+    const IDLE_LIMIT = 15 * 60 * 1000; // 15 min
     for (const [userId, entry] of this.sandboxes) {
       if (now - entry.lastUsed > IDLE_LIMIT) {
         this.sandboxes.delete(userId);
@@ -478,6 +478,64 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       properties: {
         status: { type: "string", enum: ["active", "paused", "completed", "all"], description: "Filter by status. Default: active" },
       },
+    },
+  },
+  // ── Persistent Sandbox Tools ────────────────────────────────────────────
+  {
+    name: "sandbox_shell",
+    description: "Run a shell command in the persistent sandbox. Use for: installing packages (pip install, npm install), running scripts, git operations, file manipulation, compilation. The sandbox persists — installed packages and files stay between calls.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        command: { type: "string", description: "Shell command to execute (e.g., 'pip install pandas', 'ls -la', 'git status')" },
+        timeout_seconds: { type: "number", description: "Timeout in seconds (default 30, max 120)" },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "sandbox_write_file",
+    description: "Write content to a file in the sandbox. Use for creating source code files, config files, scripts, data files. The file persists and can be used by subsequent commands.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "File path in sandbox (e.g., '/home/user/app.py', '/home/user/project/index.html')" },
+        content: { type: "string", description: "File content to write" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "sandbox_read_file",
+    description: "Read a file from the sandbox. Use to check file contents, read logs, inspect code, or verify output.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "File path to read (e.g., '/home/user/output.txt')" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "sandbox_list_files",
+    description: "List files and directories in a sandbox path. Use to explore project structure, find files, check what exists.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "Directory path (default: '/home/user')" },
+      },
+    },
+  },
+  {
+    name: "sandbox_download",
+    description: "Download a file from the sandbox to make it available to the user. Use after creating something the user wants (code, documents, images, archives). Returns a download URL.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "File path in sandbox to download" },
+        filename: { type: "string", description: "Friendly filename for the download (e.g., 'report.pdf', 'project.zip')" },
+      },
+      required: ["path"],
     },
   },
 ];
@@ -1379,6 +1437,131 @@ async function executePartnerTool(
           return "Sandbox reset successfully. A fresh sandbox will be created on your next code execution.";
         } catch (err: any) {
           return `Failed to reset sandbox: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "sandbox_shell": {
+        const command = toolInput.command;
+        if (!command || typeof command !== "string") return "No command provided.";
+
+        // Block dangerous commands
+        const dangerous = [
+          /rm\s+-rf\s+\/(?!\S)/,
+          /rm\s+-rf\s+\/\s*$/,
+          /mkfs\./,
+          /dd\s+if=.*of=\/dev\//,
+          /shutdown/,
+          /reboot/,
+          /halt/,
+          /poweroff/,
+          /init\s+0/,
+          /:\(\)\s*\{\s*:\|:\s*&\s*\}\s*;?\s*:/,
+          />\s*\/dev\/sda/,
+          /chmod\s+-R\s+777\s+\//,
+        ];
+        if (dangerous.some((re) => re.test(command))) {
+          return "Command blocked: this command is potentially destructive and not allowed in the sandbox.";
+        }
+
+        const timeoutSec = Math.min(Math.max(toolInput.timeout_seconds || 30, 1), 120);
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const result = await sbx.commands.run(command, { timeoutMs: timeoutSec * 1000 });
+          let output = "";
+          if (result.stdout) output += result.stdout;
+          if (result.stderr) output += (output ? "\n" : "") + `stderr: ${result.stderr}`;
+          if (!output) output = "(no output)";
+          return `Exit code: ${result.exitCode}\n${output.slice(0, 8000)}`;
+        } catch (err: any) {
+          return `sandbox_shell failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "sandbox_write_file": {
+        const filePath = toolInput.path;
+        const content = toolInput.content;
+        if (!filePath || typeof filePath !== "string") return "No file path provided.";
+        if (content === undefined || content === null) return "No content provided.";
+
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          await sbx.files.write(filePath, content);
+          return `File written: ${filePath} (${content.length} bytes)`;
+        } catch (err: any) {
+          return `sandbox_write_file failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "sandbox_read_file": {
+        const filePath = toolInput.path;
+        if (!filePath || typeof filePath !== "string") return "No file path provided.";
+
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const content = await sbx.files.read(filePath);
+          const text = typeof content === "string" ? content : Buffer.from(content).toString("utf-8");
+          if (text.length > 8000) {
+            return `${text.slice(0, 8000)}\n\n... (truncated, ${text.length} total bytes)`;
+          }
+          return text || "(empty file)";
+        } catch (err: any) {
+          return `sandbox_read_file failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "sandbox_list_files": {
+        const dirPath = toolInput.path || "/home/user";
+
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const result = await sbx.commands.run(`ls -la ${dirPath}`, { timeoutMs: 10_000 });
+          let output = result.stdout || "";
+          if (result.stderr) output += (output ? "\n" : "") + result.stderr;
+          return output || "(empty directory)";
+        } catch (err: any) {
+          return `sandbox_list_files failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "sandbox_download": {
+        const filePath = toolInput.path;
+        if (!filePath || typeof filePath !== "string") return "No file path provided.";
+
+        const friendlyName = toolInput.filename || filePath.split("/").pop() || "download";
+
+        try {
+          const sbx = await sandboxManager.getOrCreate(userId);
+          const content = await sbx.files.read(filePath, { format: "bytes" });
+          const buf = Buffer.from(content);
+
+          // Block files larger than 10MB
+          if (buf.length > 10 * 1024 * 1024) {
+            return `File too large to download (${(buf.length / 1024 / 1024).toFixed(1)}MB). Maximum is 10MB.`;
+          }
+
+          const isImage = /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(friendlyName);
+          const base64Content = buf.toString("base64");
+
+          let fileId: number | null = null;
+          try {
+            const item = await (storage as any).addGalleryItem({
+              userId,
+              agentId,
+              type: isImage ? "image" : "file",
+              title: friendlyName,
+              contentText: isImage ? base64Content : buf.toString("utf-8"),
+              prompt: `Downloaded from sandbox: ${filePath}`,
+              metadata: { filePath, filename: friendlyName, size: buf.length, source: "sandbox_download", isBase64: isImage },
+            });
+            fileId = item?.id || null;
+          } catch { /* best-effort gallery save */ }
+
+          if (fileId) {
+            return `File ready for download: ${friendlyName}\n[Download ${friendlyName}](/api/files/${fileId}/download)`;
+          }
+          return `File read from sandbox but could not be saved for download. File size: ${buf.length} bytes.`;
+        } catch (err: any) {
+          return `sandbox_download failed: ${err?.message || String(err)}`;
         }
       }
 
