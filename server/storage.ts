@@ -19,6 +19,7 @@ import {
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { scoreEmotion } from "./emotion-scorer";
+import { embedText } from "./embeddings";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const dbUrl = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku";
@@ -717,26 +718,68 @@ export class Storage implements IStorage {
       reinforcements: 0,
     }).returning();
 
-    // Write embedding_vec for pgvector search
+    // Write embedding_vec for pgvector search — use provided embedding or generate one
+    let embeddingVec: number[] | null = null;
     if (data.embedding) {
       try {
         const parsed = typeof data.embedding === 'string' ? JSON.parse(data.embedding) : data.embedding;
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const vecStr = `[${parsed.join(',')}]`;
-          await pool.query(
-            'UPDATE memories SET embedding_vec = $1::vector WHERE id = $2',
-            [vecStr, mem.id]
-          );
+          embeddingVec = parsed;
         }
+      } catch { /* will attempt auto-generation below */ }
+    }
+
+    // Auto-generate embedding if none was provided
+    if (!embeddingVec) {
+      try {
+        embeddingVec = await embedText(data.content);
+      } catch { /* embedding will be null — text search fallback */ }
+    }
+
+    // Store embedding_vec
+    if (embeddingVec) {
+      try {
+        const vecStr = `[${embeddingVec.join(',')}]`;
+        await pool.query(
+          'UPDATE memories SET embedding_vec = $1::vector WHERE id = $2',
+          [vecStr, mem.id]
+        );
       } catch { /* embedding_vec will be null — text search fallback */ }
     }
 
-    // Fire-and-forget emotion scoring (Phase 4b)
-    scoreEmotion(data.content).then(async (emotionVec) => {
-      if (emotionVec && mem.id) {
-        await pool.query('UPDATE memories SET emotion_vector = $1 WHERE id = $2', [JSON.stringify(emotionVec), mem.id]);
-      }
-    }).catch(() => {});
+    // Fire-and-forget: auto-link to similar memories + emotion scoring
+    (async () => {
+      try {
+        // Auto-link: find 5 most similar memories and create 'related' links
+        if (embeddingVec && data.userId) {
+          const vecStr = `[${embeddingVec.join(',')}]`;
+          const similar = await pool.query(`
+            SELECT id, 1 - (embedding_vec <=> $1::vector) as sim
+            FROM memories
+            WHERE user_id = $2 AND embedding_vec IS NOT NULL AND id != $3
+            ORDER BY embedding_vec <=> $1::vector LIMIT 5
+          `, [vecStr, data.userId, mem.id]);
+
+          for (const row of similar.rows) {
+            if (row.sim > 0.7) {
+              await pool.query(`
+                INSERT INTO memory_links (user_id, source_memory_id, target_memory_id, link_type, strength, created_at)
+                VALUES ($1, $2, $3, 'related', $4, $5)
+                ON CONFLICT DO NOTHING
+              `, [data.userId, mem.id, row.id, Math.round(row.sim * 1000) / 1000, Date.now()]);
+            }
+          }
+        }
+      } catch { /* auto-link failure is non-fatal */ }
+
+      try {
+        // Emotion scoring (Phase 4b)
+        const emotionVec = await scoreEmotion(data.content);
+        if (emotionVec && mem.id) {
+          await pool.query('UPDATE memories SET emotion_vector = $1 WHERE id = $2', [JSON.stringify(emotionVec), mem.id]);
+        }
+      } catch { /* emotion scoring failure is non-fatal */ }
+    })();
 
     if (data.agentId) {
       const agent = await this.getAgent(data.agentId);

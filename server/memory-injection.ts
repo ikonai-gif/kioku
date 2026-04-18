@@ -6,8 +6,9 @@
  * system prompt. Also reinforces accessed memories.
  */
 
-import { storage } from "./storage";
+import { storage, pool } from "./storage";
 import { computeDecayedConfidence } from "./memory-decay";
+import { embedText } from "./embeddings";
 
 export interface InjectedMemory {
   id: number;
@@ -94,9 +95,138 @@ export async function fetchRelevantMemories(
 
   const alwaysIds = new Set([...alwaysInject, ...episodeSummaries].map(m => m.id));
 
-  // Score remaining memories by topic relevance * decayed confidence
+  // ── Vector semantic search (preferred path) ─────────────────────────────
+  let topicEmbedding: number[] | null = null;
+  try {
+    topicEmbedding = await embedText(topic);
+  } catch { /* fall through to keyword fallback */ }
+
+  if (topicEmbedding) {
+    // Direct vector search via pgvector — much better than keyword matching
+    const embeddingStr = `[${topicEmbedding.join(',')}]`;
+    const vectorResults = await pool.query(`
+      SELECT m.*,
+        1 - (m.embedding_vec <=> $1::vector) as semantic_similarity
+      FROM memories m
+      WHERE m.user_id = $2
+        AND (m.agent_id = $3 OR m.agent_id IS NULL)
+        AND m.embedding_vec IS NOT NULL
+        AND m.namespace != '_identity'
+        AND m.namespace != '_episode_summaries'
+      ORDER BY m.embedding_vec <=> $1::vector
+      LIMIT 20
+    `, [embeddingStr, userId, agentId]);
+
+    // Score vector results with composite ranking
+    const scored = vectorResults.rows
+      .filter((m: any) => !alwaysIds.has(m.id))
+      .map((m: any) => {
+        const currentConfidence = computeDecayedConfidence(
+          m.confidence ?? 1.0,
+          m.decay_rate ?? 0.01,
+          m.last_reinforced_at,
+          m.created_at,
+          now
+        );
+        if (currentConfidence <= 0.3) return null;
+        if (m.expires_at && m.expires_at < now) return null;
+
+        const semanticSimilarity = parseFloat(m.semantic_similarity) || 0;
+        const typeBoost = m.type === "procedural" ? 1.3 : m.type === "causal" ? 1.2 : 1.0;
+        const nsBoost = m.namespace === "decisions" ? 1.3 : 1.0;
+
+        // Temporal boost: recent memories get a lift
+        const age = now - (m.created_at || now);
+        const dayMs = 86400000;
+        const temporalBoost = age < dayMs ? 1.0 : age < dayMs * 7 ? 0.9 : 0.8;
+
+        let score = semanticSimilarity * currentConfidence * (m.importance ?? 0.5) * typeBoost * nsBoost * temporalBoost;
+
+        // Emotional similarity boost (Phase 4b — EmotionalRAG)
+        if (m.emotion_vector && currentEmotionVector) {
+          try {
+            const memEmoVec = typeof m.emotion_vector === 'string' ? JSON.parse(m.emotion_vector) : m.emotion_vector;
+            if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
+              const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
+              score *= (1 + emotionSim * 0.2);
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        return {
+          id: m.id,
+          content: m.content,
+          type: m.type,
+          confidence: Math.round(currentConfidence * 100) / 100,
+          expiresAt: m.expires_at,
+          emotionVector: m.emotion_vector ?? null,
+          namespace: m.namespace ?? null,
+          score,
+        };
+      })
+      .filter((m: any): m is NonNullable<typeof m> => m !== null && m.score > 0)
+      .sort((a: any, b: any) => b.score - a.score);
+
+    // ── Graph walk: fetch 1-hop connected memories for top 10 vector results ──
+    const topIds = scored.slice(0, 10).map((r: any) => r.id);
+    let graphMemories: any[] = [];
+    if (topIds.length > 0) {
+      try {
+        const graphResults = await pool.query(`
+          SELECT DISTINCT m.*, ml.link_type, ml.strength as link_strength
+          FROM memory_links ml
+          JOIN memories m ON m.id = ml.target_memory_id
+          WHERE ml.source_memory_id = ANY($1) AND ml.user_id = $2
+            AND m.namespace != '_identity' AND m.namespace != '_episode_summaries'
+          UNION
+          SELECT DISTINCT m.*, ml.link_type, ml.strength as link_strength
+          FROM memory_links ml
+          JOIN memories m ON m.id = ml.source_memory_id
+          WHERE ml.target_memory_id = ANY($1) AND ml.user_id = $2
+            AND m.namespace != '_identity' AND m.namespace != '_episode_summaries'
+        `, [topIds, userId]);
+        graphMemories = graphResults.rows;
+      } catch { /* graph walk failure is non-fatal */ }
+    }
+
+    // Merge vector + graph results, deduplicate by id
+    const seenIds = new Set([...alwaysIds, ...scored.map((r: any) => r.id)]);
+    const graphScored = graphMemories
+      .filter((m: any) => !seenIds.has(m.id))
+      .map((m: any) => {
+        const currentConfidence = computeDecayedConfidence(
+          m.confidence ?? 1.0,
+          m.decay_rate ?? 0.01,
+          m.last_reinforced_at,
+          m.created_at,
+          now
+        );
+        if (currentConfidence <= 0.3) return null;
+        // Graph-discovered memories get a score based on link strength
+        const linkStrength = parseFloat(m.link_strength) || 0.5;
+        return {
+          id: m.id,
+          content: m.content,
+          type: m.type,
+          confidence: Math.round(currentConfidence * 100) / 100,
+          expiresAt: m.expires_at,
+          emotionVector: m.emotion_vector ?? null,
+          namespace: m.namespace ?? null,
+          score: linkStrength * currentConfidence * (m.importance ?? 0.5),
+        };
+      })
+      .filter((m: any): m is NonNullable<typeof m> => m !== null && m.score > 0);
+
+    const merged = [...scored, ...graphScored]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
+
+    return [...alwaysInject, ...episodeSummaries, ...merged.map(({ score: _score, ...rest }) => rest)];
+  }
+
+  // ── FALLBACK: keyword matching (if embedText fails or returns null) ─────
   const scored = candidateMemories
-    .filter((m: any) => !alwaysIds.has(m.id)) // skip identity — already included
+    .filter((m: any) => !alwaysIds.has(m.id))
     .map((m: any) => {
       const currentConfidence = m.currentConfidence ?? computeDecayedConfidence(
         m.confidence ?? 1.0,
@@ -114,7 +244,7 @@ export async function fetchRelevantMemories(
 
       // Simple text relevance: count matching words from topic in memory content
       const contentLower = (m.content || "").toLowerCase();
-      const matchCount = topicWords.filter((w) => contentLower.includes(w)).length;
+      const matchCount = topicWords.filter((w: string) => contentLower.includes(w)).length;
       const textRelevance = topicWords.length > 0 ? matchCount / topicWords.length : 0.1;
 
       // Boost procedural memories (decisions) and memories in "decisions" namespace
@@ -130,7 +260,7 @@ export async function fetchRelevantMemories(
           const memEmoVec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
           if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
             const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
-            score *= (1 + emotionSim * 0.2); // 20% boost for emotionally similar memories
+            score *= (1 + emotionSim * 0.2);
           }
         } catch { /* ignore parse errors */ }
       }
@@ -148,7 +278,7 @@ export async function fetchRelevantMemories(
     })
     .filter((m): m is NonNullable<typeof m> => m !== null && m.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(0, limit - alwaysInject.length));
+    .slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
 
   // Identity memories first, then episode summaries, then topic-relevant memories
   return [...alwaysInject, ...episodeSummaries, ...scored.map(({ score: _score, ...rest }) => rest)];
@@ -158,10 +288,40 @@ export async function fetchRelevantMemories(
  * Format injected memories as a system prompt section.
  * Returns empty string if no memories — keeps prompt clean.
  */
-export function formatMemoryContext(memories: InjectedMemory[]): string {
+export interface MemoryLink {
+  sourceId: number;
+  targetId: number;
+  type: string;
+  strength?: number;
+}
+
+export function formatMemoryContext(memories: InjectedMemory[], links?: MemoryLink[]): string {
   if (memories.length === 0) return "";
 
   const EMOTION_LABELS = ['joy', 'acceptance', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation'];
+
+  // Build a lookup of memory content by id for link display
+  const memById = new Map<number, InjectedMemory>();
+  for (const m of memories) memById.set(m.id, m);
+
+  // Build a map of links: sourceId -> array of {targetId, type, strength}
+  const linkMap = new Map<number, { targetId: number; type: string; strength?: number; content: string }[]>();
+  if (links && links.length > 0) {
+    for (const link of links) {
+      const target = memById.get(link.targetId);
+      const source = memById.get(link.sourceId);
+      // Show link from source perspective: source -> target
+      if (target) {
+        if (!linkMap.has(link.sourceId)) linkMap.set(link.sourceId, []);
+        linkMap.get(link.sourceId)!.push({ targetId: link.targetId, type: link.type, strength: link.strength, content: target.content });
+      }
+      // Also show reverse: target -> source
+      if (source) {
+        if (!linkMap.has(link.targetId)) linkMap.set(link.targetId, []);
+        linkMap.get(link.targetId)!.push({ targetId: link.sourceId, type: link.type, strength: link.strength, content: source.content });
+      }
+    }
+  }
 
   // Separate identity, episode summaries, and topic-relevant memories
   const identityMems = memories.filter(m => m.type === 'identity');
@@ -196,7 +356,19 @@ export function formatMemoryContext(memories: InjectedMemory[]): string {
           }
         } catch { /* ignore */ }
       }
-      return `${i + 1}. [${m.type}, confidence: ${m.confidence}${expiryTag}${emotionTag}] "${m.content}"`;
+      let line = `${i + 1}. [${m.type}, confidence: ${m.confidence}${expiryTag}${emotionTag}] "${m.content}"`;
+
+      // Show associative links for this memory
+      const memLinks = linkMap.get(m.id);
+      if (memLinks && memLinks.length > 0) {
+        for (const link of memLinks) {
+          const simTag = link.strength != null ? ` (sim: ${link.strength})` : "";
+          const snippet = link.content.length > 80 ? link.content.slice(0, 80) + "..." : link.content;
+          line += `\n   \u2192 ${link.type} to: "${snippet}"${simTag}`;
+        }
+      }
+
+      return line;
     });
     output += `\n\n## Your Memories (relevant to this discussion)\n${lines.join("\n")}\n\nUse these memories to inform your position. Reference them when making arguments.`;
   }

@@ -10,7 +10,7 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool } from "./storage";
 import { broadcastToRoom, broadcastStreamChunk } from "./ws";
-import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories } from "./memory-injection";
+import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { checkSycophancy } from "./sycophancy-checker";
@@ -2008,7 +2008,29 @@ export async function triggerAgentResponses(
 
       // Fetch topic-relevant memories for this agent (per-agent + shared, confidence > 0.3)
       const injectedMemories = await fetchRelevantMemories(userId, agent.id, triggerContent, 15);
-      const memoryContext = formatMemoryContext(injectedMemories);
+
+      // Fetch links between injected memories for associative chain display
+      let memoryLinks: MemoryLink[] = [];
+      try {
+        const memIds = injectedMemories.map(m => m.id);
+        if (memIds.length > 0) {
+          const linkResults = await pool.query(`
+            SELECT source_memory_id, target_memory_id, link_type, strength
+            FROM memory_links
+            WHERE user_id = $1
+              AND source_memory_id = ANY($2)
+              AND target_memory_id = ANY($2)
+          `, [userId, memIds]);
+          memoryLinks = linkResults.rows.map((r: any) => ({
+            sourceId: r.source_memory_id,
+            targetId: r.target_memory_id,
+            type: r.link_type,
+            strength: r.strength,
+          }));
+        }
+      } catch { /* link fetch failure is non-fatal */ }
+
+      const memoryContext = formatMemoryContext(injectedMemories, memoryLinks);
       // Reinforce accessed memories (fire-and-forget)
       reinforceAccessedMemories(userId, injectedMemories);
 
