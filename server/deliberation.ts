@@ -538,6 +538,18 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["path"],
     },
   },
+  {
+    name: "delegate_task",
+    description: "Delegate a subtask to a sub-agent that runs independently. Use when you need to: research multiple topics, break a complex task into parts, or gather information while doing other work. The sub-agent has access to web search, URL reading, code execution, and creative writing. Returns the sub-agent's findings. Use this for research-heavy or multi-part tasks.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        objective: { type: "string", description: "Clear, specific task description for the sub-agent" },
+        tools: { type: "array", items: { type: "string" }, description: "Which tools the sub-agent can use. Default: ['web_search', 'read_url', 'run_code', 'creative_writing']" },
+      },
+      required: ["objective"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -2233,6 +2245,28 @@ print("Converted MD to DOCX")
         });
 
         return `**Scheduled Tasks (${statusFilter})**\n\n${lines.join("\n\n")}`;
+      }
+
+      case "delegate_task": {
+        const objective = toolInput.objective;
+        if (!objective) return "No objective provided.";
+
+        try {
+          const { runSubAgent } = await import("./sub-agent");
+          const toolDefs = partnerTools
+            .filter(t => t.name !== "delegate_task")
+            .map(t => ({ name: t.name, description: t.description || "", input_schema: (t as any).input_schema }));
+          const result = await runSubAgent(
+            { objective, tools: toolInput.tools },
+            userId,
+            agentId,
+            executePartnerTool,
+            toolDefs
+          );
+          return `[Sub-agent completed] (${result.iterations} iteration${result.iterations !== 1 ? "s" : ""}, tools used: ${result.toolsUsed.join(", ") || "none"})\n\n${result.result}`;
+        } catch (err: any) {
+          return `Sub-agent failed: ${err.message || String(err)}`;
+        }
       }
 
       default:
