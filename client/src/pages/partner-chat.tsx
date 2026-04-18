@@ -1072,9 +1072,14 @@ export default function PartnerChat() {
     setIsRecording(false);
   };
 
+  const lastToggleRef = useRef(0);
   const toggleRecording = () => {
+    // Debounce: ignore taps within 500ms of each other
+    const now = Date.now();
+    if (now - lastToggleRef.current < 500) return;
+    lastToggleRef.current = now;
     if (isRecording) stopRecording();
-    else startRecording();
+    else if (!isTranscribing) startRecording();
   };
 
   // ── Image Handling ────────────────────────────────────────────
@@ -1410,12 +1415,7 @@ export default function PartnerChat() {
               isUser={isUser(msg)}
               emotion={emotion}
               voiceMode={voiceMode}
-              onTTSDone={idx === messages.length - 1 && voiceMode && !isUser(msg) ? () => {
-                // Auto-start recording after Luca finishes speaking (continuous voice conversation)
-                if (!isRecording && !isTranscribing) {
-                  toggleRecording();
-                }
-              } : undefined}
+              onTTSDone={undefined}
             />
           ))
         )}
