@@ -2927,28 +2927,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(status);
   }));
 
-  // Drive search
+  // Cloud search (Google Drive + Dropbox combined)
   app.post("/api/partner/drive-search", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { query } = req.body;
     if (!query || typeof query !== "string") return res.status(400).json({ error: "query is required" });
     try {
-      const results = await searchGoogleDrive(userId, query);
+      const status = await getIntegrationStatus(userId);
+      const results: any[] = [];
+      const searches: Promise<void>[] = [];
+      if (status.google_drive.connected) {
+        searches.push(searchGoogleDrive(userId, query).then(r => { results.push(...r); }).catch(() => {}));
+      }
+      if (status.dropbox.connected) {
+        searches.push(searchDropbox(userId, query).then(r => { results.push(...r); }).catch(() => {}));
+      }
+      await Promise.all(searches);
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   }));
 
-  // Drive read
+  // Cloud file read (Google Drive + Dropbox)
   app.post("/api/partner/drive-read", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { fileId } = req.body;
+    const { fileId, provider } = req.body;
     if (!fileId || typeof fileId !== "string") return res.status(400).json({ error: "fileId is required" });
     try {
-      const result = await readGoogleDriveFile(userId, fileId);
+      const result = provider === "dropbox"
+        ? await readDropboxFile(userId, fileId)
+        : await readGoogleDriveFile(userId, fileId);
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
