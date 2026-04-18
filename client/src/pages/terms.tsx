@@ -14,14 +14,8 @@ export default function TermsPage() {
           <h1 className="text-xl font-bold text-foreground">Terms of Service</h1>
         </div>
         <p className="text-xs text-muted-foreground">
-          KIOKU™ by IKONBAI™, Inc. &nbsp;·&nbsp; Last Updated: April 14, 2026 &nbsp;·&nbsp; Patent Pending
+          KIOKU™ by IKONBAI™, Inc. &nbsp;·&nbsp; Last Updated: April 18, 2026 &nbsp;·&nbsp; Patent Pending
         </p>
-      </div>
-
-      <div className="mb-8 p-4 rounded-xl border border-yellow-400/20 bg-yellow-400/5 text-xs text-muted-foreground leading-relaxed">
-        <strong className="text-yellow-400">Note:</strong> This is a preliminary Terms of Service prepared by IKONBAI™, Inc. A legally
-        reviewed version will be published before public launch. Questions:{" "}
-        <a href="mailto:legal@ikonbai.com" className="text-primary underline">legal@ikonbai.com</a>.
       </div>
 
       {/* Table of Contents */}
@@ -220,6 +214,7 @@ export default function TermsPage() {
         <span>&copy; {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending · All rights reserved.</span>
         <div className="flex gap-4">
           <a href="#/privacy" className="hover:text-foreground underline">Privacy Policy</a>
+          <a href="#/cookies" className="hover:text-foreground underline">Cookie Policy</a>
           <a href="#/" className="hover:text-foreground underline">Back to App</a>
         </div>
       </div>

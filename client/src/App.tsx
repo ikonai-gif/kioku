@@ -22,6 +22,7 @@ import PricingPage from "./pages/pricing";
 import DocsPage from "./pages/docs";
 import PrivacyPage from "./pages/privacy";
 import TermsPage from "./pages/terms";
+import CookiesPage from "./pages/cookies";
 import BossBoardPage from "./pages/boss-board";
 import PartnerChatPage from "./pages/partner-chat";
 import GalleryPage from "./pages/gallery";
@@ -47,6 +48,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/boss":    "Boss Board — KIOKU™",
   "/privacy": "Privacy Policy — KIOKU™",
   "/terms":   "Terms of Service — KIOKU™",
+  "/cookies": "Cookie Policy — KIOKU™",
 };
 
 function TitleManager() {
@@ -60,10 +62,21 @@ function TitleManager() {
 
 // ── Cookie consent banner ────────────────────────────────────────────────────
 function CookieBanner() {
-  // NOTE: no localStorage/sessionStorage per project rules — banner shows once per session (React state only)
-  const [visible, setVisible] = useState(true);
-  const accept = () => setVisible(false);
-  const reject = () => setVisible(false);
+  // Read consent from cookie (no localStorage/sessionStorage per project rules)
+  const getConsent = () => {
+    const match = document.cookie.match(/(?:^|;\s*)kioku_consent=([^;]*)/);
+    return match ? match[1] : null;
+  };
+
+  const setConsent = (value: string) => {
+    const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+    document.cookie = `kioku_consent=${value}; path=/; expires=${expires}; SameSite=Lax; Secure`;
+  };
+
+  const [visible, setVisible] = useState(() => !getConsent());
+
+  const accept = () => { setConsent("accepted"); setVisible(false); };
+  const reject = () => { setConsent("rejected"); setVisible(false); };
 
   if (!visible) return null;
 
@@ -74,7 +87,8 @@ function CookieBanner() {
         <p className="text-xs text-muted-foreground leading-relaxed">
           We use essential cookies for authentication. No tracking cookies.{" "}
           See our{" "}
-          <a href="#/privacy" className="text-primary underline underline-offset-2">Privacy Policy</a>{" "}and{" "}
+          <a href="#/privacy" className="text-primary underline underline-offset-2">Privacy Policy</a>,{" "}
+          <a href="#/cookies" className="text-primary underline underline-offset-2">Cookie Policy</a>, and{" "}
           <a href="#/terms" className="text-primary underline underline-offset-2">Terms of Service</a>.
         </p>
         <button onClick={reject} className="text-muted-foreground hover:text-foreground flex-shrink-0 mt-0.5">
@@ -86,7 +100,7 @@ function CookieBanner() {
         <Button size="sm" variant="outline" className="flex-1 h-8 text-xs" onClick={reject}>Reject All</Button>
       </div>
       <p className="text-[9px] text-muted-foreground/40 text-center">
-        © {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending
+        &copy; {new Date().getFullYear()} IKONBAI™, Inc. · Patent Pending
       </p>
     </div>
   );
@@ -204,6 +218,7 @@ export default function App() {
                 <Route path="/pricing" component={PricingPage} />
                 <Route path="/privacy" component={PrivacyPage} />
                 <Route path="/terms" component={TermsPage} />
+                <Route path="/cookies" component={CookiesPage} />
                 <Route component={LoginPage} />
               </Switch>
             ) : (
@@ -231,6 +246,7 @@ export default function App() {
                         <Route path="/docs" component={DocsPage} />
                         <Route path="/privacy" component={PrivacyPage} />
                         <Route path="/terms" component={TermsPage} />
+                        <Route path="/cookies" component={CookiesPage} />
                         <Route component={NotFound} />
                       </Switch>
                       <OnboardingOverlay />
