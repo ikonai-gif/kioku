@@ -1,5 +1,5 @@
 /**
- * Level 4 — Browser Agent: Playwright in E2B Sandbox
+ * Level 4 — Browser Agent: Puppeteer in E2B Sandbox
  * Lets Luca open URLs, extract text, take screenshots, and interact with pages
  * using a headless Chromium browser running inside the persistent E2B sandbox.
  */
@@ -23,8 +23,8 @@ interface BrowseResult {
 }
 
 /**
- * Browse a website using Playwright + Chromium inside the E2B sandbox.
- * Installs Chromium and Playwright on first use (cached in persistent sandbox).
+ * Browse a website using Puppeteer + bundled Chromium inside the E2B sandbox.
+ * Installs system deps and Puppeteer on first use (cached in persistent sandbox).
  */
 export async function browseWebsite(
   task: BrowseTask,
@@ -32,55 +32,31 @@ export async function browseWebsite(
 ): Promise<BrowseResult> {
   const timeout = task.timeout || 15000;
 
-  // Step 1: Ensure Chromium + Playwright are installed
+  // Step 1: Ensure Puppeteer is installed (it bundles its own Chromium)
   const checkResult = await sandbox.commands.run(
-    "which chromium-browser || which chromium || echo 'NOT_FOUND'",
+    `node -e "try{require('puppeteer');console.log('OK')}catch(e){console.log('MISSING')}"`,
     { timeoutMs: 10_000 }
   );
 
-  if (checkResult.stdout?.trim().includes("NOT_FOUND") || checkResult.exitCode !== 0) {
-    // Install Chromium via apt
-    const installResult = await sandbox.commands.run(
-      "apt-get update -qq && apt-get install -y -qq chromium chromium-browser 2>/dev/null || apt-get install -y -qq chromium 2>/dev/null || true",
+  if (checkResult.stdout?.trim() !== "OK") {
+    // Install system dependencies required by Chromium (E2B runs as non-root, needs sudo)
+    await sandbox.commands.run(
+      "sudo apt-get update -qq && sudo apt-get install -y -qq libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1",
       { timeoutMs: 120_000 }
     );
 
-    // Verify installation
-    const verifyResult = await sandbox.commands.run(
-      "which chromium-browser || which chromium || echo 'STILL_NOT_FOUND'",
-      { timeoutMs: 10_000 }
+    // Install Puppeteer (downloads bundled Chromium automatically)
+    await sandbox.commands.run(
+      "npm install puppeteer",
+      { timeoutMs: 120_000 }
     );
-
-    if (verifyResult.stdout?.trim().includes("STILL_NOT_FOUND")) {
-      // Fallback: install via npx playwright
-      await sandbox.commands.run(
-        "npm install -g playwright@latest 2>/dev/null && npx playwright install chromium --with-deps",
-        { timeoutMs: 120_000 }
-      );
-    }
   }
 
-  // Ensure playwright npm package is available for the script
-  const pwCheck = await sandbox.commands.run(
-    "node -e \"try { require('playwright'); } catch(e) { process.exit(1); }\"",
-    { timeoutMs: 10_000 }
-  );
-  if (pwCheck.exitCode !== 0) {
-    await sandbox.commands.run("npm install -g playwright@latest", { timeoutMs: 60_000 });
-  }
-
-  // Step 2: Determine Chromium path
-  const chromiumPath = await sandbox.commands.run(
-    "which chromium-browser || which chromium || echo '/usr/bin/chromium'",
-    { timeoutMs: 5_000 }
-  );
-  const execPath = chromiumPath.stdout?.trim().split("\n")[0] || "/usr/bin/chromium";
-
-  // Step 3: Generate and write Playwright script
-  const script = generatePlaywrightScript(task, timeout, execPath);
+  // Step 2: Generate and write Puppeteer script
+  const script = generatePuppeteerScript(task, timeout);
   await sandbox.files.write("/tmp/browse_task.js", script);
 
-  // Step 4: Execute the script
+  // Step 3: Execute the script
   const result = await sandbox.commands.run(
     "node /tmp/browse_task.js",
     { timeoutMs: timeout + 30_000 }
@@ -105,7 +81,7 @@ export async function browseWebsite(
   }
 }
 
-function generatePlaywrightScript(task: BrowseTask, timeout: number, execPath: string): string {
+function generatePuppeteerScript(task: BrowseTask, timeout: number): string {
   const url = JSON.stringify(task.url);
   const action = task.action || "extract_text";
   const selector = task.selector ? JSON.stringify(task.selector) : "null";
@@ -114,21 +90,21 @@ function generatePlaywrightScript(task: BrowseTask, timeout: number, execPath: s
 
   // Use CJS require syntax for maximum E2B compatibility
   return `
-const { chromium } = require('playwright');
+const puppeteer = require('puppeteer');
 
 (async () => {
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      executablePath: ${JSON.stringify(execPath)},
+    browser = await puppeteer.launch({
+      headless: 'new',
       args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--disable-setuid-sandbox']
     });
 
-    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 720 });
 
     await page.goto(${url}, {
-      waitUntil: 'networkidle',
+      waitUntil: 'networkidle2',
       timeout: ${timeout}
     });
 
@@ -159,7 +135,7 @@ const { chromium } = require('playwright');
       let text;
       if (selector) {
         try {
-          text = await page.locator(selector).innerText({ timeout: ${timeout} });
+          text = await page.$eval(selector, el => el.innerText);
         } catch (e) {
           text = await page.evaluate(() => document.body.innerText.substring(0, 5000));
         }
