@@ -840,6 +840,8 @@ export default function PartnerChat() {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
+  const [fileExtractedText, setFileExtractedText] = useState<string | null>(null);
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
 
   // ── Fetch partner status (emotion + relationship) ─────────────
   const { data: partnerStatus } = useQuery<any>({
@@ -972,6 +974,7 @@ export default function PartnerChat() {
       setImagePreview(null);
       setImageBase64(null);
       setAttachedFileName(null);
+      setFileExtractedText(null);
       setIsThinking(true);
     },
     onError: () => toast({ title: "Failed to send", variant: "destructive" }),
@@ -986,11 +989,16 @@ export default function PartnerChat() {
 
     let messageContent = input.trim();
 
-    // If file attached (non-image), send clean reference
+    // If file attached (non-image), send with extracted text if available
     if (hasFile) {
-      messageContent = hasText
-        ? `[File: ${attachedFileName}]\n${input.trim()}`
-        : `[File: ${attachedFileName}]`;
+      if (fileExtractedText) {
+        const fileHeader = `[File: ${attachedFileName} — content extracted]\n--- File content ---\n${fileExtractedText}\n--- End of file ---`;
+        messageContent = hasText ? `${fileHeader}\n${input.trim()}` : fileHeader;
+      } else {
+        messageContent = hasText
+          ? `[File: ${attachedFileName}]\n${input.trim()}`
+          : `[File: ${attachedFileName}]`;
+      }
     }
 
     // If image attached, get Luca's vision description and include in message
@@ -1027,7 +1035,7 @@ export default function PartnerChat() {
       content: messageContent,
       isDecision: false,
     });
-  }, [input, partnerRoomId, user, imageBase64, attachedFileName]);
+  }, [input, partnerRoomId, user, imageBase64, attachedFileName, fileExtractedText]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1239,7 +1247,7 @@ export default function PartnerChat() {
   };
 
   // ── Document File Handler ───────────────────────────────────
-  const handleDocSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDocSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) {
@@ -1247,12 +1255,39 @@ export default function PartnerChat() {
       return;
     }
     setAttachedFileName(file.name);
-    toast({ title: `${file.name} attached — tap send` });
+    setFileExtractedText(null);
+    setIsProcessingFile(true);
     e.target.value = "";
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const token = getSessionToken();
+      const res = await fetch(`${API_BASE}/api/partner/read-file`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFileExtractedText(data.text);
+        toast({ title: `${file.name} — content extracted${data.truncated ? " (truncated)" : ""}` });
+      } else {
+        const err = await res.json().catch(() => ({ error: "Unknown error" }));
+        toast({ title: err.error || "Failed to read file", variant: "destructive" });
+      }
+    } catch (err) {
+      console.error("File extraction failed:", err);
+      toast({ title: "Failed to process file", variant: "destructive" });
+    } finally {
+      setIsProcessingFile(false);
+    }
   };
 
   const clearAttachedFile = () => {
     setAttachedFileName(null);
+    setFileExtractedText(null);
+    setIsProcessingFile(false);
   };
 
   // ── Clear Chat ──────────────────────────────────────────────
@@ -1552,7 +1587,7 @@ export default function PartnerChat() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              className="mb-2 flex items-center gap-2"
+              className="mb-2 flex flex-col gap-1"
             >
               <div
                 className="flex items-center gap-2 px-3 py-2 rounded-lg"
@@ -1561,7 +1596,11 @@ export default function PartnerChat() {
                   border: "1px solid rgba(255,255,255,0.1)",
                 }}
               >
-                <FileText className="w-4 h-4 text-[#C9A340] flex-shrink-0" />
+                {isProcessingFile ? (
+                  <Loader2 className="w-4 h-4 text-[#C9A340] flex-shrink-0 animate-spin" />
+                ) : (
+                  <FileText className="w-4 h-4 text-[#C9A340] flex-shrink-0" />
+                )}
                 <span className="text-xs text-foreground/70 truncate max-w-[180px]">{attachedFileName}</span>
                 <button
                   onClick={clearAttachedFile}
@@ -1570,6 +1609,12 @@ export default function PartnerChat() {
                   <X className="w-3 h-3" />
                 </button>
               </div>
+              {isProcessingFile && (
+                <span className="text-[10px] text-[#C9A340]/60 px-3">Extracting content...</span>
+              )}
+              {!isProcessingFile && fileExtractedText && (
+                <span className="text-[10px] text-green-400/70 px-3">✓ Content extracted</span>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

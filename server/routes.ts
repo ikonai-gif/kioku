@@ -2005,6 +2005,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ text: transcription.text });
   }));
 
+  // POST /api/partner/read-file — Extract text from uploaded documents
+  app.post("/api/partner/read-file", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const multer = (await import("multer")).default;
+    const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }).single("file");
+
+    await new Promise<void>((resolve, reject) => {
+      upload(req as any, res as any, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "File required" });
+
+    const fileName = file.originalname || "unknown";
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+
+    let text = "";
+
+    try {
+      const plainTextExts = ["txt", "md", "csv", "json", "js", "ts", "py", "html", "css"];
+
+      if (ext === "pdf") {
+        const pdfMod = await import("pdf-parse");
+        const pdfParse = (pdfMod as any).default || pdfMod;
+        const result = await pdfParse(file.buffer);
+        text = result.text;
+      } else if (ext === "docx") {
+        const mammoth = await import("mammoth");
+        const result = await mammoth.extractRawText({ buffer: file.buffer });
+        text = result.value;
+      } else if (plainTextExts.includes(ext)) {
+        text = file.buffer.toString("utf-8");
+      } else {
+        return res.status(400).json({ error: "Unsupported file format" });
+      }
+    } catch (err: any) {
+      logger.error({ source: "read-file", fileName, ext, error: err.message }, "File text extraction failed");
+      return res.status(500).json({ error: "Failed to extract text from file" });
+    }
+
+    const MAX_CHARS = 8000;
+    const truncated = text.length > MAX_CHARS;
+    if (truncated) text = text.slice(0, MAX_CHARS);
+
+    res.json({ fileName, text, truncated, charCount: text.length });
+  }));
+
   // POST /api/partner/see — Vision via GPT-4.1-mini
   app.post("/api/partner/see", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
