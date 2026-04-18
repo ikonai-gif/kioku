@@ -8,7 +8,7 @@ import logger from "./logger";
 
 /** Escape non-ASCII chars for HTTP headers (Dropbox-API-Arg requirement) */
 function asciiSafe(s: string): string {
-  return s.replace(/[\u0080-\uffff]/g, (c) => `\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return s.replace(/[\u0080-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
 // ── Environment ──────────────────────────────────────────────────

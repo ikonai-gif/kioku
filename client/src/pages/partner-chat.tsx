@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
@@ -189,6 +189,47 @@ function FileAttachmentCard({ fileName }: { fileName: string }) {
   );
 }
 
+// ── Code block renderer with syntax-highlighted dark theme ─────
+function CodeBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = React.useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  return (
+    <div className="my-2 rounded-lg overflow-hidden" style={{ border: "1px solid rgba(201,163,64,0.3)", background: "rgba(10,15,46,0.9)" }}>
+      <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "rgba(201,163,64,0.1)", borderBottom: "1px solid rgba(201,163,64,0.2)" }}>
+        <span className="text-xs text-[#C9A340]/70 font-mono">{language || "code"}</span>
+        <button onClick={handleCopy} className="text-xs text-[#C9A340]/60 hover:text-[#C9A340] transition-colors px-2 py-0.5 rounded">
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <pre className="p-3 overflow-x-auto text-sm leading-relaxed">
+        <code className="text-[#e0e0e0] font-mono whitespace-pre">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+// ── Execution output renderer (terminal-style block) ──────────
+function ExecOutputBlock({ output }: { output: string }) {
+  return (
+    <div className="my-2 rounded-lg overflow-hidden" style={{ background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)" }}>
+      <div className="flex items-center gap-1.5 px-3 py-1.5" style={{ background: "rgba(255,255,255,0.05)", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <span className="w-2 h-2 rounded-full bg-red-500/60" />
+        <span className="w-2 h-2 rounded-full bg-yellow-500/60" />
+        <span className="w-2 h-2 rounded-full bg-green-500/60" />
+        <span className="text-xs text-white/40 ml-1 font-mono">output</span>
+      </div>
+      <pre className="p-3 overflow-x-auto text-sm leading-relaxed">
+        <code className="text-green-400/90 font-mono whitespace-pre">{output}</code>
+      </pre>
+    </div>
+  );
+}
+
 // ── Markdown-lite renderer for chat messages ────────────────────
 function renderMessageContent(content: string): React.ReactNode {
   if (!content) return null;
@@ -206,15 +247,72 @@ function renderMessageContent(content: string): React.ReactNode {
     return (
       <>
         <FileAttachmentCard fileName={fileName} />
-        {rest && <div className="mt-2">{rest}</div>}
+        {rest && <div className="mt-2">{renderMessageContent(rest)}</div>}
       </>
     );
   }
 
-  // Split on markdown images ![alt](url) and links [text](url)
-  // Process images first, then links within remaining text segments
-  const parts: React.ReactNode[] = [];
+  // ── Phase 1: Split content on code blocks (```lang\n...\n```) ──
+  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+  const segments: { type: "text" | "code" | "exec"; content: string; language?: string }[] = [];
+  let cbLastIndex = 0;
+  let cbMatch: RegExpExecArray | null;
+  while ((cbMatch = codeBlockRegex.exec(content)) !== null) {
+    if (cbMatch.index > cbLastIndex) {
+      segments.push({ type: "text", content: content.slice(cbLastIndex, cbMatch.index) });
+    }
+    segments.push({ type: "code", content: cbMatch[2], language: cbMatch[1] || "code" });
+    cbLastIndex = cbMatch.index + cbMatch[0].length;
+  }
+  if (cbLastIndex < content.length) {
+    segments.push({ type: "text", content: content.slice(cbLastIndex) });
+  }
+
+  // Detect execution output blocks: "Code executed successfully (lang):\n..."
+  const processedSegments: typeof segments = [];
+  for (const seg of segments) {
+    if (seg.type === "text") {
+      const execRegex = /Code executed successfully \(\w+\):\n([\s\S]*?)(?=\n\n|\n(?=\S)|$)/g;
+      let execLast = 0;
+      let execMatch: RegExpExecArray | null;
+      while ((execMatch = execRegex.exec(seg.content)) !== null) {
+        if (execMatch.index > execLast) {
+          processedSegments.push({ type: "text", content: seg.content.slice(execLast, execMatch.index) });
+        }
+        processedSegments.push({ type: "exec", content: execMatch[0] });
+        execLast = execMatch.index + execMatch[0].length;
+      }
+      if (execLast < seg.content.length) {
+        processedSegments.push({ type: "text", content: seg.content.slice(execLast) });
+      }
+    } else {
+      processedSegments.push(seg);
+    }
+  }
+
   let key = 0;
+  const topLevelParts: React.ReactNode[] = [];
+
+  for (const seg of processedSegments) {
+    if (seg.type === "code") {
+      topLevelParts.push(<CodeBlock key={key++} code={seg.content} language={seg.language || "code"} />);
+    } else if (seg.type === "exec") {
+      topLevelParts.push(<ExecOutputBlock key={key++} output={seg.content} />);
+    } else {
+      // Text segment — process inline markdown (links, images, URLs)
+      const inlineParts = renderInlineContent(seg.content, key);
+      key = inlineParts.nextKey;
+      topLevelParts.push(...inlineParts.nodes);
+    }
+  }
+
+  return topLevelParts.length > 0 ? topLevelParts : content;
+}
+
+/** Process inline markdown: images, links, raw URLs, and sandbox image downloads */
+function renderInlineContent(content: string, startKey: number): { nodes: React.ReactNode[]; nextKey: number } {
+  const parts: React.ReactNode[] = [];
+  let key = startKey;
 
   // Regex that matches both ![alt](url) and [text](url)
   const mdRegex = /(!?\[([^\]]*)\]\(([^)]+)\))/g;
@@ -232,16 +330,23 @@ function renderMessageContent(content: string): React.ReactNode {
     let url = match[3];
     const isImage = fullMatch.startsWith("!");
 
-    if (isImage) {
-      // Render as inline image
+    // Detect sandbox image download URLs and render inline
+    const isApiImage = /\/api\/files\/\d+\/download/.test(url) && /chart|\.png|\.jpg|\.jpeg|\.svg|\.webp/i.test(altOrText || url);
+
+    if (isImage || isApiImage) {
+      // Resolve relative API paths
+      let imgUrl = url;
+      if (imgUrl.startsWith("/api/")) {
+        imgUrl = `${API_BASE}${imgUrl}`;
+      }
       parts.push(
         <img
           key={key++}
-          src={url}
+          src={imgUrl}
           alt={altOrText || "Image"}
           className="inline-block rounded-lg max-w-[280px] w-full my-1 cursor-pointer"
           style={{ maxHeight: 300 }}
-          onClick={() => window.open(url, "_blank")}
+          onClick={() => window.open(imgUrl, "_blank")}
         />
       );
     } else {
@@ -325,7 +430,7 @@ function renderMessageContent(content: string): React.ReactNode {
     }
   }
 
-  return finalParts.length > 0 ? finalParts : content;
+  return { nodes: finalParts, nextKey: key };
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────

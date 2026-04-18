@@ -62,6 +62,52 @@ function isPrivateIp(ip: string): boolean {
   return false;
 }
 
+// ── Persistent Sandbox Manager (Phase 1 — Code Execution Pro) ────────────────
+class SandboxManager {
+  private sandboxes = new Map<number, { sandbox: any; lastUsed: number }>();
+  private cleanupTimer: ReturnType<typeof setInterval>;
+
+  constructor() {
+    // Every 60s, kill sandboxes idle > 5 min
+    this.cleanupTimer = setInterval(() => this.cleanup(), 60_000);
+  }
+
+  async getOrCreate(userId: number): Promise<any> {
+    const entry = this.sandboxes.get(userId);
+    if (entry) {
+      entry.lastUsed = Date.now();
+      // Refresh sandbox timeout so E2B doesn't kill it
+      try { await entry.sandbox.setTimeoutMs(300_000); } catch {}
+      return entry.sandbox;
+    }
+    const { Sandbox } = await import("@e2b/code-interpreter");
+    const sbx = await Sandbox.create({ timeoutMs: 300_000 });
+    this.sandboxes.set(userId, { sandbox: sbx, lastUsed: Date.now() });
+    return sbx;
+  }
+
+  async kill(userId: number): Promise<void> {
+    const entry = this.sandboxes.get(userId);
+    if (entry) {
+      this.sandboxes.delete(userId);
+      await entry.sandbox.kill().catch(() => {});
+    }
+  }
+
+  private async cleanup() {
+    const now = Date.now();
+    const IDLE_LIMIT = 5 * 60 * 1000; // 5 min
+    for (const [userId, entry] of this.sandboxes) {
+      if (now - entry.lastUsed > IDLE_LIMIT) {
+        this.sandboxes.delete(userId);
+        entry.sandbox.kill().catch(() => {});
+      }
+    }
+  }
+}
+
+const sandboxManager = new SandboxManager();
+
 // ── Partner Tool Definitions (Claude tool-use) ─────────────────────
 const partnerTools: Anthropic.Messages.Tool[] = [
   {
@@ -103,12 +149,14 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
   {
     name: "run_code",
-    description: "Run Python or JavaScript code in a secure cloud sandbox. Use when the user asks you to calculate something, process data, analyze files, create charts, write and test code, or solve a programming problem. Python is preferred — it has full access to pip packages (pandas, matplotlib, numpy, etc).",
+    description: "Run Python or JavaScript code in a persistent cloud sandbox. The sandbox persists between calls so variables, files, and installed packages carry over. Use when the user asks you to calculate something, process data, analyze files, create charts, write and test code, or solve a programming problem. Python is preferred — it has full access to pip packages (pandas, matplotlib, numpy, etc).",
     input_schema: {
       type: "object" as const,
       properties: {
         code: { type: "string", description: "Code to execute. Use print() for Python or console.log() for JavaScript." },
         language: { type: "string", enum: ["javascript", "python"], description: "Programming language. Default: python" },
+        packages: { type: "array", items: { type: "string" }, description: "Packages to install before running code (e.g. ['pandas', 'matplotlib']). Uses pip for Python, npm for JavaScript." },
+        output_files: { type: "array", items: { type: "string" }, description: "File paths to retrieve from sandbox after execution (e.g. ['/home/user/chart.png', 'output.csv'])" },
       },
       required: ["code"],
     },
@@ -227,7 +275,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
   {
     name: "build_project",
-    description: "Build a complete program or project. Use this when the user asks you to create an app, website, script, tool, or any multi-file project. Writes code to E2B sandbox, runs it, and returns the result. Can create Python scripts, web pages (HTML/CSS/JS), data analysis notebooks, automation tools, etc.",
+    description: "Build a complete program or project in a persistent cloud sandbox. Use this when the user asks you to create an app, website, script, tool, or any multi-file project. Writes code to E2B sandbox, runs it, and returns the result. Can create Python scripts, web pages (HTML/CSS/JS), data analysis notebooks, automation tools, etc.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -246,6 +294,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
           description: "Array of files to create in the project",
         },
         run_command: { type: "string", description: "Command to run after creating files (e.g., 'python main.py' or 'node index.js')" },
+        output_files: { type: "array", items: { type: "string" }, description: "File paths to retrieve from sandbox after execution (e.g. ['output.csv', 'result.png'])" },
       },
       required: ["project_type", "description", "files"],
     },
@@ -350,6 +399,15 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         provider: { type: "string", enum: ["google_drive", "dropbox"], description: "Which cloud the file is from" },
       },
       required: ["file_id", "provider"],
+    },
+  },
+  {
+    name: "reset_sandbox",
+    description: "Reset the user's code execution sandbox. Kills the current persistent sandbox and starts fresh. Use when the user wants a clean environment, or when the sandbox is in a bad state.",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
+      required: [],
     },
   },
 ];
@@ -498,34 +556,91 @@ async function executePartnerTool(
         if (!code || typeof code !== "string") return "No code provided.";
         const lang = toolInput.language === "javascript" ? "js" : "python"; // Default to Python
         try {
-          // E2B Cloud Sandbox — secure isolated execution for Python & JavaScript
-          const { Sandbox } = await import("@e2b/code-interpreter");
-          const sbx = await Sandbox.create({ timeoutMs: 30_000 });
-          try {
-            const execution = await sbx.runCode(code, { language: lang as any });
-            const stdout = execution.logs?.stdout?.join("\n") || "";
-            const stderr = execution.logs?.stderr?.join("\n") || "";
-            const text = execution.text || "";
-            const error = execution.error;
-            let output = "";
-            if (error) {
-              output = `Error: ${error.name}: ${error.value}\n${error.traceback}`;
-            } else {
-              const parts = [stdout, text].filter(Boolean);
-              output = parts.join("\n") || "(no output)";
-              if (stderr) output += `\nStderr: ${stderr}`;
+          // Persistent sandbox — reuses across calls for same user
+          const sbx = await sandboxManager.getOrCreate(userId);
+
+          // Install packages if requested
+          const packages: string[] = toolInput.packages || [];
+          let installOutput = "";
+          if (packages.length > 0) {
+            const installCmd = lang === "python"
+              ? `pip install ${packages.join(" ")}`
+              : `npm install ${packages.join(" ")}`;
+            try {
+              const installExec = await sbx.commands.run(installCmd, { timeoutMs: 60_000 });
+              if (installExec.stderr && installExec.exitCode !== 0) {
+                installOutput = `Package install errors:\n${installExec.stderr}\n`;
+              }
+            } catch (installErr: any) {
+              installOutput = `Package install failed: ${installErr?.message || String(installErr)}\n`;
             }
-            // Check for generated files (charts, images)
-            const results = execution.results || [];
-            const imageResults = results.filter((r: any) => r.png || r.jpeg || r.svg);
-            if (imageResults.length > 0) {
-              output += `\n[Generated ${imageResults.length} image(s)/chart(s)]`;
-            }
-            return `Code executed successfully (${lang}):\n${output.slice(0, 5000)}`;
-          } finally {
-            await sbx.kill().catch(() => {});
           }
+
+          const execution = await sbx.runCode(code, { language: lang as any });
+          const stdout = execution.logs?.stdout?.join("\n") || "";
+          const stderr = execution.logs?.stderr?.join("\n") || "";
+          const text = execution.text || "";
+          const error = execution.error;
+          let output = installOutput;
+          if (error) {
+            output += `Error: ${error.name}: ${error.value}\n${error.traceback}`;
+          } else {
+            const parts = [stdout, text].filter(Boolean);
+            output += parts.join("\n") || "(no output)";
+            if (stderr) output += `\nStderr: ${stderr}`;
+          }
+
+          // Handle generated charts/images from execution results
+          const results = execution.results || [];
+          const imageResults = results.filter((r: any) => r.png || r.jpeg || r.svg);
+          for (const imgResult of imageResults) {
+            const base64 = imgResult.png || imgResult.jpeg || imgResult.svg;
+            const fmt = imgResult.png ? "png" : imgResult.jpeg ? "jpeg" : "svg";
+            try {
+              const item = await (storage as any).addGalleryItem({
+                userId,
+                agentId,
+                type: "image",
+                title: `chart_${Date.now()}.${fmt}`,
+                contentText: base64,
+                prompt: code.slice(0, 200),
+                metadata: { format: fmt, source: "run_code" },
+              });
+              if (item?.id) {
+                output += `\n![Chart](/api/files/${item.id}/download)`;
+              }
+            } catch {}
+          }
+
+          // Handle output_files — retrieve from sandbox and save to gallery
+          const outputFiles: string[] = toolInput.output_files || [];
+          for (const filePath of outputFiles) {
+            try {
+              const content = await sbx.files.read(filePath, { format: "bytes" });
+              const base64Content = Buffer.from(content).toString("base64");
+              const fileName = filePath.split("/").pop() || filePath;
+              const isImage = /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(fileName);
+              const item = await (storage as any).addGalleryItem({
+                userId,
+                agentId,
+                type: isImage ? "image" : "file",
+                title: fileName,
+                contentText: isImage ? base64Content : Buffer.from(content).toString("utf-8"),
+                prompt: code.slice(0, 200),
+                metadata: { filePath, source: "run_code", isBase64: isImage },
+              });
+              if (item?.id) {
+                output += `\n[Download: ${fileName}](/api/files/${item.id}/download)`;
+              }
+            } catch (fileErr: any) {
+              output += `\nFailed to retrieve ${filePath}: ${fileErr?.message || String(fileErr)}`;
+            }
+          }
+
+          return `Code executed successfully (${lang}):\n${output.slice(0, 8000)}`;
         } catch (err: any) {
+          // If sandbox failed, kill it so next call gets a fresh one
+          await sandboxManager.kill(userId).catch(() => {});
           return `Code execution unavailable: sandbox service is not reachable. ${err?.message || String(err)}`;
         }
       }
@@ -1012,10 +1127,9 @@ async function executePartnerTool(
       }
 
       case "build_project": {
-        const E2B = await import("@e2b/code-interpreter");
-        let sbx;
         try {
-          sbx = await E2B.Sandbox.create({ apiKey: process.env.E2B_API_KEY, timeoutMs: 60000 });
+          // Persistent sandbox — reuses across calls for same user
+          const sbx = await sandboxManager.getOrCreate(userId);
 
           // Write all files
           const files = toolInput.files || [];
@@ -1037,6 +1151,30 @@ async function executePartnerTool(
           const htmlFile = files.find((f: any) => f.filename.endsWith(".html"));
           if (htmlFile) {
             htmlContent = htmlFile.content;
+          }
+
+          // Handle output_files — retrieve from sandbox and save to gallery
+          const outputFiles: string[] = toolInput.output_files || [];
+          for (const filePath of outputFiles) {
+            try {
+              const content = await sbx.files.read(filePath, { format: "bytes" });
+              const fileName = filePath.split("/").pop() || filePath;
+              const isImage = /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(fileName);
+              const item = await (storage as any).addGalleryItem({
+                userId,
+                agentId,
+                type: isImage ? "image" : "file",
+                title: fileName,
+                contentText: isImage ? Buffer.from(content).toString("base64") : Buffer.from(content).toString("utf-8"),
+                prompt: toolInput.description?.slice(0, 200) || "",
+                metadata: { filePath, source: "build_project", isBase64: isImage },
+              });
+              if (item?.id) {
+                output += `\n[Download: ${fileName}](/api/files/${item.id}/download)`;
+              }
+            } catch (fileErr: any) {
+              output += `\nFailed to retrieve ${filePath}: ${fileErr?.message || String(fileErr)}`;
+            }
           }
 
           // Save to gallery
@@ -1063,9 +1201,8 @@ async function executePartnerTool(
           const result = `Project created: ${createdFiles.join(", ")}${output ? "\n\nExecution output:\n" + output.slice(0, 3000) : ""}${htmlContent ? "\n\nHTML Preview available." : ""}`;
           return result;
         } catch (err: any) {
+          await sandboxManager.kill(userId).catch(() => {});
           return `Project build failed: ${err?.message || String(err)}`;
-        } finally {
-          if (sbx) await sbx.kill().catch(() => {});
         }
       }
 
@@ -1163,6 +1300,15 @@ async function executePartnerTool(
           return `File: ${result.fileName}${truncNote}\n\n${result.text}`;
         } catch (err: any) {
           return `Failed to read file: ${err.message}`;
+        }
+      }
+
+      case "reset_sandbox": {
+        try {
+          await sandboxManager.kill(userId);
+          return "Sandbox reset successfully. A fresh sandbox will be created on your next code execution.";
+        } catch (err: any) {
+          return `Failed to reset sandbox: ${err?.message || String(err)}`;
         }
       }
 

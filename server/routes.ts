@@ -2840,18 +2840,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ success: true });
   }));
 
-  // ── File download (Agent O create_file) ─────────────────────────
+  // ── File download (Agent O create_file + sandbox outputs) ─────────────────────────
   app.get("/api/files/:id/download", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const fileId = Number(req.params.id);
     const { rows } = await pool.query(
-      'SELECT * FROM gallery WHERE id = $1 AND user_id = $2 AND type = $3',
-      [fileId, userId, 'file']
+      'SELECT * FROM gallery WHERE id = $1 AND user_id = $2 AND type IN ($3, $4)',
+      [fileId, userId, 'file', 'image']
     );
     if (rows.length === 0) return res.status(404).json({ error: "File not found" });
     const file = rows[0];
     const filename = file.title || 'download.txt';
+    const metadata = typeof file.metadata === 'string' ? JSON.parse(file.metadata) : (file.metadata || {});
+
+    // Handle base64-encoded images from sandbox execution
+    if (file.type === 'image' && metadata.isBase64 && file.content_text) {
+      const buf = Buffer.from(file.content_text, 'base64');
+      const ext = (filename.split('.').pop() || 'png').toLowerCase();
+      const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp' };
+      res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(buf);
+    }
+
+    // Handle E2B chart images (base64 from execution results — no isBase64 flag, just raw base64 in content_text)
+    if (file.type === 'image' && metadata.source === 'run_code' && file.content_text) {
+      const fmt = metadata.format || 'png';
+      const mimeMap: Record<string, string> = { png: 'image/png', jpeg: 'image/jpeg', svg: 'image/svg+xml' };
+      const buf = Buffer.from(file.content_text, 'base64');
+      res.setHeader('Content-Type', mimeMap[fmt] || 'image/png');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(buf);
+    }
+
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
     res.send(file.content_text);
