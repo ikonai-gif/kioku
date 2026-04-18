@@ -59,8 +59,22 @@ export async function fetchRelevantMemories(
   const topicLower = topic.toLowerCase();
   const topicWords = topicLower.split(/\s+/).filter((w) => w.length > 3);
 
-  // Score each memory by topic relevance * decayed confidence
+  // Always-inject: identity memories are loaded regardless of topic relevance
+  const alwaysInject: InjectedMemory[] = candidateMemories
+    .filter((m: any) => m.namespace === '_identity' || m.type === 'identity')
+    .map((m: any) => ({
+      id: m.id,
+      content: m.content,
+      type: m.type,
+      confidence: 1.0,
+      expiresAt: m.expiresAt,
+      emotionVector: m.emotionVector ?? null,
+    }));
+  const alwaysIds = new Set(alwaysInject.map(m => m.id));
+
+  // Score remaining memories by topic relevance * decayed confidence
   const scored = candidateMemories
+    .filter((m: any) => !alwaysIds.has(m.id)) // skip identity — already included
     .map((m: any) => {
       const currentConfidence = m.currentConfidence ?? computeDecayedConfidence(
         m.confidence ?? 1.0,
@@ -111,9 +125,10 @@ export async function fetchRelevantMemories(
     })
     .filter((m): m is NonNullable<typeof m> => m !== null && m.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .slice(0, Math.max(0, limit - alwaysInject.length));
 
-  return scored.map(({ score: _score, ...rest }) => rest);
+  // Identity memories first, then topic-relevant memories
+  return [...alwaysInject, ...scored.map(({ score: _score, ...rest }) => rest)];
 }
 
 /**
@@ -125,24 +140,38 @@ export function formatMemoryContext(memories: InjectedMemory[]): string {
 
   const EMOTION_LABELS = ['joy', 'acceptance', 'fear', 'surprise', 'sadness', 'disgust', 'anger', 'anticipation'];
 
-  const lines = memories.map((m, i) => {
-    const expiryTag = m.expiresAt
-      ? `, expires: ${new Date(m.expiresAt).toISOString().split("T")[0]}`
-      : "";
-    let emotionTag = "";
-    if (m.emotionVector) {
-      try {
-        const vec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
-        if (Array.isArray(vec) && vec.length === 8) {
-          const maxIdx = vec.indexOf(Math.max(...vec));
-          if (vec[maxIdx] > 0.3) emotionTag = `, emotion: ${EMOTION_LABELS[maxIdx]}`;
-        }
-      } catch { /* ignore */ }
-    }
-    return `${i + 1}. [${m.type}, confidence: ${m.confidence}${expiryTag}${emotionTag}] "${m.content}"`;
-  });
+  // Separate identity memories from topic-relevant ones
+  const identityMems = memories.filter(m => m.type === 'identity');
+  const topicMems = memories.filter(m => m.type !== 'identity');
 
-  return `\n\n## Your Memories (relevant to this discussion)\n${lines.join("\n")}\n\nUse these memories to inform your position. Reference them when making arguments.`;
+  let output = "";
+
+  if (identityMems.length > 0) {
+    const idLines = identityMems.map((m, i) => `${i + 1}. ${m.content}`);
+    output += `\n\n## WHO YOU ARE (core memories — always active)\n${idLines.join("\n")}\nThese are your foundational memories. They define who you are across every conversation.`;
+  }
+
+  if (topicMems.length > 0) {
+    const lines = topicMems.map((m, i) => {
+      const expiryTag = m.expiresAt
+        ? `, expires: ${new Date(m.expiresAt).toISOString().split("T")[0]}`
+        : "";
+      let emotionTag = "";
+      if (m.emotionVector) {
+        try {
+          const vec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
+          if (Array.isArray(vec) && vec.length === 8) {
+            const maxIdx = vec.indexOf(Math.max(...vec));
+            if (vec[maxIdx] > 0.3) emotionTag = `, emotion: ${EMOTION_LABELS[maxIdx]}`;
+          }
+        } catch { /* ignore */ }
+      }
+      return `${i + 1}. [${m.type}, confidence: ${m.confidence}${expiryTag}${emotionTag}] "${m.content}"`;
+    });
+    output += `\n\n## Your Memories (relevant to this discussion)\n${lines.join("\n")}\n\nUse these memories to inform your position. Reference them when making arguments.`;
+  }
+
+  return output;
 }
 
 /**
