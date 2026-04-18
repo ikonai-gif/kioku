@@ -173,9 +173,43 @@ function SpeakButton({ text }: { text: string }) {
   );
 }
 
+// ── File Attachment Card ─────────────────────────────────────────
+function FileAttachmentCard({ fileName }: { fileName: string }) {
+  return (
+    <div
+      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg"
+      style={{
+        background: "rgba(255,255,255,0.06)",
+        border: "1px solid rgba(255,255,255,0.1)",
+      }}
+    >
+      <FileText className="w-4 h-4 text-[#C9A340] flex-shrink-0" />
+      <span className="text-sm text-foreground/80 truncate max-w-[200px]">{fileName}</span>
+    </div>
+  );
+}
+
 // ── Markdown-lite renderer for chat messages ────────────────────
 function renderMessageContent(content: string): React.ReactNode {
   if (!content) return null;
+
+  // Detect [File: filename] pattern and render as a clean card
+  const fileMatch = content.match(/^\[File: ([^\]]+)\]$/);
+  if (fileMatch) {
+    return <FileAttachmentCard fileName={fileMatch[1]} />;
+  }
+  // [File: filename] with additional text after it
+  const fileWithTextMatch = content.match(/^\[File: ([^\]]+)\]\n?([\s\S]*)$/);
+  if (fileWithTextMatch) {
+    const fileName = fileWithTextMatch[1];
+    const rest = fileWithTextMatch[2].trim();
+    return (
+      <>
+        <FileAttachmentCard fileName={fileName} />
+        {rest && <div className="mt-2">{rest}</div>}
+      </>
+    );
+  }
 
   // Split on markdown images ![alt](url) and links [text](url)
   // Process images first, then links within remaining text segments
@@ -805,6 +839,7 @@ export default function PartnerChat() {
   const docInputRef = useRef<HTMLInputElement>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
 
   // ── Fetch partner status (emotion + relationship) ─────────────
   const { data: partnerStatus } = useQuery<any>({
@@ -936,6 +971,7 @@ export default function PartnerChat() {
       setInput("");
       setImagePreview(null);
       setImageBase64(null);
+      setAttachedFileName(null);
       setIsThinking(true);
     },
     onError: () => toast({ title: "Failed to send", variant: "destructive" }),
@@ -944,10 +980,18 @@ export default function PartnerChat() {
   const send = useCallback(async () => {
     const hasText = input.trim().length > 0;
     const hasImage = !!imageBase64;
-    if (!hasText && !hasImage) return;
+    const hasFile = !!attachedFileName;
+    if (!hasText && !hasImage && !hasFile) return;
     if (!partnerRoomId) return;
 
     let messageContent = input.trim();
+
+    // If file attached (non-image), send clean reference
+    if (hasFile) {
+      messageContent = hasText
+        ? `[File: ${attachedFileName}]\n${input.trim()}`
+        : `[File: ${attachedFileName}]`;
+    }
 
     // If image attached, get Luca's vision description and include in message
     if (hasImage) {
@@ -983,7 +1027,7 @@ export default function PartnerChat() {
       content: messageContent,
       isDecision: false,
     });
-  }, [input, partnerRoomId, user, imageBase64]);
+  }, [input, partnerRoomId, user, imageBase64, attachedFileName]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1202,16 +1246,13 @@ export default function PartnerChat() {
       toast({ title: "File too large (max 10MB)", variant: "destructive" });
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = reader.result as string;
-      const truncated = text.length > 8000 ? text.slice(0, 8000) + "\n...(truncated)" : text;
-      setInput(`[File: ${file.name}]\n${truncated}`);
-      toast({ title: `${file.name} attached` });
-    };
-    reader.onerror = () => toast({ title: "Failed to read file", variant: "destructive" });
-    reader.readAsText(file);
+    setAttachedFileName(file.name);
+    toast({ title: `${file.name} attached — tap send` });
     e.target.value = "";
+  };
+
+  const clearAttachedFile = () => {
+    setAttachedFileName(null);
   };
 
   // ── Clear Chat ──────────────────────────────────────────────
@@ -1504,6 +1545,35 @@ export default function PartnerChat() {
           )}
         </AnimatePresence>
 
+        {/* File Attachment Preview */}
+        <AnimatePresence>
+          {attachedFileName && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mb-2 flex items-center gap-2"
+            >
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                style={{
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                }}
+              >
+                <FileText className="w-4 h-4 text-[#C9A340] flex-shrink-0" />
+                <span className="text-xs text-foreground/70 truncate max-w-[180px]">{attachedFileName}</span>
+                <button
+                  onClick={clearAttachedFile}
+                  className="ml-1 text-muted-foreground/40 hover:text-foreground"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Transcribing indicator */}
         <AnimatePresence>
           {isTranscribing && (
@@ -1691,11 +1761,11 @@ export default function PartnerChat() {
             size="sm"
             className="rounded-xl h-11 w-11 p-0 flex-shrink-0"
             style={{
-              background: (input.trim() || imageBase64) ? "#C9A340" : "rgba(201,163,64,0.2)",
-              color: (input.trim() || imageBase64) ? "#0a0f1e" : "rgba(201,163,64,0.5)",
+              background: (input.trim() || imageBase64 || attachedFileName) ? "#C9A340" : "rgba(201,163,64,0.2)",
+              color: (input.trim() || imageBase64 || attachedFileName) ? "#0a0f1e" : "rgba(201,163,64,0.5)",
             }}
             onClick={creativeMode ? sendCreative : send}
-            disabled={(!input.trim() && !imageBase64) || (!partnerRoomId && !creativeMode) || sendMutation.isPending || isCreating}
+            disabled={(!input.trim() && !imageBase64 && !attachedFileName) || (!partnerRoomId && !creativeMode) || sendMutation.isPending || isCreating}
           >
             {isCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : creativeMode ? <Sparkles className="w-4 h-4" /> : <Send className="w-4 h-4" />}
           </Button>
