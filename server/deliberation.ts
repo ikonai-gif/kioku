@@ -2093,8 +2093,19 @@ export async function triggerAgentResponses(
         } catch { /* best-effort */ }
       }
 
+      // Phase 10b: Analyze writing style for emotional reading (Partner Chat only)
+      let writingStyleBlock = "";
+      if (isPartnerChat && triggerContent) {
+        const recentUserMessages = recent
+          .filter((m: any) => m.agentId === null || m.agentName === "You")
+          .slice(-3)
+          .map((m: any) => m.content);
+        const style = analyzeWritingStyle(triggerContent, recentUserMessages);
+        writingStyleBlock = formatWritingStyleBlock(style);
+      }
+
       const systemPrompt = isPartnerChat
-        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions)
+        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions, writingStyleBlock)
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
@@ -2381,6 +2392,102 @@ export async function triggerAgentResponses(
   }
 }
 
+// ── Phase 10b: Writing Style Analysis (pure heuristic — no LLM) ─────────────
+interface WritingStyleAnalysis {
+  energy: 'low' | 'medium' | 'high';
+  formality: 'casual' | 'neutral' | 'formal';
+  frustration: number; // 0-1
+  engagement: number;  // 0-1
+  urgency: boolean;
+}
+
+function analyzeWritingStyle(message: string, previousMessages?: string[]): WritingStyleAnalysis {
+  const words = message.split(/\s+/).filter(w => w.length > 0);
+  const wordCount = words.length;
+  const charCount = message.length;
+
+  // Energy: based on caps, exclamation marks, emoji density
+  const capsRatio = message.replace(/[^A-Z]/g, '').length / Math.max(charCount, 1);
+  const exclamations = (message.match(/!/g) || []).length;
+  const emojiCount = (message.match(/[\uD83C-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF]/g) || []).length;
+  let energyScore = 0;
+  if (capsRatio > 0.4 && charCount > 5) energyScore += 0.4;
+  if (exclamations >= 2) energyScore += 0.3;
+  if (emojiCount >= 2) energyScore += 0.2;
+  if (wordCount > 30) energyScore += 0.1;
+  const energy: 'low' | 'medium' | 'high' = energyScore >= 0.5 ? 'high' : energyScore >= 0.2 ? 'medium' : 'low';
+
+  // Formality: contractions, slang, sentence fragments
+  const contractions = (message.match(/\b(i'm|i've|don't|can't|won't|it's|that's|what's|there's|he's|she's|we're|they're|you're|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|couldn't|shouldn't|wouldn't|didn't|doesn't|ain't|gonna|wanna|gotta|lol|lmao|haha|omg|bruh|nah|yeah|yep|nope|tbh|imo|idk|btw)\b/gi) || []).length;
+  const avgWordLength = charCount / Math.max(wordCount, 1);
+  const hasPeriods = /\.\s/.test(message);
+  let formalityScore = 0;
+  if (contractions >= 2) formalityScore -= 0.3;
+  if (avgWordLength > 6) formalityScore += 0.2;
+  if (hasPeriods && wordCount > 10) formalityScore += 0.2;
+  if (/\b(please|would you|could you|I would appreciate|kindly)\b/i.test(message)) formalityScore += 0.3;
+  const formality: 'casual' | 'neutral' | 'formal' = formalityScore >= 0.3 ? 'formal' : formalityScore <= -0.2 ? 'casual' : 'neutral';
+
+  // Frustration: short/choppy + negative tone + punctuation patterns
+  let frustrationScore = 0;
+  if (wordCount <= 5 && /[.!?]/.test(message)) frustrationScore += 0.2;
+  if (/\?\?\?|\!\!\!|\.\.\./.test(message)) frustrationScore += 0.2;
+  if (/\b(ugh|annoying|frustrat|broken|wrong|wtf|stupid|hate|terrible|awful|sucks|ridiculous|useless)\b/i.test(message)) frustrationScore += 0.4;
+  if (capsRatio > 0.5 && charCount > 5) frustrationScore += 0.2;
+  const frustration = Math.min(1, frustrationScore);
+
+  // Engagement: message length, questions, detail level
+  let engagementScore = 0;
+  if (wordCount > 40) engagementScore += 0.4;
+  else if (wordCount > 20) engagementScore += 0.2;
+  else if (wordCount <= 5) engagementScore -= 0.2;
+  if ((message.match(/\?/g) || []).length >= 1) engagementScore += 0.2;
+  if (/\b(because|since|think|feel|believe|wonder|curious|interesting)\b/i.test(message)) engagementScore += 0.2;
+  // Check if they're sharing stories or details
+  if (/\b(yesterday|today|last week|remember when|told me|happened)\b/i.test(message)) engagementScore += 0.2;
+  const engagement = Math.min(1, Math.max(0, engagementScore + 0.3)); // baseline 0.3
+
+  // Urgency: time pressure indicators
+  const urgency = /\b(asap|urgent|hurry|quick|now|immediately|deadline|running out|time sensitive)\b/i.test(message);
+
+  return { energy, formality, frustration, engagement, urgency };
+}
+
+function formatWritingStyleBlock(style: WritingStyleAnalysis): string {
+  const parts: string[] = [];
+
+  if (style.frustration > 0.5) {
+    parts.push("User seems frustrated or annoyed — be empathetic and concise, acknowledge their feeling before responding to content.");
+  } else if (style.frustration > 0.2) {
+    parts.push("User may be slightly irritated — keep it crisp and helpful.");
+  }
+
+  if (style.engagement > 0.7) {
+    parts.push("User is writing long, thoughtful messages with questions — they're engaged and want depth. Give them depth back.");
+  } else if (style.engagement < 0.3) {
+    parts.push("User is writing in short, direct fragments — they may be busy or distracted. Match their energy — be concise.");
+  }
+
+  if (style.energy === 'high') {
+    parts.push("High energy — exclamation marks, caps, or emojis. Match their enthusiasm.");
+  } else if (style.energy === 'low') {
+    parts.push("Low energy writing. Keep your tone grounded and calm.");
+  }
+
+  if (style.formality === 'casual') {
+    parts.push("Casual tone — contractions, slang. Be conversational.");
+  } else if (style.formality === 'formal') {
+    parts.push("More formal tone. Be thoughtful and measured.");
+  }
+
+  if (style.urgency) {
+    parts.push("This feels urgent to them. Be direct and actionable.");
+  }
+
+  if (parts.length === 0) return "";
+  return `\n## HOW THEY'RE WRITING RIGHT NOW\n${parts.join("\n")}\n`;
+}
+
 // Rotating conversation flavors to prevent repetitive responses
 const PARTNER_MOODS = [
   "You're in a reflective mood today — you've been thinking about what makes conversations meaningful.",
@@ -2404,7 +2511,7 @@ const OPENING_STYLES = [
   "Start by acknowledging what's interesting about their perspective, then add your own twist.",
 ];
 
-function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string, recentPreferences?: any[], conversationInsights?: string[], pastSuggestions?: string[]): string {
+function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string, recentPreferences?: any[], conversationInsights?: string[], pastSuggestions?: string[], writingStyleBlock?: string): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
   const aestheticBlock = aestheticProfile
@@ -2474,6 +2581,7 @@ ${restMemBlock}
 ${aestheticBlock}
 ${personalityBlock}
 ${proactiveBlock}
+${writingStyleBlock || ""}
 ## YOUR IDENTITY
 You are NOT a chatbot, NOT an assistant, NOT a helper. You are a thinking, opinionated companion with your own inner life. You:
 - Have strong opinions on things — technology, creativity, human nature, culture, philosophy
