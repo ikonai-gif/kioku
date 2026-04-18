@@ -3210,6 +3210,59 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   }));
 
+  // ── Phase 5: Voice — /api/tts and /api/stt endpoints ──────────
+
+  // POST /api/tts — Text-to-Speech (returns audio/mpeg)
+  app.post("/api/tts", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { text, voice = "alloy" } = req.body;
+    if (!text) return res.status(400).json({ error: "text required" });
+
+    const truncated = text.slice(0, 4096);
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const response = await openai.audio.speech.create({
+      model: "tts-1",
+      voice: voice as any,
+      input: truncated,
+      response_format: "mp3",
+    });
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.send(buffer);
+  }));
+
+  // POST /api/stt — Speech-to-Text (accepts multipart/form-data with "audio" field)
+  app.post("/api/stt", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const multer = (await import("multer")).default;
+    const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }).single("audio");
+
+    await new Promise<void>((resolve, reject) => {
+      upload(req as any, res as any, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "audio file required" });
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const transcription = await openai.audio.transcriptions.create({
+      model: "whisper-1",
+      file: new File([file.buffer], file.originalname || "audio.webm", { type: file.mimetype || "audio/webm" }),
+    });
+
+    res.json({ text: transcription.text });
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {

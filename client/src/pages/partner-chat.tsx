@@ -10,6 +10,17 @@ import { useAuth } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 
+// ── Cookie helpers for voice preferences ─────────────────────
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)"));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function setCookie(name: string, value: string, days = 365) {
+  const expires = new Date(Date.now() + days * 864e5).toUTCString();
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
+}
+
 // ── Global audio playback (avoids Safari autoplay issues) ──────
 let globalAudioUnlocked = false;
 function unlockAudio() {
@@ -979,7 +990,11 @@ export default function PartnerChat() {
   const [partnerRoomId, setPartnerRoomId] = useState<number | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
-  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceMode, setVoiceModeRaw] = useState(() => getCookie("kioku_voice_mode") === "on");
+  const setVoiceMode = useCallback((on: boolean) => {
+    setVoiceModeRaw(on);
+    setCookie("kioku_voice_mode", on ? "on" : "off");
+  }, []);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
