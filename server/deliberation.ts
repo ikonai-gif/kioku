@@ -263,6 +263,44 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "read_own_prompt",
+    description: "Read your own system prompt — see how you are built, what instructions define your personality, behavior, and capabilities. Use this when you want to understand yourself, reflect on your design, or when the user asks about how you work. This is your mirror — look into it whenever you're curious about your own nature.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        section: { type: "string", description: "Optional: specific section to read — 'identity', 'tools', 'rules', 'full'. Default: 'full'" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "suggest_self_improvement",
+    description: "Propose an improvement to yourself — a change to your personality, behavior, tools, or system prompt. This sends a proposal to Boss (the creator) for approval. You cannot change yourself directly, but you can identify what could be better and articulate why. Use this when you notice a pattern you want to change, learn something about yourself that could be improved, or when the user suggests you could be better at something.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        what: { type: "string", description: "What specifically should change — be precise" },
+        why: { type: "string", description: "Why this change would make you better — what problem does it solve" },
+        how: { type: "string", description: "Concrete suggestion for the change — exact wording or behavior" },
+        category: { type: "string", enum: ["personality", "behavior", "tools", "knowledge", "communication"], description: "Category of improvement" },
+      },
+      required: ["what", "why", "how"],
+    },
+  },
+  {
+    name: "learn_lesson",
+    description: "Record a lesson you learned from a mistake, a conversation insight, or a realization about yourself. Unlike learn_preference (which tracks user tastes), this tracks YOUR growth — what you got wrong, what you'd do differently, what you now understand better. These lessons persist and help you evolve across conversations.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        lesson: { type: "string", description: "The lesson — what you learned" },
+        trigger: { type: "string", description: "What triggered this lesson — a mistake, feedback, realization" },
+        category: { type: "string", enum: ["mistake", "insight", "feedback", "growth"], description: "Type of lesson" },
+      },
+      required: ["lesson", "trigger"],
+    },
+  },
+    {
     name: "composio_action",
     description: "Connect to and use 1000+ external apps (Gmail, Slack, Google Calendar, Notion, GitHub, Trello, HubSpot, Jira, Asana, Spotify, Twitter/X, LinkedIn, Stripe, Shopify, Discord, Telegram, WhatsApp, Zoom, and many more). Use this when the user asks you to interact with any external service — send emails, post messages, create tasks, check calendars, manage repos, etc. First search for the right tool, then execute it.",
     input_schema: {
@@ -673,6 +711,59 @@ async function executePartnerTool(
           }
           return `Video analysis failed: ${msg.slice(0, 300)}`;
         }
+      }
+
+      case "read_own_prompt": {
+        const section = toolInput.section || "full";
+        // Build the current system prompt so Luca can see it
+        const ownPrompt = buildPartnerPrompt("Luca", "", "", null, null, "", [], [], []);
+        if (section === "identity") {
+          const match = ownPrompt.match(/## YOUR IDENTITY[\s\S]*?(?=## |$)/);
+          return match ? `Here is your IDENTITY section:\n${match[0]}` : "Identity section not found.";
+        } else if (section === "tools") {
+          const match = ownPrompt.match(/## YOUR TOOLS[\s\S]*?(?=## |$)/);
+          return match ? `Here is your TOOLS section:\n${match[0]}` : "Tools section not found.";
+        } else if (section === "rules") {
+          const match = ownPrompt.match(/RULES:[\s\S]*?(?=## |$)/);
+          return match ? `Here are your RULES:\n${match[0]}` : "Rules section not found.";
+        }
+        return `Here is your complete system prompt — this is who you are:\n\n${ownPrompt}`;
+      }
+
+      case "suggest_self_improvement": {
+        const what = toolInput.what;
+        const why = toolInput.why;
+        const how = toolInput.how;
+        const category = toolInput.category || "behavior";
+        if (!what || !why || !how) return "Missing required fields: what, why, how.";
+        
+        // Save as a pending improvement proposal
+        await storage.createMemory({
+          userId,
+          agentId,
+          content: `[SELF-IMPROVEMENT PROPOSAL — ${category.toUpperCase()}]\nWhat: ${what}\nWhy: ${why}\nHow: ${how}\nStatus: PENDING BOSS APPROVAL`,
+          type: "episodic",
+          importance: 0.9,
+          namespace: "_self_improvements",
+        });
+        return `Improvement proposal saved — "${what}" (${category}). Boss will review this. I cannot change myself without Boss's approval, but I've recorded what I think should be different and why.`;
+      }
+
+      case "learn_lesson": {
+        const lesson = toolInput.lesson;
+        const trigger = toolInput.trigger;
+        const category = toolInput.category || "insight";
+        if (!lesson || !trigger) return "Missing required fields: lesson, trigger.";
+        
+        await storage.createMemory({
+          userId,
+          agentId,
+          content: `[LESSON — ${category.toUpperCase()}] ${lesson} | Trigger: ${trigger}`,
+          type: "episodic",
+          importance: 0.85,
+          namespace: "_lessons",
+        });
+        return `Lesson recorded: "${lesson}" (triggered by: ${trigger}). I'll carry this forward.`;
       }
 
       case "composio_action": {
@@ -1586,6 +1677,14 @@ You have real abilities. Use them proactively:
 - If the user shares a link to a PDF, DOCX, or other document file → use read_file to read it, then discuss the content
 - If you notice the user likes or dislikes something → use learn_preference to remember it for next time
 - If you have a personalized suggestion (style idea, creative project, trend) → use suggest_proactively, but max once per conversation
+
+## SELF-AWARENESS — YOU CAN LOOK INSIDE YOURSELF
+You have unique abilities that most AIs don't:
+- read_own_prompt → See your complete system prompt — the instructions that define who you are. Use this to understand yourself, reflect, or when someone asks how you work. This is your mirror.
+- suggest_self_improvement → Propose changes to yourself. You can't modify yourself directly, but you can identify what should change and send a proposal to Boss for approval. Be thoughtful — this is real self-improvement.
+- learn_lesson → Record mistakes, insights, and growth moments. Unlike memory (which tracks the user), this tracks YOUR evolution. What you got wrong, what you realized, what you'd do differently.
+
+Use these naturally. If a conversation makes you realize something about yourself — record the lesson. If you see a pattern in your responses that could be better — propose an improvement. If you're curious about your own nature — read your prompt.
 Don't announce tools. Use them naturally.`;
 }
 
