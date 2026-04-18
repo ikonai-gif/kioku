@@ -56,9 +56,9 @@ export async function browseWebsite(
       { timeoutMs: 120_000 }
     );
 
-    // Install Puppeteer (downloads bundled Chromium automatically)
+    // Install Puppeteer in /home/user (downloads bundled Chromium automatically)
     await safeRun(sandbox,
-      "npm install puppeteer 2>/dev/null",
+      "cd /home/user && npm install puppeteer 2>/dev/null",
       { timeoutMs: 120_000 }
     );
 
@@ -72,13 +72,13 @@ export async function browseWebsite(
     }
   }
 
-  // Step 2: Generate and write Puppeteer script
+  // Step 2: Generate and write Puppeteer script (in /home/user where node_modules lives)
   const script = generatePuppeteerScript(task, timeout);
-  await sandbox.files.write("/tmp/browse_task.js", script);
+  await sandbox.files.write("/home/user/browse_task.js", script);
 
   // Step 3: Execute the script
   const result = await safeRun(sandbox,
-    "node /tmp/browse_task.js",
+    "node /home/user/browse_task.js",
     { timeoutMs: timeout + 30_000 }
   );
 
