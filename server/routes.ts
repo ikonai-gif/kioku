@@ -10,6 +10,13 @@ import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, sub
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
+import {
+  buildGoogleOAuthUrl, buildDropboxOAuthUrl,
+  exchangeGoogleCode, exchangeDropboxCode,
+  searchGoogleDrive, readGoogleDriveFile,
+  searchDropbox, readDropboxFile,
+  getIntegrationStatus,
+} from "./cloud-integrations";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
 import { checkRegistrationLimit, checkAuthRateLimit } from "./ratelimit";
@@ -2848,6 +2855,132 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
     res.send(file.content_text);
+  }));
+
+  // ── Cloud Storage Integrations ────────────────────────────────
+
+  // Google OAuth connect
+  app.get("/api/integrations/google/connect", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    try {
+      const url = buildGoogleOAuthUrl(userId);
+      res.json({ url });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // Google OAuth callback
+  app.get("/api/integrations/google/callback", asyncHandler(async (req, res) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
+    const userId = Number(state);
+    if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+    try {
+      await exchangeGoogleCode(code, userId);
+      const redirectBase = process.env.APP_URL || "";
+      res.redirect(`${redirectBase}/partner?integration=google_drive&status=connected`);
+    } catch (err: any) {
+      logger.error({ source: "google-callback", error: err.message }, "Google OAuth callback failed");
+      const redirectBase = process.env.APP_URL || "";
+      res.redirect(`${redirectBase}/partner?integration=google_drive&status=error`);
+    }
+  }));
+
+  // Dropbox OAuth connect
+  app.get("/api/integrations/dropbox/connect", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    try {
+      const url = buildDropboxOAuthUrl(userId);
+      res.json({ url });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // Dropbox OAuth callback
+  app.get("/api/integrations/dropbox/callback", asyncHandler(async (req, res) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
+    const userId = Number(state);
+    if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+    try {
+      await exchangeDropboxCode(code, userId);
+      const redirectBase = process.env.APP_URL || "";
+      res.redirect(`${redirectBase}/partner?integration=dropbox&status=connected`);
+    } catch (err: any) {
+      logger.error({ source: "dropbox-callback", error: err.message }, "Dropbox OAuth callback failed");
+      const redirectBase = process.env.APP_URL || "";
+      res.redirect(`${redirectBase}/partner?integration=dropbox&status=error`);
+    }
+  }));
+
+  // Integration status
+  app.get("/api/integrations/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const status = await getIntegrationStatus(userId);
+    res.json(status);
+  }));
+
+  // Drive search
+  app.post("/api/partner/drive-search", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { query } = req.body;
+    if (!query || typeof query !== "string") return res.status(400).json({ error: "query is required" });
+    try {
+      const results = await searchGoogleDrive(userId, query);
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // Drive read
+  app.post("/api/partner/drive-read", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { fileId } = req.body;
+    if (!fileId || typeof fileId !== "string") return res.status(400).json({ error: "fileId is required" });
+    try {
+      const result = await readGoogleDriveFile(userId, fileId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // Dropbox search
+  app.post("/api/partner/dropbox-search", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { query } = req.body;
+    if (!query || typeof query !== "string") return res.status(400).json({ error: "query is required" });
+    try {
+      const results = await searchDropbox(userId, query);
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // Dropbox read
+  app.post("/api/partner/dropbox-read", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { path } = req.body;
+    if (!path || typeof path !== "string") return res.status(400).json({ error: "path is required" });
+    try {
+      const result = await readDropboxFile(userId, path);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   }));
 
   // ── Global error handler ──────────────────────────────────────

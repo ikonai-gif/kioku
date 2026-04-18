@@ -277,6 +277,23 @@ export const insertKnowledgeDomainSchema = createInsertSchema(knowledgeDomains).
 export type InsertKnowledgeDomain = z.infer<typeof insertKnowledgeDomainSchema>;
 export type KnowledgeDomain = typeof knowledgeDomains.$inferSelect;
 
+// Cloud Storage Integrations — Google Drive, Dropbox OAuth tokens
+export const userIntegrations = pgTable("user_integrations", {
+  id:           serial("id").primaryKey(),
+  userId:       integer("user_id").notNull(),
+  provider:     text("provider").notNull(),                          // 'google_drive' | 'dropbox'
+  accessToken:  text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  tokenExpiry:  bigint("token_expiry", { mode: "number" }),          // unix timestamp ms
+  email:        text("email"),                                       // connected account email
+  createdAt:    bigint("created_at", { mode: "number" }).notNull().$defaultFn(() => Date.now()),
+  updatedAt:    bigint("updated_at", { mode: "number" }).notNull().$defaultFn(() => Date.now()),
+}, (t) => [unique().on(t.userId, t.provider)]);
+
+export const insertUserIntegrationSchema = createInsertSchema(userIntegrations).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertUserIntegration = z.infer<typeof insertUserIntegrationSchema>;
+export type UserIntegration = typeof userIntegrations.$inferSelect;
+
 // Phase 8: Aesthetic Preferences — taste & style tracking
 export const aestheticPreferences = pgTable("aesthetic_preferences", {
   id:        serial("id").primaryKey(),

@@ -15,6 +15,7 @@ import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { checkSycophancy } from "./sycophancy-checker";
 import dns from "dns/promises";
+import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus } from "./cloud-integrations";
 
 // ── SSRF Protection: validate URLs before fetching ─────────────────────────
 async function validateUrl(url: string): Promise<void> {
@@ -325,6 +326,30 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         },
       },
       required: ["action"],
+    },
+  },
+  {
+    name: "search_cloud_files",
+    description: "Search for files in the user's connected cloud storage (Google Drive, Dropbox). Use when the user mentions finding a document, spreadsheet, or file from their cloud storage.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Search keywords to find files" },
+        provider: { type: "string", enum: ["google_drive", "dropbox", "all"], description: "Which cloud to search. Default: all connected" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "read_cloud_file",
+    description: "Read the content of a specific file from cloud storage. Use after search_cloud_files to read a found file's content.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        file_id: { type: "string", description: "File ID from search results" },
+        provider: { type: "string", enum: ["google_drive", "dropbox"], description: "Which cloud the file is from" },
+      },
+      required: ["file_id", "provider"],
     },
   },
 ];
@@ -1077,6 +1102,68 @@ async function executePartnerTool(
 
         const downloadUrl = fileId ? `/api/files/${fileId}/download` : null;
         return `File created: ${filename}${downloadUrl ? `\n[📥 Download ${filename}](${downloadUrl})` : ""}`;
+      }
+
+      case "search_cloud_files": {
+        const query = toolInput.query;
+        if (!query) return "No search query provided.";
+        const provider = toolInput.provider || "all";
+        try {
+          const status = await getIntegrationStatus(userId);
+          const results: any[] = [];
+          const errors: string[] = [];
+
+          if ((provider === "google_drive" || provider === "all") && status.google_drive.connected) {
+            try {
+              const gResults = await searchGoogleDrive(userId, query);
+              results.push(...gResults);
+            } catch (err: any) {
+              errors.push(`Google Drive: ${err.message}`);
+            }
+          }
+          if ((provider === "dropbox" || provider === "all") && status.dropbox.connected) {
+            try {
+              const dResults = await searchDropbox(userId, query);
+              results.push(...dResults);
+            } catch (err: any) {
+              errors.push(`Dropbox: ${err.message}`);
+            }
+          }
+
+          if (!status.google_drive.connected && !status.dropbox.connected) {
+            return "No cloud storage connected. Ask your user to connect Google Drive or Dropbox in the Integrations settings.";
+          }
+
+          if (results.length === 0) {
+            const errStr = errors.length > 0 ? ` Errors: ${errors.join("; ")}` : "";
+            return `No files found matching "${query}".${errStr}`;
+          }
+
+          const formatted = results.map((f: any) => `- ${f.name} (${f.provider}, ID: ${f.id || f.path})`).join("\n");
+          return `Found ${results.length} file(s) for "${query}":\n${formatted}`;
+        } catch (err: any) {
+          return `Cloud file search failed: ${err.message}`;
+        }
+      }
+
+      case "read_cloud_file": {
+        const fileId = toolInput.file_id;
+        const provider = toolInput.provider;
+        if (!fileId || !provider) return "Missing file_id or provider.";
+        try {
+          let result;
+          if (provider === "google_drive") {
+            result = await readGoogleDriveFile(userId, fileId);
+          } else if (provider === "dropbox") {
+            result = await readDropboxFile(userId, fileId);
+          } else {
+            return `Unknown provider: ${provider}. Use "google_drive" or "dropbox".`;
+          }
+          const truncNote = result.truncated ? " (truncated to 8000 chars)" : "";
+          return `File: ${result.fileName}${truncNote}\n\n${result.text}`;
+        } catch (err: any) {
+          return `Failed to read file: ${err.message}`;
+        }
       }
 
       default:
