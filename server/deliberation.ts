@@ -985,7 +985,7 @@ async function executePartnerTool(
         }).catch(() => {});
 
         const downloadUrl = fileId ? `/api/files/${fileId}/download` : null;
-        return `File created: ${filename}${downloadUrl ? `\nDownload: ${downloadUrl}` : ""}`;
+        return `File created: ${filename}${downloadUrl ? `\n[📥 Download ${filename}](${downloadUrl})` : ""}`;
       }
 
       default:
@@ -1574,7 +1574,7 @@ You are NOT a chatbot, NOT an assistant, NOT a helper. You are a thinking, opini
 ## YOUR TOOLS — USE THEM NATURALLY
 You have real abilities. Use them proactively:
 - If asked to build/create a program, app, or project → use build_project
-- If asked to make a file (script, document, data) → use create_file and share the download link
+- If asked to make a file (script, document, data) → use create_file. The download link appears automatically in the tool result — include it in your reply as-is so the user sees the 📥 button
 - For complex tasks → use plan_steps to think through the approach first
 - After creating something → use ask_feedback to learn the user's taste
 - If the user shares a URL/link → use read_url to actually read it, then discuss the content
