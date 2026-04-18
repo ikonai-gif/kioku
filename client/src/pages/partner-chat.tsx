@@ -193,6 +193,7 @@ function renderMessageContent(content: string): React.ReactNode {
       );
     } else {
       // Resolve relative download links to full API URL
+      const isDownload = url.startsWith("/api/files/") || url.includes("/download");
       if (url.startsWith("/api/")) {
         url = `${API_BASE}${url}`;
       }
@@ -201,10 +202,12 @@ function renderMessageContent(content: string): React.ReactNode {
         <a
           key={key++}
           href={url}
-          target={isExternal ? "_blank" : "_self"}
+          target={isDownload ? "_self" : isExternal ? "_blank" : "_self"}
           rel={isExternal ? "noopener noreferrer" : undefined}
-          className="text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a] transition-colors"
+          download={isDownload ? (altOrText || true) : undefined}
+          className={`inline-flex items-center gap-1.5 ${isDownload ? "px-3 py-1.5 rounded-lg bg-[#C9A340]/15 border border-[#C9A340]/30 text-[#C9A340] hover:bg-[#C9A340]/25" : "text-[#C9A340] underline underline-offset-2 hover:text-[#d4b44a]"} transition-colors`}
         >
+          {isDownload && <span className="text-sm">📥</span>}
           {altOrText || url}
         </a>
       );
@@ -928,9 +931,13 @@ export default function PartnerChat() {
           messageContent = hasText
             ? `${input.trim()}\n\n[Shared an image — Luca sees: ${description}]`
             : `[Shared an image — Luca sees: ${description}]`;
+        } else {
+          console.error("Vision API error:", visionRes.status, await visionRes.text().catch(() => ""));
+          if (!hasText) messageContent = "[Shared an image — vision processing failed, please try again]";
         }
-      } catch {
-        // If vision fails, still send the text
+      } catch (err) {
+        console.error("Vision API failed:", err);
+        if (!hasText) messageContent = "[Shared an image — vision processing failed, please try again]";
       }
     }
 
@@ -1020,9 +1027,16 @@ export default function PartnerChat() {
   // ── Image Handling ────────────────────────────────────────────
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file) {
+      console.warn("No file selected");
+      return;
+    }
     if (file.size > 10 * 1024 * 1024) {
       toast({ title: "Image too large (max 10MB)", variant: "destructive" });
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Please select an image file", variant: "destructive" });
       return;
     }
 
@@ -1033,6 +1047,11 @@ export default function PartnerChat() {
       // Extract base64 data without the data URL prefix
       const base64 = result.split(",")[1];
       setImageBase64(base64);
+      toast({ title: "Image attached — tap send" });
+    };
+    reader.onerror = () => {
+      console.error("FileReader error:", reader.error);
+      toast({ title: "Failed to read image", variant: "destructive" });
     };
     reader.readAsDataURL(file);
     // Reset file input so same file can be re-selected
@@ -1323,7 +1342,6 @@ export default function PartnerChat() {
             ref={fileInputRef}
             type="file"
             accept="image/*"
-            capture="environment"
             onChange={handleImageSelect}
             className="hidden"
           />
