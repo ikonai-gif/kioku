@@ -992,13 +992,31 @@ export default function PartnerChat() {
     return msg.agentName === user?.name || msg.agentName === "You" || (!msg.agentId && msg.agentName === (user?.name || "You"));
   };
 
-  // ── Voice Recording ───────────────────────────────────────────
+  // ── Voice Recording (auto-send on release) ──────────────────────
+  // After recording stops: transcribe → auto-send → Luca answers with voice
+  const voiceAutoSend = useCallback((text: string) => {
+    if (!text.trim() || !partnerRoomId) return;
+    const token = getSessionToken();
+    fetch(`${API_BASE}/api/rooms/${partnerRoomId}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "x-session-token": token } : {}),
+      },
+      credentials: "include",
+      body: JSON.stringify({ content: text.trim(), type: "user" }),
+    }).then(() => {
+      queryClient.invalidateQueries({ queryKey: [`/api/rooms/${partnerRoomId}/messages`] });
+    }).catch(() => {});
+  }, [partnerRoomId]);
+
   const startRecording = async () => {
     try {
       if (!navigator.mediaDevices) {
         toast({ title: "Microphone not available on this device", variant: "destructive" });
         return;
       }
+      unlockAudio();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4" });
       chunksRef.current = [];
@@ -1024,7 +1042,10 @@ export default function PartnerChat() {
           });
           if (!res.ok) throw new Error("STT failed");
           const { text } = await res.json();
-          if (text) setInput((prev) => (prev ? prev + " " + text : text));
+          if (text) {
+            // AUTO-SEND immediately — no need to press Send button
+            voiceAutoSend(text);
+          }
         } catch (err) {
           console.error("Transcription error:", err);
           toast({ title: "Transcription failed", variant: "destructive" });
@@ -1036,6 +1057,8 @@ export default function PartnerChat() {
       mediaRecorderRef.current = recorder;
       recorder.start(1000);
       setIsRecording(true);
+      // Auto-enable voice mode when mic is used
+      if (!voiceMode) setVoiceMode(true);
     } catch (err) {
       console.error("Microphone access error:", err);
       toast({ title: "Microphone access required for voice input", variant: "destructive" });
