@@ -134,6 +134,22 @@ function TypingIndicator({ emotion }: { emotion: string }) {
   );
 }
 
+// ── Strip markdown/URLs for clean TTS ──────────────────────────
+function cleanTextForTTS(raw: string): string {
+  return raw
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')  // [text](url) → text
+    .replace(/```[\s\S]*?```/g, ' code block omitted ')  // code blocks
+    .replace(/`([^`]+)`/g, '$1')  // inline code
+    .replace(/#{1,6}\s*/g, '')  // headers
+    .replace(/\*\*([^*]+)\*\*/g, '$1')  // bold
+    .replace(/\*([^*]+)\*/g, '$1')  // italic
+    .replace(/~~([^~]+)~~/g, '$1')  // strikethrough
+    .replace(/https?:\/\/\S+/g, '')  // bare URLs
+    .replace(/\n{3,}/g, '\n\n')  // excessive newlines
+    .replace(/[|\-]{3,}/g, '')  // table borders
+    .trim();
+}
+
 // ── Speaker Button on Luca messages ─────────────────────────────
 function SpeakButton({ text }: { text: string }) {
   const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
@@ -158,7 +174,7 @@ function SpeakButton({ text }: { text: string }) {
           ...(token ? { "x-session-token": token } : {}),
         },
         credentials: "include",
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: cleanTextForTTS(text) }),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -626,7 +642,7 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
           ...(token ? { "x-session-token": token } : {}),
         },
         credentials: "include",
-        body: JSON.stringify({ text: message.content }),
+        body: JSON.stringify({ text: cleanTextForTTS(message.content) }),
       })
         .then((res) => {
           if (!res.ok) throw new Error("TTS failed");
