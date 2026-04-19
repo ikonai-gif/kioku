@@ -2899,8 +2899,8 @@ export async function triggerAgentResponses(
                     parameters: (t as any).input_schema || { type: "object", properties: {} },
                   }
                 })),
-                // Force tool use for actionable messages — prevent "asking instead of doing"
-                tool_choice: "required" as const,
+                // Force tool use on first turn, then let model respond naturally
+                tool_choice: toolIter === 0 ? "required" as const : "auto" as const,
               } : {}),
             });
 
