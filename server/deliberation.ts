@@ -2586,14 +2586,17 @@ print("Converted MD to DOCX")
         if (!geminiKey) return "Video generation requires GEMINI_API_KEY. Please ask the admin to configure it.";
 
         try {
-          // Model cascade: try Veo 3.1 preview → Veo 3.0 stable → Veo 3.0 fast → Veo 2.0
-          // All via predictLongRunning (the only method these models support)
+          // Model cascade: try Veo 3.1 preview → Veo 3.0 fast → Veo 3.0 stable → Veo 2.0
+          // All via predictLongRunning. generateAudio is NOT a valid parameter —
+          // Veo 3 includes audio automatically, Veo 2 is silent. durationSeconds
+          // must be 4-8 for Veo 3; we clamp to [4, 8].
           const modelCascade = [
-            { id: "veo-3.1-generate-preview", label: "Veo 3.1", audio: true },
-            { id: "veo-3.0-generate-001", label: "Veo 3.0", audio: true },
-            { id: "veo-3.0-fast-generate-001", label: "Veo 3.0 Fast", audio: true },
-            { id: "veo-2.0-generate-001", label: "Veo 2.0", audio: false },
+            { id: "veo-3.1-generate-preview", label: "Veo 3.1" },
+            { id: "veo-3.0-fast-generate-001", label: "Veo 3.0 Fast" },
+            { id: "veo-3.0-generate-001", label: "Veo 3.0" },
+            { id: "veo-2.0-generate-001", label: "Veo 2.0 (silent)" },
           ];
+          const clampedDuration = Math.max(4, Math.min(duration, 8));
 
           let startResp: Response | null = null;
           let modelUsed = "";
@@ -2604,11 +2607,10 @@ print("Converted MD to DOCX")
               instances: [{ prompt: prompt.slice(0, 2000) }],
               parameters: {
                 aspectRatio,
-                durationSeconds: Math.min(duration, 8),
+                durationSeconds: clampedDuration,
                 personGeneration: "allow_adult",
               },
             };
-            if (model.audio) veoPayload.parameters.generateAudio = true;
             const resp = await fetch(veoUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2620,7 +2622,12 @@ print("Converted MD to DOCX")
               modelUsed = model.label;
               break;
             }
-            lastErr = `${model.id}: ${(await resp.text()).slice(0, 150)}`;
+            const errText = (await resp.text()).slice(0, 200);
+            lastErr = `${model.id}: ${errText}`;
+            // If quota exhausted or billing required, stop cascading — all models will fail the same way
+            if (errText.includes("RESOURCE_EXHAUSTED") || errText.includes("billing")) {
+              return `Video generation unavailable: Google AI Studio billing is not enabled on this API key. Enable billing at https://aistudio.google.com/apikey to use Veo 3. Error: ${errText.slice(0, 150)}`;
+            }
           }
 
           if (!startResp) {
