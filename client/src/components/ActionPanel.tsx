@@ -1,16 +1,17 @@
 import React, { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Layers, Code, Image as ImageIcon, FileText, Inbox } from "lucide-react";
+import { X, Layers, Code, Image as ImageIcon, FileText, Inbox, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ArtifactViewer, type Artifact } from "./ArtifactViewer";
 
-type TabKey = "all" | "code" | "images" | "files";
+type TabKey = "all" | "code" | "images" | "files" | "deliberations";
 
 const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: "all", label: "All", icon: <Layers className="w-3.5 h-3.5" /> },
   { key: "code", label: "Code", icon: <Code className="w-3.5 h-3.5" /> },
   { key: "images", label: "Images", icon: <ImageIcon className="w-3.5 h-3.5" /> },
   { key: "files", label: "Files", icon: <FileText className="w-3.5 h-3.5" /> },
+  { key: "deliberations", label: "Deliberations", icon: <MessageSquare className="w-3.5 h-3.5" /> },
 ];
 
 interface ActionPanelProps {
@@ -18,9 +19,11 @@ interface ActionPanelProps {
   show: boolean;
   onClose: () => void;
   isMobile: boolean;
+  deliberationContent?: React.ReactNode;
+  hasActiveDeliberation?: boolean;
 }
 
-export function ActionPanel({ artifacts, show, onClose, isMobile }: ActionPanelProps) {
+export function ActionPanel({ artifacts, show, onClose, isMobile, deliberationContent, hasActiveDeliberation }: ActionPanelProps) {
   const [activeTab, setActiveTab] = useState<TabKey>("all");
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
 
@@ -32,8 +35,13 @@ export function ActionPanel({ artifacts, show, onClose, isMobile }: ActionPanelP
     }
   }, [latestId]);
 
+  // Auto-switch to deliberations tab when a deliberation becomes active
+  React.useEffect(() => {
+    if (hasActiveDeliberation) setActiveTab("deliberations");
+  }, [hasActiveDeliberation]);
+
   const filtered = useMemo(() => {
-    if (activeTab === "all") return artifacts;
+    if (activeTab === "all" || activeTab === "deliberations") return artifacts;
     return artifacts.filter((a) => a.category === activeTab);
   }, [artifacts, activeTab]);
 
@@ -77,6 +85,8 @@ export function ActionPanel({ artifacts, show, onClose, isMobile }: ActionPanelP
           const count =
             tab.key === "all"
               ? artifacts.length
+              : tab.key === "deliberations"
+              ? (hasActiveDeliberation ? 1 : 0)
               : artifacts.filter((a) => a.category === tab.key).length;
           return (
             <button
@@ -117,6 +127,19 @@ export function ActionPanel({ artifacts, show, onClose, isMobile }: ActionPanelP
       </div>
 
       {/* Content */}
+      {activeTab === "deliberations" ? (
+        <div className="flex-1 overflow-y-auto">
+          {deliberationContent || (
+            <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-muted-foreground/40 p-3">
+              <MessageSquare className="w-10 h-10 mb-3 opacity-50" />
+              <p className="text-sm font-medium">No active deliberation</p>
+              <p className="text-xs mt-1 text-center max-w-[200px] leading-relaxed">
+                Start a deliberation from the attach menu to see agents debate here
+              </p>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-muted-foreground/40">
@@ -166,6 +189,7 @@ export function ActionPanel({ artifacts, show, onClose, isMobile }: ActionPanelP
           })
         )}
       </div>
+      )}
 
       {/* Selected artifact detail */}
       <AnimatePresence>

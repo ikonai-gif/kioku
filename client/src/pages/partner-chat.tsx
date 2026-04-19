@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -17,6 +17,8 @@ import { ActionPanel } from "@/components/ActionPanel";
 import { ActionPanelToggle } from "@/components/ActionPanelToggle";
 import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { DeliberationView } from "@/components/DeliberationView";
+import { ProvenanceViewer } from "@/components/ProvenanceViewer";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -1421,6 +1423,12 @@ export default function PartnerChat() {
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
   const isMobile = useIsMobile();
 
+  // ── Deliberation state ────────────────────────────────────────
+  const [deliberationTopic, setDeliberationTopic] = useState<string | null>(null);
+  const [showDeliberationPrompt, setShowDeliberationPrompt] = useState(false);
+  const [deliberationTopicInput, setDeliberationTopicInput] = useState("");
+  const [provenanceChainId, setProvenanceChainId] = useState<string | null>(null);
+
   // Stable isUser check for artifact parsing (defined early for useMemo)
   const isUserFn = useCallback((msg: any) => {
     return msg.agentName === user?.name || msg.agentName === "You" || (!msg.agentId && msg.agentName === (user?.name || "You"));
@@ -1719,6 +1727,37 @@ export default function PartnerChat() {
       isDecision: false,
     });
   }, [partnerRoomId, user, sendMutation]);
+
+  // ── Deliberation handlers ─────────────────────────────────────
+  const handleStartDeliberation = useCallback((topic: string) => {
+    if (!partnerRoomId || !topic.trim()) return;
+    setDeliberationTopic(topic.trim());
+    setShowDeliberationPrompt(false);
+    setDeliberationTopicInput("");
+    setShowActionPanel(true);
+  }, [partnerRoomId]);
+
+  const handleDeliberationConsensus = useCallback((decision: string, sessionId: string) => {
+    if (!partnerRoomId) return;
+    // Post the consensus result as a chat message
+    sendMutation.mutate({
+      agentId: null,
+      agentName: user?.name || "You",
+      agentColor: "#C9A340",
+      content: `[Deliberation Result]\n\n${decision}`,
+      isDecision: false,
+    });
+  }, [partnerRoomId, user, sendMutation]);
+
+  const handleViewProvenance = useCallback((chainId: string) => {
+    setProvenanceChainId(chainId);
+    setDeliberationTopic(null);
+  }, []);
+
+  const handleCloseDeliberation = useCallback(() => {
+    setDeliberationTopic(null);
+    setProvenanceChainId(null);
+  }, []);
 
   // ── Voice Recording (auto-send on release) ──────────────────────
   // After recording stops: transcribe → auto-send → Luca answers with voice
@@ -2030,6 +2069,33 @@ export default function PartnerChat() {
   const toggleActionPanel = useCallback(() => {
     setShowActionPanel((prev) => !prev);
   }, []);
+
+  // ── Deliberation content for Action Panel ────────────────────
+  const deliberationContent = useMemo(() => {
+    if (deliberationTopic && partnerRoomId) {
+      return (
+        <DeliberationView
+          roomId={partnerRoomId}
+          topic={deliberationTopic}
+          onClose={handleCloseDeliberation}
+          onConsensusReached={handleDeliberationConsensus}
+          onViewProvenance={handleViewProvenance}
+        />
+      );
+    }
+    if (provenanceChainId && partnerRoomId) {
+      return (
+        <ProvenanceViewer
+          roomId={partnerRoomId}
+          initialChainId={provenanceChainId}
+          onClose={handleCloseDeliberation}
+        />
+      );
+    }
+    return null;
+  }, [deliberationTopic, provenanceChainId, partnerRoomId, handleCloseDeliberation, handleDeliberationConsensus, handleViewProvenance]);
+
+  const hasActiveDeliberation = !!deliberationTopic || !!provenanceChainId;
 
   // ── Render ────────────────────────────────────────────────────
   return (
@@ -2475,6 +2541,18 @@ export default function PartnerChat() {
                         <div className="text-[10px] text-muted-foreground/50">Write or draw with AI</div>
                       </div>
                     </button>
+                    <div className="my-1 border-t border-white/5" />
+                    <p className="px-3 py-1.5 text-[10px] font-medium text-[#C9A340]/60 uppercase tracking-wider">Agents</p>
+                    <button
+                      onClick={() => { setAttachMenuOpen(false); setShowDeliberationPrompt(true); }}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <MessageSquare className="w-4 h-4 text-[#C9A340]" />
+                      <div>
+                        <div className="text-sm text-foreground">Deliberate</div>
+                        <div className="text-[10px] text-muted-foreground/50">Multi-agent debate</div>
+                      </div>
+                    </button>
                   </div>
                 </motion.div>
               </>
@@ -2488,6 +2566,71 @@ export default function PartnerChat() {
                 onSelect={handleCreativeSelect}
                 onClose={() => setCreativeMenuOpen(false)}
               />
+            )}
+          </AnimatePresence>
+
+          {/* Deliberation Topic Prompt */}
+          <AnimatePresence>
+            {showDeliberationPrompt && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setShowDeliberationPrompt(false)} />
+                <motion.div
+                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute bottom-full left-0 mb-2 z-40 rounded-xl overflow-hidden min-w-[280px]"
+                  style={{
+                    background: "rgba(15,27,61,0.98)",
+                    border: "1px solid rgba(201,163,64,0.2)",
+                    backdropFilter: "blur(20px)",
+                    boxShadow: "0 -8px 32px rgba(0,0,0,0.4)",
+                  }}
+                >
+                  <div className="p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <MessageSquare className="w-4 h-4 text-[#C9A340]" />
+                      <span className="text-xs font-semibold text-foreground">Start Deliberation</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground/60 mb-2">
+                      Enter a topic for agents to debate
+                    </p>
+                    <input
+                      type="text"
+                      value={deliberationTopicInput}
+                      onChange={(e) => setDeliberationTopicInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && deliberationTopicInput.trim()) {
+                          handleStartDeliberation(deliberationTopicInput);
+                        }
+                        if (e.key === "Escape") setShowDeliberationPrompt(false);
+                      }}
+                      placeholder="e.g. Should we use React or Vue?"
+                      className="w-full rounded-lg px-3 py-2 text-sm bg-white/5 border border-white/10 text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:border-[#C9A340]/40 mb-2"
+                      autoFocus
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setShowDeliberationPrompt(false)}
+                        className="flex-1 py-1.5 rounded-lg text-xs font-medium text-muted-foreground/60 hover:bg-white/5 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => handleStartDeliberation(deliberationTopicInput)}
+                        disabled={!deliberationTopicInput.trim()}
+                        className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                        style={{
+                          background: deliberationTopicInput.trim() ? "#C9A340" : "rgba(201,163,64,0.2)",
+                          color: deliberationTopicInput.trim() ? "#0a0f1e" : "rgba(201,163,64,0.5)",
+                        }}
+                      >
+                        Start
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              </>
             )}
           </AnimatePresence>
 
@@ -2587,6 +2730,8 @@ export default function PartnerChat() {
           show={true}
           onClose={() => setShowActionPanel(false)}
           isMobile={false}
+          deliberationContent={deliberationContent}
+          hasActiveDeliberation={hasActiveDeliberation}
         />
       </motion.div>
     )}
@@ -2605,6 +2750,8 @@ export default function PartnerChat() {
           show={showActionPanel}
           onClose={() => setShowActionPanel(false)}
           isMobile={true}
+          deliberationContent={deliberationContent}
+          hasActiveDeliberation={hasActiveDeliberation}
         />
       </>
     )}
