@@ -3664,6 +3664,8 @@ Do NOT:
       logger.error({ source: "vision-analyze", error: err?.message }, "Vision analysis failed");
       res.status(500).json({ error: "Vision analysis failed", detail: err?.message || "Unknown error" });
     }
+  }));
+
   // ── Push Notifications ─────────────────────────────────────────
 
   // Get VAPID public key for client-side subscription
