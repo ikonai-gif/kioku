@@ -51,6 +51,7 @@ export const helmetMiddleware = helmet({
       fontSrc:        ["'self'", "https://fonts.gstatic.com"],
       imgSrc:         ["'self'", "data:", "https:"],
       connectSrc:     ["'self'", "https://usekioku.com", "https://api.openai.com", "https://js.stripe.com"],
+      mediaSrc:       ["'self'", "blob:", "data:"],
       frameSrc:       ["https://js.stripe.com"],
       frameAncestors: ["'none'"],
       upgradeInsecureRequests: [],

@@ -147,8 +147,10 @@ function SpeakButton({ text }: { text: string }) {
     }
     setState("loading");
     try {
-      unlockAudio(); // Ensure Safari allows playback
+      unlockAudio();
       const token = getSessionToken();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
       const res = await fetch(`${API_BASE}/api/partner/speak`, {
         method: "POST",
         headers: {
@@ -157,22 +159,29 @@ function SpeakButton({ text }: { text: string }) {
         },
         credentials: "include",
         body: JSON.stringify({ text }),
+        signal: controller.signal,
       });
-      if (!res.ok) throw new Error("TTS failed");
+      clearTimeout(timeout);
+      if (!res.ok) { setState("idle"); return; }
       const blob = await res.blob();
+      if (blob.size < 100) { setState("idle"); return; }
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = () => {
-        setState("idle");
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        setState("idle");
-        URL.revokeObjectURL(url);
-      };
+      audio.onended = () => { setState("idle"); URL.revokeObjectURL(url); };
+      audio.onerror = () => { setState("idle"); URL.revokeObjectURL(url); };
+      // Set state before play — play() may reject on mobile
       setState("playing");
-      await audio.play();
+      try {
+        await audio.play();
+      } catch {
+        // Autoplay blocked — try muted then unmute trick
+        audio.muted = true;
+        await audio.play().catch(() => {});
+        audio.muted = false;
+        // If still no sound, at least reset state
+        if (audio.paused) { setState("idle"); URL.revokeObjectURL(url); }
+      }
     } catch {
       setState("idle");
     }
