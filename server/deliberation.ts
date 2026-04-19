@@ -2950,7 +2950,7 @@ export async function triggerAgentResponses(
                 max_tokens: claudeMaxTokens,
                 system: systemPrompt,
                 messages: claudeMessages,
-                ...(isPartnerChat ? { tools: partnerTools, tool_choice: { type: "any" } as const } : {}),
+                ...(isPartnerChat ? { tools: partnerTools, ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
               });
 
               // Extract text from response
