@@ -1186,6 +1186,53 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Human Participant Mode — user joins deliberation as themselves ──
+  app.post("/api/rooms/:id/human-message", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = parseInt(param(req, 'id'), 10);
+    if (isNaN(roomId)) return res.status(404).json({ error: "Room not found" });
+
+    const { content } = req.body;
+    if (!content || typeof content !== "string" || content.trim().length === 0) {
+      return res.status(400).json({ error: "Content is required" });
+    }
+
+    // Get user info for display
+    const user = await storage.getUser(userId);
+    const userName = user?.name || user?.email?.split("@")[0] || "Human";
+
+    // Create message as human participant (agentId = null, special agentName)
+    const msg = await storage.addRoomMessage({
+      roomId,
+      agentId: null,
+      agentName: `👤 ${userName}`,
+      agentColor: "#3B82F6", // blue for humans
+      content: content.trim().slice(0, 4096),
+    }, userId);
+    if (!msg) return res.status(404).json({ error: "Room not found" });
+
+    // Broadcast via WebSocket
+    broadcastToRoom(roomId, msg);
+
+    // Trigger agent responses to the human's message
+    const room = await storage.getRoom(roomId);
+    if (room) {
+      const roomAgentIds: number[] = JSON.parse(room.agentIds || "[]");
+      triggerAgentResponses(
+        roomId,
+        userId,
+        null,
+        userName,
+        content.trim(),
+        roomAgentIds,
+        room.name
+      ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
+    }
+
+    res.json(msg);
+  }));
+
   // ── Proactive Check — Luca initiates conversation ─────────────
   app.post("/api/rooms/:id/proactive-check", asyncHandler(async (req, res) => {
     const userId = await getUser(req);

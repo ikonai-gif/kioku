@@ -47,6 +47,27 @@ async function validateUrl(url: string): Promise<void> {
   }
 }
 
+async function fetchWithRetry(url: string, options: RequestInit, retries = 2, delay = 1000): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(url, options);
+      if (resp.ok || resp.status < 500) return resp; // Don't retry client errors
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, delay * (attempt + 1)));
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, delay * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("fetchWithRetry: exhausted retries");
+}
+
 function isPrivateIp(ip: string): boolean {
   // IPv6 loopback
   if (ip === "::1" || ip === "::") return true;
@@ -2797,7 +2818,7 @@ export async function triggerAgentResponses(
               const crypto = await import("crypto");
               const signature = crypto.createHmac("sha256", wh.secret).update(JSON.stringify(payload)).digest("hex");
 
-              const resp = await fetch(wh.url, {
+              const resp = await fetchWithRetry(wh.url, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
@@ -2841,6 +2862,18 @@ export async function triggerAgentResponses(
           }
         } catch (err) {
           console.error(`[deliberation] External agent ${agent.name} failed:`, err);
+          // Dead letter log for webhook failures
+          if ((agent as any).agentType === "webhook") {
+            const wh = await storage.getWebhook(agent.id, userId);
+            await storage.addLog({
+              userId,
+              agentName: agent.name,
+              agentColor: agent.color ?? "#9B59B6",
+              operation: "webhook_failed",
+              detail: `Webhook to ${wh?.url ?? "unknown"} failed after retries: ${err instanceof Error ? err.message : String(err)}`,
+              latencyMs: null,
+            });
+          }
         }
         continue; // Skip the normal LLM call
       }
