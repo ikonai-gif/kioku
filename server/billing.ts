@@ -162,13 +162,21 @@ export function registerBilling(app: Express) {
     const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    if (!user.stripeCustomerId) {
-      return res.status(404).json({ error: "No billing account. Upgrade first." });
-    }
-
     try {
+      // Get or create Stripe customer
+      let customerId = user.stripeCustomerId ?? undefined;
+      if (!customerId) {
+        const customer = await stripe.customers.create({
+          email: user.email,
+          name:  user.name,
+          metadata: { kioku_user_id: String(userId) },
+        });
+        customerId = customer.id;
+        await storage.updateStripeCustomerId(userId, customerId);
+      }
+
       const portalSession = await stripe.billingPortal.sessions.create({
-        customer:   user.stripeCustomerId,
+        customer:   customerId,
         return_url: return_url ?? `${process.env.APP_URL}/billing`,
       });
       res.json({ portal_url: portalSession.url });

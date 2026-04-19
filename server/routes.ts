@@ -245,12 +245,12 @@ async function getApiKeyUser(req: any): Promise<number | null> {
 async function getUser(req: any): Promise<number | null> {
   const sessionUser = getSessionUser(req);
   if (sessionUser !== null) return sessionUser;
-  // Master key grants admin access (user 1)
+  // Master key grants admin access (owner user 10)
   const masterKey = process.env.KIOKU_MASTER_KEY;
   if (masterKey) {
     const xApiKey = (req.headers["x-api-key"] as string) || "";
     const xMasterKey = (req.headers["x-master-key"] as string) || "";
-    if (safeCompare(xApiKey, masterKey) || safeCompare(xMasterKey, masterKey)) return 1;
+    if (safeCompare(xApiKey, masterKey) || safeCompare(xMasterKey, masterKey)) return 10;
   }
   return getApiKeyUser(req);
 }
