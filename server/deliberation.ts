@@ -646,6 +646,44 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["prompt"],
     },
   },
+  {
+    name: "generate_speech",
+    description: "Generate natural speech audio from text using OpenAI TTS. Use for: character voiceovers, narration, dialogue recordings, audiobook segments. Supports multiple voices and emotional direction via instructions. ALWAYS use when the user asks to voice, narrate, read aloud, or create voiceover.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        text: { type: "string", description: "The text to speak. Up to 4096 characters." },
+        voice: { type: "string", enum: ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"], description: "Voice character. coral=warm female, onyx=deep male, nova=bright female, echo=calm male, alloy=neutral, ballad=storytelling. Default: coral" },
+        instructions: { type: "string", description: "Emotional/style direction: accent, tone, speed, mood. E.g. 'Speak slowly with a dramatic whisper' or 'Cheerful and energetic, like a news anchor'" },
+        speed: { type: "number", description: "Speech speed 0.25-4.0. Default: 1.0" },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "generate_music",
+    description: "Generate music tracks using Google Lyria 3. Creates high-quality 44.1kHz stereo audio with vocals, lyrics, and full instrumental arrangements from a text prompt. Use for: soundtrack, background music, theme songs, jingles, ambient scores. Supports time-coded sections for structured compositions. ALWAYS use when the user asks to create music, a song, soundtrack, jingle, or beat.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "Music description — genre, mood, instruments, tempo, vocals. For structured songs use time codes: '[0:00-0:10] Intro: soft piano...' Can include lyrics. Be detailed about style." },
+        duration: { type: "string", enum: ["short", "long"], description: "short=30sec clip (fast), long=up to 3min full track (slower). Default: short" },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "stitch_media",
+    description: "Combine multiple video clips or audio files into one continuous file using ffmpeg. Use for: assembling series episodes from individual scenes, creating montages, joining voiceover with music, concatenating clips in sequence. ALWAYS use when the user asks to combine, join, merge, stitch, or assemble multiple media files.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        urls: { type: "array", items: { type: "string" }, description: "Array of media URLs (video or audio) to concatenate in order. Must be direct URLs to media files." },
+        output_format: { type: "string", enum: ["mp4", "mp3", "wav"], description: "Output format. mp4 for video, mp3/wav for audio. Default: mp4" },
+      },
+      required: ["urls"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -2622,6 +2660,161 @@ print("Converted MD to DOCX")
           return "Video generation timed out after 2 minutes. The video may still be processing — try again later.";
         } catch (err: any) {
           return `Video generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "generate_speech": {
+        const text = toolInput.text;
+        if (!text || typeof text !== "string") return "Missing required field: text.";
+        const voice = toolInput.voice || "coral";
+        const instructions = toolInput.instructions || "";
+        const speed = Math.max(0.25, Math.min(4.0, toolInput.speed || 1.0));
+
+        const oaiKey = process.env.OPENAI_API_KEY;
+        if (!oaiKey) return "Speech generation requires OPENAI_API_KEY.";
+
+        try {
+          const OAI = (await import("openai")).default;
+          const oaiClient = new OAI({ apiKey: oaiKey });
+          const response = await oaiClient.audio.speech.create({
+            model: "gpt-4o-mini-tts",
+            voice: voice as any,
+            input: text.slice(0, 4096),
+            instructions: instructions || undefined,
+            speed,
+            response_format: "mp3",
+          } as any);
+
+          // Convert response to base64
+          const buffer = Buffer.from(await response.arrayBuffer());
+          const b64 = buffer.toString("base64");
+          return `[Audio generated] data:audio/mp3;base64,${b64}`;
+        } catch (err: any) {
+          return `Speech generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "generate_music": {
+        const prompt = toolInput.prompt;
+        if (!prompt || typeof prompt !== "string") return "Missing required field: prompt.";
+        const duration = toolInput.duration || "short";
+
+        const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY;
+        if (!geminiKey) return "Music generation requires GEMINI_API_KEY.";
+
+        try {
+          // Use Lyria 3: clip (30s) or pro (up to 3min)
+          const model = duration === "long" ? "lyria-3-pro-preview" : "lyria-3-clip-preview";
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt.slice(0, 3000) }] }],
+            }),
+            signal: AbortSignal.timeout(180000), // 3 min timeout for long tracks
+          });
+
+          if (!resp.ok) {
+            const err = await resp.text();
+            return `Music generation failed (${resp.status}): ${err.slice(0, 300)}`;
+          }
+
+          const data = await resp.json() as any;
+          const parts = data?.candidates?.[0]?.content?.parts || [];
+
+          // Find the audio part
+          const audioPart = parts.find((p: any) => p.inlineData?.mimeType?.startsWith("audio/"));
+          const textPart = parts.find((p: any) => p.text);
+
+          if (audioPart?.inlineData?.data) {
+            const mime = audioPart.inlineData.mimeType || "audio/mp3";
+            const caption = textPart?.text?.slice(0, 200) || "";
+            return `[Audio generated] data:${mime};base64,${audioPart.inlineData.data}${caption ? "\n" + caption : ""}`;
+          }
+
+          // Text-only response (model might describe what it would create)
+          if (textPart?.text) {
+            return `Music model responded with text only (no audio generated): ${textPart.text.slice(0, 500)}. The Lyria 3 model may not be available for this API key.`;
+          }
+
+          return "Music generation returned no audio content. Check Lyria 3 API access.";
+        } catch (err: any) {
+          return `Music generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "stitch_media": {
+        const urls = toolInput.urls;
+        if (!Array.isArray(urls) || urls.length < 2) return "Need at least 2 URLs to stitch media.";
+        if (urls.length > 20) return "Maximum 20 media files per stitch operation.";
+        const outputFormat = toolInput.output_format || "mp4";
+
+        try {
+          const { execSync } = await import("child_process");
+          const fs = await import("fs");
+          const path = await import("path");
+          const os = await import("os");
+
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "stitch-"));
+          const listFile = path.join(tmpDir, "filelist.txt");
+          const outputFile = path.join(tmpDir, `output.${outputFormat}`);
+
+          // Download all media files
+          const downloaded: string[] = [];
+          for (let i = 0; i < urls.length; i++) {
+            const url = urls[i];
+            const ext = outputFormat === "mp4" ? "mp4" : outputFormat;
+            const filePath = path.join(tmpDir, `part_${i}.${ext}`);
+
+            // Handle data: URIs
+            if (url.startsWith("data:")) {
+              const b64Match = url.match(/^data:[^;]+;base64,(.+)$/);
+              if (b64Match) {
+                fs.writeFileSync(filePath, Buffer.from(b64Match[1], "base64"));
+                downloaded.push(filePath);
+                continue;
+              }
+            }
+
+            // Download from URL
+            const resp = await fetch(url, { signal: AbortSignal.timeout(60000) });
+            if (!resp.ok) return `Failed to download media #${i + 1}: HTTP ${resp.status}`;
+            const buf = Buffer.from(await resp.arrayBuffer());
+            fs.writeFileSync(filePath, buf);
+            downloaded.push(filePath);
+          }
+
+          // Create ffmpeg concat file list
+          const fileListContent = downloaded.map(f => `file '${f}'`).join("\n");
+          fs.writeFileSync(listFile, fileListContent);
+
+          // Run ffmpeg concat
+          const ffmpegCmd = outputFormat === "mp4"
+            ? `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outputFile}" 2>&1`
+            : `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:a libmp3lame -q:a 2 "${outputFile}" 2>&1`;
+
+          execSync(ffmpegCmd, { timeout: 120000 });
+
+          if (!fs.existsSync(outputFile)) {
+            return "FFmpeg completed but output file not found.";
+          }
+
+          // Read output and convert to base64
+          const outBuf = fs.readFileSync(outputFile);
+          const outB64 = outBuf.toString("base64");
+          const mime = outputFormat === "mp4" ? "video/mp4" : outputFormat === "wav" ? "audio/wav" : "audio/mp3";
+
+          // Cleanup
+          try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+
+          if (mime.startsWith("video/")) {
+            return `[Video generated] data:${mime};base64,${outB64}`;
+          }
+          return `[Audio generated] data:${mime};base64,${outB64}`;
+        } catch (err: any) {
+          return `Media stitching failed: ${err?.message || String(err)}`;
         }
       }
 

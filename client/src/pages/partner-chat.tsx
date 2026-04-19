@@ -310,6 +310,24 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   );
 }
 
+// ── Audio player for generated speech/music ────────────────
+function AudioPlayer({ src, caption }: { src: string; caption?: string }) {
+  return (
+    <div className="my-2 rounded-xl overflow-hidden" style={{ background: "rgba(0,0,0,0.3)", border: "1px solid rgba(201,163,64,0.25)" }}>
+      <div className="flex items-center gap-2 px-3 pt-2">
+        <Volume2 className="w-4 h-4 text-[#C9A340]/70" />
+        <span className="text-xs text-[#C9A340]/70 font-mono">Audio</span>
+      </div>
+      <div className="px-3 py-2">
+        <audio src={src} controls preload="metadata" className="w-full max-w-[360px]" style={{ height: 36 }} />
+      </div>
+      {caption && (
+        <div className="px-3 pb-2 text-xs text-white/50 line-clamp-2">{caption}</div>
+      )}
+    </div>
+  );
+}
+
 // ── Video player for generated videos ──────────────────────────
 function VideoPlayer({ src, caption }: { src: string; caption?: string }) {
   return (
@@ -351,6 +369,18 @@ function ExecOutputBlock({ output }: { output: string }) {
 // ── Markdown renderer for chat messages ───────────────────────
 function renderMessageContent(content: string): React.ReactNode {
   if (!content) return null;
+
+  // Detect [Audio generated] data:audio/... patterns
+  const audioMatch = content.match(/\[Audio generated\]\s*(\S+)/);
+  if (audioMatch) {
+    const audioSrc = audioMatch[1];
+    const rest = content.replace(audioMatch[0], '').trim();
+    return (
+      <>
+        <AudioPlayer src={audioSrc} caption={rest || undefined} />
+      </>
+    );
+  }
 
   // Detect [Video generated] <url> or [Video generated via Veo 2] data:... patterns
   const videoMatch = content.match(/\[Video generated(?:[^\]]*)\]\s*(\S+)/);
@@ -566,6 +596,21 @@ function parseArtifactsFromMessages(messages: any[], isUserFn: (msg: any) => boo
         title: `${lang.charAt(0).toUpperCase() + lang.slice(1)} snippet`,
         content: code,
         language: lang,
+        timestamp: ts,
+      });
+    }
+
+    // Extract audio from [Audio generated] patterns
+    const audioRegex = /\[Audio generated\]\s*(\S+)/g;
+    while ((match = audioRegex.exec(content)) !== null) {
+      const audioUrl = match[1];
+      artifacts.push({
+        id: `art-aud-${msg.id}-${artifactIdCounter++}`,
+        type: "audio" as any,
+        category: "media",
+        title: "Generated audio",
+        content: "",
+        url: audioUrl,
         timestamp: ts,
       });
     }
