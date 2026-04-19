@@ -96,7 +96,7 @@ export function registerPrivacyRoutes(app: Express, getUser: (req: any) => Promi
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const memoryId = parseInt(req.params.id, 10);
+    const memoryId = parseInt(req.params.id as string, 10);
     if (isNaN(memoryId)) return res.status(400).json({ error: "Invalid memory ID" });
 
     const result = await pool.query(

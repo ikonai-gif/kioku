@@ -952,6 +952,7 @@ async function executePartnerTool(
 
           if (contentType.includes("pdf") || fileUrl.toLowerCase().endsWith(".pdf")) {
             try {
+              // @ts-ignore
               const { PDFParse } = await import("pdf-parse");
               const pdf = new PDFParse({ data: new Uint8Array(buffer) });
               const result = await pdf.getText();
@@ -2942,10 +2943,11 @@ export async function triggerAgentResponses(
 
             // Execute each tool call
             for (const toolCall of msg.tool_calls) {
-              const toolName = toolCall.function.name;
+              const tcAny = toolCall as any;
+              const toolName = tcAny.function.name;
               let toolArgs: Record<string, any> = {};
               try {
-                toolArgs = JSON.parse(toolCall.function.arguments || "{}");
+                toolArgs = JSON.parse(tcAny.function.arguments || "{}");
               } catch { toolArgs = {}; }
 
               const result = await executePartnerTool(toolName, toolArgs, userId, agent.id);

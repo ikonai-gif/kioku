@@ -201,7 +201,7 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
   const openCamera = useCallback(async () => {
     if (disabled) return;
     // Try getUserMedia for live camera; fall back to file picker
-    if (navigator.mediaDevices?.getUserMedia) {
+    if (typeof navigator.mediaDevices?.getUserMedia === 'function') {
       setShowCamera(true);
       startCamera(facingMode);
     } else {

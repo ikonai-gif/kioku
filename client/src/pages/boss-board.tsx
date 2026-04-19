@@ -95,11 +95,12 @@ export default function BossBoardPage() {
     );
   }
 
-  const health = adminStatus?.health ?? {};
-  const usage = adminStatus?.usage ?? {};
-  const account = adminStatus?.account ?? {};
-  const security = adminStatus?.security ?? {};
-  const recentActivity = adminStatus?.recent_activity ?? {};
+  const boardData = adminStatus as any;
+  const health = boardData?.health ?? {};
+  const usage = boardData?.usage ?? {};
+  const account = boardData?.account ?? {};
+  const security = boardData?.security ?? {};
+  const recentActivity = boardData?.recent_activity ?? {};
 
   const handleExport = async (format: string) => {
     try {
@@ -342,7 +343,7 @@ export default function BossBoardPage() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">Stripe Status</span>
-              <span className="text-xs text-foreground">{billingData?.status ?? "Not connected"}</span>
+              <span className="text-xs text-foreground">{(billingData as any)?.status ?? "Not connected"}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">Deliberations (Month)</span>

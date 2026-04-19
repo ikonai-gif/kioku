@@ -1,3 +1,4 @@
+// @ts-ignore
 import webpush from "web-push";
 import { pool } from "./storage";
 import logger from "./logger";

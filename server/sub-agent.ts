@@ -84,10 +84,11 @@ Rules:
 
     messages.push(msg);
     for (const tc of msg.tool_calls) {
+      const tcAny = tc as any;
       let args: Record<string, any> = {};
-      try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* malformed JSON */ }
-      const result = await executeToolFn(tc.function.name, args, userId, agentId);
-      toolsUsed.push(tc.function.name);
+      try { args = JSON.parse(tcAny.function.arguments || "{}"); } catch { /* malformed JSON */ }
+      const result = await executeToolFn(tcAny.function.name, args, userId, agentId);
+      toolsUsed.push(tcAny.function.name);
       messages.push({ role: "tool", tool_call_id: tc.id, content: result });
     }
   }

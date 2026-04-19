@@ -46,6 +46,12 @@ import {
 } from "./validation";
 import { body, validationResult } from "express-validator";
 
+/** Extract a single-string route param (Express 5 types params as string | string[]). */
+function param(req: Request, name: string): string {
+  const v = req.params[name];
+  return Array.isArray(v) ? v[0] : v;
+}
+
 // express-validator middleware: validate → check errors → proceed
 function handleValidationErrors(req: Request, res: Response, next: NextFunction) {
   const errors = validationResult(req);
@@ -380,7 +386,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ── GET /auth/verify/:token — one-click magic link (email → cookie → redirect) ──
   app.get("/auth/verify/:token", asyncHandler(async (req, res) => {
-    const { token } = req.params;
+    const token = param(req, 'token');
     const email = await storage.verifyMagicToken(token);
     if (!email) {
       // Token invalid/expired → redirect to app login with error flag
@@ -692,7 +698,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/agent/turns/:turnId", asyncHandler(async (req, res) => {
     const auth = await getAgentAuth(req);
     if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
-    const turnId = parseInt(req.params.turnId, 10);
+    const turnId = parseInt(param(req, 'turnId'), 10);
     if (isNaN(turnId)) return res.status(404).json({ error: "Turn not found" });
     const turn = await storage.getAgentTurn(turnId);
     if (!turn || turn.agentId !== auth.agentId) {
@@ -708,7 +714,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!auth.scopes.includes("deliberation.respond")) {
       return res.status(403).json({ error: "Token lacks deliberation.respond scope" });
     }
-    const turnId = parseInt(req.params.turnId, 10);
+    const turnId = parseInt(param(req, 'turnId'), 10);
     if (isNaN(turnId)) return res.status(404).json({ error: "Turn not found" });
     const turn = await storage.getAgentTurn(turnId);
     if (!turn || turn.agentId !== auth.agentId) {
@@ -1078,7 +1084,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         finalAgentIds = [primaryAgent.id];
         // Ensure primary agent is online so it can respond
         if (primaryAgent.status !== "online") {
-          await storage.updateAgent(primaryAgent.id, userId, { status: "online" });
+          await storage.updateAgent(primaryAgent.id, userId, { status: "online" } as any);
         }
       }
     }
@@ -1668,7 +1674,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const result = await getProvenanceChain(decisionId);
     if (!result) return res.status(404).json({ error: "Decision not found" });
     // Verify the decision belongs to the user
-    if (result.decision.userId !== userId) return res.status(404).json({ error: "Decision not found" });
+    if ((result.decision as any).userId !== userId) return res.status(404).json({ error: "Decision not found" });
     res.json(result);
   }));
 
@@ -1813,7 +1819,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/agents/templates/:templateId", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const template = AGENT_TEMPLATES[req.params.templateId];
+    const template = AGENT_TEMPLATES[param(req, 'templateId')];
     if (!template) return res.status(404).json({ error: "Template not found" });
 
     // Check plan limits
@@ -1960,7 +1966,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     let todayRequests = { rows: [{ cnt: "0" }] };
-    let recentLogs: any[] = [];
+    let recentLogs: any = [];
     let recentSessions = { rows: [] as any[] };
     let totalUsers = { rows: [{ cnt: "0" }] };
     let totalApiKeys = { rows: [{ cnt: "0" }] };
@@ -2447,8 +2453,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       quality: "standard",
     });
 
-    const imageUrl = response.data[0]?.url;
-    const revisedPrompt = response.data[0]?.revised_prompt;
+    const imageUrl = response.data?.[0]?.url;
+    const revisedPrompt = response.data?.[0]?.revised_prompt;
 
     // Find primary agent for memory storage
     const userAgents = await storage.getAgents(userId);
@@ -2480,7 +2486,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const memories = await storage.getMemories(userId, undefined, undefined, '_creations', 200);
+    const memories = await (storage as any).getMemories(userId, undefined, undefined, '_creations', 200);
     const creations: any[] = [];
     for (const m of memories) {
       const isImage = m.content.startsWith('[Image created]');
@@ -2830,7 +2836,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const domain = await storage.getKnowledgeDomain(userId, req.params.slug);
+    const domain = await storage.getKnowledgeDomain(userId, param(req, 'slug'));
     if (!domain) return res.status(404).json({ error: "Domain not found" });
 
     res.json({ slug: domain.slug, status: domain.status, chunkCount: domain.chunkCount });
@@ -2841,7 +2847,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { slug } = req.params;
+    const slug = param(req, 'slug');
     const { content, chunks } = req.body;
 
     if (!content && !chunks) return res.status(400).json({ error: "content or chunks required" });
@@ -2925,7 +2931,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(429).json({ error: `Plan limit reached: ${genLimits.memories} memories (${genPlan} plan)` });
     }
 
-    const { slug } = req.params;
+    const slug = param(req, 'slug');
     const domain = await storage.getKnowledgeDomain(userId, slug);
     if (!domain) return res.status(404).json({ error: "Domain not found" });
 
@@ -3022,7 +3028,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const deleted = await storage.deleteKnowledgeDomain(userId, req.params.slug);
+    const deleted = await storage.deleteKnowledgeDomain(userId, param(req, 'slug'));
     if (!deleted) return res.status(404).json({ error: "Domain not found" });
 
     res.json({ ok: true, message: "Domain and associated knowledge deleted" });
