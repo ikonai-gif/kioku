@@ -1914,38 +1914,41 @@ export default function PartnerChat() {
   };
 
 
-  const handlePaste = async (e: React.ClipboardEvent) => {
+  const handlePaste = (e: React.ClipboardEvent) => {
+    // Always read text synchronously before any async work
+    const pastedText = e.clipboardData?.getData("text/plain") || "";
     const items = e.clipboardData?.items;
-    if (!items) return;
+
     // Check for images first
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.startsWith("image/")) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (!file) return;
-        try {
-          const { preview, base64, mimeType } = await compressImage(file);
-          setImagePreview(preview);
-          setImageBase64(`${mimeType}:${base64}`);
-          toast({ title: "Image pasted — tap send" });
-        } catch {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result as string;
-            setImagePreview(result);
-            const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
-            const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
-            setImageBase64(`${mime}:${result.split(",")[1]}`);
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) return;
+          compressImage(file).then(({ preview, base64, mimeType }) => {
+            setImagePreview(preview);
+            setImageBase64(`${mimeType}:${base64}`);
             toast({ title: "Image pasted — tap send" });
-          };
-          reader.readAsDataURL(file);
+          }).catch(() => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = reader.result as string;
+              setImagePreview(result);
+              const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
+              const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+              setImageBase64(`${mime}:${result.split(",")[1]}`);
+              toast({ title: "Image pasted — tap send" });
+            };
+            reader.readAsDataURL(file);
+          });
+          return;
         }
-        return;
       }
     }
-    // Text paste — handle explicitly for controlled textarea
-    const pastedText = e.clipboardData?.getData("text/plain");
+
+    // Text paste — always prevent default and handle manually for controlled textarea
     if (pastedText) {
       e.preventDefault();
       const el = inputRef.current;
@@ -1954,7 +1957,6 @@ export default function PartnerChat() {
         const end = el.selectionEnd ?? input.length;
         const newValue = input.slice(0, start) + pastedText + input.slice(end);
         setInput(newValue);
-        // Restore cursor position after paste
         requestAnimationFrame(() => {
           el.selectionStart = el.selectionEnd = start + pastedText.length;
           el.style.height = "auto";
