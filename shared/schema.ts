@@ -294,6 +294,21 @@ export const insertUserIntegrationSchema = createInsertSchema(userIntegrations).
 export type InsertUserIntegration = z.infer<typeof insertUserIntegrationSchema>;
 export type UserIntegration = typeof userIntegrations.$inferSelect;
 
+// Phase 3: Push Notification Subscriptions
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id:         serial("id").primaryKey(),
+  userId:     integer("user_id").notNull(),
+  endpoint:   text("endpoint").notNull(),
+  p256dh:     text("p256dh").notNull(),
+  auth:       text("auth").notNull(),
+  categories: text("categories").notNull().default('["daily_brief","task_complete","agent_alert"]'), // JSON array
+  createdAt:  bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({ id: true, createdAt: true });
+export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+
 // Phase 8: Aesthetic Preferences — taste & style tracking
 export const aestheticPreferences = pgTable("aesthetic_preferences", {
   id:        serial("id").primaryKey(),

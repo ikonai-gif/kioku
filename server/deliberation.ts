@@ -13,6 +13,7 @@ import { broadcastToRoom, broadcastStreamChunk } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
+import { sendPushNotification } from "./push";
 import { checkSycophancy } from "./sycophancy-checker";
 import dns from "dns/promises";
 import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus } from "./cloud-integrations";
@@ -3574,6 +3575,14 @@ ${memoryContext}`,
     if (msg) {
       broadcastToRoom(roomId, msg);
     }
+
+    // Send push notification for daily brief / proactive message
+    sendPushNotification(userId, {
+      title: "\u2600\ufe0f Your morning brief is ready",
+      body: text.length > 120 ? text.slice(0, 117) + "..." : text,
+      url: "./#/",
+      category: "daily_brief",
+    }).catch(() => {});
 
     return text;
   } catch {

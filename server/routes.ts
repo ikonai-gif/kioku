@@ -25,6 +25,10 @@ import { getLimits, AI_QUOTAS, getUsageLimits } from "./limits";
 import { consolidateMemories } from "./memory-consolidation";
 import { pruneDecayedMemories } from "./memory-gc";
 import {
+  VAPID_PUBLIC_KEY, savePushSubscription, removePushSubscription,
+  getUserSubscriptions, sendPushNotification, updateSubscriptionCategories,
+} from "./push";
+import {
   validateBody, ValidationError,
   magicLinkSchema, verifyTokenSchema,
   createAgentSchema, updateAgentSchema, toggleAgentSchema,
@@ -3658,6 +3662,79 @@ Do NOT:
       logger.error({ source: "vision-analyze", error: err?.message }, "Vision analysis failed");
       res.status(500).json({ error: "Vision analysis failed", detail: err?.message || "Unknown error" });
     }
+  // ── Push Notifications ─────────────────────────────────────────
+
+  // Get VAPID public key for client-side subscription
+  app.get("/api/push/vapid-key", (_req, res) => {
+    res.json({ publicKey: VAPID_PUBLIC_KEY });
+  });
+
+  // Subscribe to push notifications
+  app.post("/api/push/subscribe", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { endpoint, keys, categories } = req.body;
+    if (!endpoint || !keys?.p256dh || !keys?.auth) {
+      return res.status(400).json({ error: "Missing subscription fields: endpoint, keys.p256dh, keys.auth" });
+    }
+
+    await savePushSubscription(userId, endpoint, keys.p256dh, keys.auth, categories);
+    res.json({ ok: true });
+  }));
+
+  // Unsubscribe from push notifications
+  app.post("/api/push/unsubscribe", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { endpoint } = req.body;
+    if (!endpoint) return res.status(400).json({ error: "Missing endpoint" });
+
+    await removePushSubscription(endpoint);
+    res.json({ ok: true });
+  }));
+
+  // Get current user's push subscriptions
+  app.get("/api/push/subscriptions", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const subs = await getUserSubscriptions(userId);
+    res.json(subs.map((s: any) => ({
+      id: s.id,
+      endpoint: s.endpoint,
+      categories: JSON.parse(s.categories || "[]"),
+      createdAt: s.created_at,
+    })));
+  }));
+
+  // Update notification categories for a subscription
+  app.patch("/api/push/categories", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { endpoint, categories } = req.body;
+    if (!endpoint || !Array.isArray(categories)) {
+      return res.status(400).json({ error: "Missing endpoint or categories array" });
+    }
+
+    await updateSubscriptionCategories(endpoint, categories);
+    res.json({ ok: true });
+  }));
+
+  // Send test notification (for debugging)
+  app.post("/api/push/test", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const result = await sendPushNotification(userId, {
+      title: "KIOKU™ Test",
+      body: "Push notifications are working!",
+      url: "./#/",
+      category: "agent_alert",
+    });
+    res.json(result);
   }));
 
   // ── Global error handler ──────────────────────────────────────
