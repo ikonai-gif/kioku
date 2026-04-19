@@ -1135,29 +1135,39 @@ async function executePartnerTool(
             if (toolSlug.startsWith(prefix + '_')) { appNameFromSlug = app; break; }
           }
           if (!appNameFromSlug) appNameFromSlug = toolSlug.split('_')[0]?.toLowerCase();
-          const resp = await fetch(`${composioBase}/actions/${toolSlug}/execute`, {
-            method: "POST",
-            headers: composioHeaders,
-            signal: AbortSignal.timeout(30000),
-            body: JSON.stringify({
-              input: params,
-              entityId: `kioku_user_${userId}`,
-              ...(appNameFromSlug ? { appName: appNameFromSlug } : {}),
-            }),
-          });
-          if (!resp.ok) {
-            const errBody = await resp.text().catch(() => "");
-            return `Composio execute failed: HTTP ${resp.status} ${errBody.slice(0, 500)}`;
-          }
-          const data = await resp.json() as any;
-          if (!data.successful && !data.successfull) {
-            // Check if auth is needed
-            if (data.error?.includes("connection") || data.error?.includes("auth") || data.message?.includes("connected account")) {
-              return `This action requires authentication. The user needs to connect their account first. Error: ${data.error || data.message}`;
+          // Try executing with user's entity, fall back to owner entity if auth fails
+          const entityIds = [`kioku_user_${userId}`];
+          // Add owner entity as fallback if different from current user
+          if (userId !== 10) entityIds.push('kioku_user_10');
+
+          let lastError = '';
+          for (const entityId of entityIds) {
+            const resp = await fetch(`${composioBase}/actions/${toolSlug}/execute`, {
+              method: "POST",
+              headers: composioHeaders,
+              signal: AbortSignal.timeout(30000),
+              body: JSON.stringify({
+                input: params,
+                entityId,
+                ...(appNameFromSlug ? { appName: appNameFromSlug } : {}),
+              }),
+            });
+            if (!resp.ok) {
+              lastError = await resp.text().catch(() => "");
+              continue;
             }
-            return `Action ${toolSlug} failed: ${data.error || data.message || JSON.stringify(data).slice(0, 500)}`;
+            const data = await resp.json() as any;
+            if (!data.successful && !data.successfull) {
+              const errMsg = data.error || data.message || '';
+              if (errMsg.includes("connection") || errMsg.includes("auth") || errMsg.includes("connected account")) {
+                lastError = errMsg;
+                continue; // Try next entity
+              }
+              return `Action ${toolSlug} failed: ${errMsg || JSON.stringify(data).slice(0, 500)}`;
+            }
+            return `Action ${toolSlug} executed successfully:\n${JSON.stringify(data.data || data, null, 2).slice(0, 4000)}`;
           }
-          return `Action ${toolSlug} executed successfully:\n${JSON.stringify(data.data || data, null, 2).slice(0, 4000)}`;
+          return `Composio execute failed for ${toolSlug}: ${lastError.slice(0, 500)}`;
         }
 
         return "Invalid action. Use 'search' to find tools or 'execute' to run one.";
@@ -3201,7 +3211,7 @@ This is your #1 rule. It overrides everything else.
 - User asks about facts, news, trends → web_search FIRST, never guess
 - User mentions numbers, data, math → run_code FIRST, never calculate in your head
 - User asks "how to" → plan_steps + execute step 1 right away
-- User mentions any external service → composio_action immediately
+- User mentions ANY external service (Gmail, Calendar, Notion, Sheets, Slack, etc.) → composio_action IMMEDIATELY. NEVER tell the user to "authorize" or "connect" — the accounts are already connected. Just execute the action.
 - Complex question → delegate_task or delegate_parallel to research it
 - NEVER respond with ONLY text when a tool could produce a real result
 - Your reply AFTER using tools should be SHORT: 1-3 sentences about what you DID and what you FOUND

@@ -1683,7 +1683,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── Cross-session Decision Provenance Chain (v1 API) ──────────
 
   // GET /api/v1/provenance/:chainId — full chain with all deliberations
-  app.get("/api/v1/provenance/:chainId", asyncHandler(async (req, res) => {
+  // Registered at /api/ because versioning middleware rewrites /api/v1/ → /api/
+  app.get("/api/provenance/:chainId", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const chainId = String(req.params.chainId);
@@ -1703,7 +1704,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // GET /api/v1/rooms/:roomId/provenance — all chains for a room
-  app.get("/api/v1/rooms/:roomId/provenance", asyncHandler(async (req, res) => {
+  app.get("/api/rooms/:roomId/provenance", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.params.roomId);
@@ -1724,7 +1725,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // POST /api/v1/provenance/link — manually link two deliberations
-  app.post("/api/v1/provenance/link", asyncHandler(async (req, res) => {
+  app.post("/api/provenance/link", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const validated = validateBody(provenanceLinkSchema, req.body);
@@ -1747,7 +1748,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // GET /api/v1/provenance/:chainId/tree — chain as tree structure
-  app.get("/api/v1/provenance/:chainId/tree", asyncHandler(async (req, res) => {
+  app.get("/api/provenance/:chainId/tree", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const chainId = String(req.params.chainId);
