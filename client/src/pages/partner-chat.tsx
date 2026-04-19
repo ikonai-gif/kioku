@@ -1891,6 +1891,7 @@ export default function PartnerChat() {
   const handlePaste = async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
+    // Check for images first
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.type.startsWith("image/")) {
@@ -1907,7 +1908,6 @@ export default function PartnerChat() {
           reader.onload = () => {
             const result = reader.result as string;
             setImagePreview(result);
-            // Extract mime type from data URL (data:image/png;base64,...)
             const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
             const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
             setImageBase64(`${mime}:${result.split(",")[1]}`);
@@ -1916,6 +1916,26 @@ export default function PartnerChat() {
           reader.readAsDataURL(file);
         }
         return;
+      }
+    }
+    // Text paste — handle explicitly for controlled textarea
+    const pastedText = e.clipboardData?.getData("text/plain");
+    if (pastedText) {
+      e.preventDefault();
+      const el = inputRef.current;
+      if (el) {
+        const start = el.selectionStart ?? input.length;
+        const end = el.selectionEnd ?? input.length;
+        const newValue = input.slice(0, start) + pastedText + input.slice(end);
+        setInput(newValue);
+        // Restore cursor position after paste
+        requestAnimationFrame(() => {
+          el.selectionStart = el.selectionEnd = start + pastedText.length;
+          el.style.height = "auto";
+          el.style.height = Math.min(el.scrollHeight, 120) + "px";
+        });
+      } else {
+        setInput((prev) => prev + pastedText);
       }
     }
   };
