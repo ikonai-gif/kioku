@@ -21,10 +21,14 @@ export default function VerifyPage() {
       return;
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
     fetch("/api/auth/verify-magic-link", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
+      signal: controller.signal,
     })
       .then((r) => r.json())
       .then((data) => {
@@ -36,11 +40,12 @@ export default function VerifyPage() {
           setMsg(data.error || "Link expired or invalid. Please request a new one.");
         }
       })
-      .catch(() => {
+      .catch((err) => {
         setStatus("error");
-        setMsg("Network error. Please try again.");
-      });
-  }, []);
+        setMsg(err?.name === "AbortError" ? "Verification timed out. Please try again." : "Network error. Please try again.");
+      })
+      .finally(() => clearTimeout(timeout));
+  }, [login, navigate]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">

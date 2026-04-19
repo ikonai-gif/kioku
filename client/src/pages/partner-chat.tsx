@@ -1799,19 +1799,19 @@ export default function PartnerChat() {
   // After recording stops: transcribe → auto-send → Luca answers with voice
   const voiceAutoSend = useCallback((text: string) => {
     if (!text.trim() || !partnerRoomId) return;
-    const token = getSessionToken();
-    fetch(`${API_BASE}/api/rooms/${partnerRoomId}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { "x-session-token": token } : {}),
-      },
-      credentials: "include",
-      body: JSON.stringify({ content: text.trim(), type: "user" }),
+    setIsThinking(true);
+    apiRequest("POST", `/api/rooms/${partnerRoomId}/messages`, {
+      agentId: null,
+      agentName: user?.name || "You",
+      agentColor: "#C9A340",
+      content: text.trim(),
+      isDecision: false,
     }).then(() => {
-      queryClient.invalidateQueries({ queryKey: [`/api/rooms/${partnerRoomId}/messages`] });
-    }).catch(() => {});
-  }, [partnerRoomId]);
+      queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoomId, "messages"] });
+    }).catch(() => {
+      setIsThinking(false);
+    });
+  }, [partnerRoomId, user]);
 
   const startRecording = async () => {
     try {
@@ -2031,7 +2031,8 @@ export default function PartnerChat() {
       const token = getSessionToken();
       const res = await fetch(`${API_BASE}/api/partner/read-file`, {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: token ? { "x-session-token": token } : {},
+        credentials: "include",
         body: formData,
       });
       if (res.ok) {
@@ -2066,7 +2067,7 @@ export default function PartnerChat() {
         headers: token ? { "x-session-token": token } : {},
         credentials: "include",
       });
-      queryClient.invalidateQueries({ queryKey: [`/api/rooms/${partnerRoomId}/messages`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoomId, "messages"] });
       toast({ title: "Chat cleared" });
     } catch {
       toast({ title: "Failed to clear chat", variant: "destructive" });

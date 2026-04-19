@@ -37,7 +37,6 @@ const baseNavItems = [
   { href: "/docs",      icon: BookOpen,         label: "API Docs"  },
   { href: "/privacy-dashboard", icon: Shield, label: "Privacy"   },
   { href: "/billing",   icon: CreditCard,       label: "Billing"   },
-  { href: "/privacy-dashboard", icon: Shield, label: "Privacy" },
 ];
 
 const bossNavItem = { href: "/boss", icon: Crown, label: "Boss Board" };
