@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -956,6 +956,315 @@ function TasteProfilePanel() {
   );
 }
 
+// ── Artifacts Sidebar ───────────────────────────────────────────
+
+function ArtifactTypeIcon({ type }: { type: string }) {
+  switch (type) {
+    case "image":
+      return <ImageIcon className="w-4 h-4 text-[#C9A340]" />;
+    case "file":
+    case "writing":
+    case "lyrics":
+    case "poem":
+    case "story":
+    case "essay":
+    case "script":
+      return <Code className="w-4 h-4 text-blue-400" />;
+    case "project":
+      return <Package className="w-4 h-4 text-green-400" />;
+    case "chart":
+      return <FileText className="w-4 h-4 text-purple-400" />;
+    default:
+      return <File className="w-4 h-4 text-muted-foreground" />;
+  }
+}
+
+function formatTimestamp(ts: number | string) {
+  const d = new Date(Number(ts));
+  const now = new Date();
+  const diff = now.getTime() - d.getTime();
+  if (diff < 60000) return "just now";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function ArtifactCard({
+  item,
+  selected,
+  onClick,
+}: {
+  item: any;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <motion.button
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      onClick={onClick}
+      className="w-full text-left rounded-xl p-3 transition-all duration-200"
+      style={{
+        background: selected ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.03)",
+        border: selected
+          ? "1px solid #C9A340"
+          : "1px solid rgba(255,255,255,0.06)",
+        boxShadow: selected ? "0 0 12px rgba(201,163,64,0.15)" : "none",
+      }}
+      whileHover={{
+        backgroundColor: "rgba(255,255,255,0.06)",
+        borderColor: "rgba(201,163,64,0.3)",
+      }}
+    >
+      <div className="flex items-start gap-3">
+        {item.type === "image" && item.content_url ? (
+          <div
+            className="w-10 h-10 rounded-lg flex-shrink-0 bg-cover bg-center"
+            style={{
+              backgroundImage: `url(${item.content_url})`,
+              border: "1px solid rgba(255,255,255,0.08)",
+            }}
+          />
+        ) : (
+          <div
+            className="w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center"
+            style={{ background: "rgba(255,255,255,0.05)" }}
+          >
+            <ArtifactTypeIcon type={item.type} />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-foreground truncate">
+            {item.title || item.prompt?.slice(0, 40) || "Untitled"}
+          </p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] text-muted-foreground/60 capitalize">{item.type}</span>
+            <span className="text-[10px] text-muted-foreground/40">
+              {formatTimestamp(item.created_at)}
+            </span>
+          </div>
+        </div>
+      </div>
+    </motion.button>
+  );
+}
+
+function ArtifactPreview({
+  item,
+  onBack,
+}: {
+  item: any;
+  onBack: () => void;
+}) {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = () => {
+    if (item.content_text) {
+      navigator.clipboard.writeText(item.content_text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleDownload = () => {
+    if (item.content_url) {
+      const a = document.createElement("a");
+      a.href = item.content_url;
+      a.download = item.title || "download";
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } else if (item.content_text) {
+      const blob = new Blob([item.content_text], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (item.title || "artifact") + ".txt";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Preview header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+        <button onClick={onBack} className="p-1 rounded-lg hover:bg-white/5 transition-colors">
+          <ArrowLeft className="w-4 h-4 text-muted-foreground" />
+        </button>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-foreground truncate">
+            {item.title || "Untitled"}
+          </p>
+          <p className="text-[10px] text-muted-foreground/60 capitalize">{item.type}</p>
+        </div>
+        <div className="flex items-center gap-1">
+          {item.content_text && (
+            <button
+              onClick={handleCopy}
+              className="p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+              title="Copy"
+            >
+              {copied ? (
+                <Check className="w-4 h-4 text-green-400" />
+              ) : (
+                <Copy className="w-4 h-4 text-muted-foreground" />
+              )}
+            </button>
+          )}
+          <button
+            onClick={handleDownload}
+            className="p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+            title="Download"
+          >
+            <Download className="w-4 h-4 text-muted-foreground" />
+          </button>
+        </div>
+      </div>
+
+      {/* Preview content */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {item.type === "image" && item.content_url ? (
+          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }}>
+            <img
+              src={item.content_url}
+              alt={item.title || "Artifact"}
+              className="w-full h-auto"
+              loading="lazy"
+            />
+          </div>
+        ) : item.content_text ? (
+          <div
+            className="rounded-xl p-4 text-sm font-mono whitespace-pre-wrap break-words leading-relaxed"
+            style={{
+              background: "rgba(0,0,0,0.3)",
+              border: "1px solid rgba(255,255,255,0.06)",
+              color: "rgba(255,255,255,0.8)",
+            }}
+          >
+            {item.content_text}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-40 text-muted-foreground/50">
+            <File className="w-8 h-8 mb-2" />
+            <p className="text-sm">No preview available</p>
+          </div>
+        )}
+
+        {item.prompt && (
+          <div className="mt-4 rounded-xl p-3" style={{ background: "rgba(201,163,64,0.05)", border: "1px solid rgba(201,163,64,0.1)" }}>
+            <p className="text-[10px] text-[#C9A340]/60 uppercase tracking-wider mb-1">Prompt</p>
+            <p className="text-xs text-muted-foreground/70">{item.prompt}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactsSidebar({
+  items,
+  show,
+  onClose,
+  selectedArtifact,
+  onSelectArtifact,
+}: {
+  items: any[];
+  show: boolean;
+  onClose: () => void;
+  selectedArtifact: any | null;
+  onSelectArtifact: (item: any | null) => void;
+}) {
+  return (
+    <AnimatePresence>
+      {show && (
+        <>
+          {/* Backdrop for mobile */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-40 md:hidden"
+            style={{ background: "rgba(0,0,0,0.5)" }}
+            onClick={onClose}
+          />
+          <motion.div
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "tween", duration: 0.3, ease: "easeInOut" }}
+            className="fixed top-0 right-0 z-50 h-full w-full md:w-[400px] flex flex-col"
+            style={{
+              background: "rgba(10,15,30,0.95)",
+              backdropFilter: "blur(20px)",
+              borderLeft: "1px solid rgba(255,255,255,0.08)",
+            }}
+          >
+            {selectedArtifact ? (
+              <ArtifactPreview
+                item={selectedArtifact}
+                onBack={() => onSelectArtifact(null)}
+              />
+            ) : (
+              <>
+                {/* Sidebar header */}
+                <div
+                  className="flex items-center justify-between px-4 py-3 flex-shrink-0"
+                  style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-[#C9A340]" />
+                    <h2 className="text-sm font-semibold text-foreground">Artifacts</h2>
+                    {items.length > 0 && (
+                      <span
+                        className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                        style={{ background: "#C9A340", color: "#0a0f1e" }}
+                      >
+                        {items.length}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={onClose}
+                    className="p-1.5 rounded-lg hover:bg-white/5 transition-colors"
+                  >
+                    <X className="w-4 h-4 text-muted-foreground" />
+                  </button>
+                </div>
+
+                {/* File list */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {items.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-40 text-muted-foreground/40">
+                      <Layers className="w-8 h-8 mb-2" />
+                      <p className="text-sm">No artifacts yet</p>
+                      <p className="text-xs mt-1">Ask Luca to create something</p>
+                    </div>
+                  ) : (
+                    items.map((item: any, idx: number) => (
+                      <ArtifactCard
+                        key={item.id}
+                        item={item}
+                        selected={false}
+                        onClick={() => onSelectArtifact(item)}
+                      />
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
 // ── Main Partner Chat Page ───────────────────────────────────────
 export default function PartnerChat() {
   const { user } = useAuth();
@@ -990,6 +1299,18 @@ export default function PartnerChat() {
   const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
   const [fileExtractedText, setFileExtractedText] = useState<string | null>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [showArtifacts, setShowArtifacts] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] = useState<any | null>(null);
+
+  // ── Fetch gallery artifacts ──────────────────────────────────
+  const { data: galleryItems = [] } = useQuery<any[]>({
+    queryKey: ["/api/gallery", { limit: 20 }],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/gallery?limit=20");
+      return r.json();
+    },
+    refetchInterval: 30000,
+  });
 
   // ── Fetch partner status (emotion + relationship) ─────────────
   const { data: partnerStatus } = useQuery<any>({
@@ -1570,6 +1891,28 @@ export default function PartnerChat() {
           <Volume2 className="w-3.5 h-3.5" />
         </button>
 
+        {/* Artifacts Toggle */}
+        <button
+          onClick={() => { setShowArtifacts(!showArtifacts); setSelectedArtifact(null); }}
+          className="relative flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors"
+          style={{
+            background: showArtifacts ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+            color: showArtifacts ? "#C9A340" : "rgba(255,255,255,0.5)",
+            border: `1px solid ${showArtifacts ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
+          }}
+          title="Artifacts"
+        >
+          <Layers className="w-3.5 h-3.5" />
+          {galleryItems.length > 0 && (
+            <span
+              className="absolute -top-1.5 -right-1.5 text-[9px] font-bold min-w-[16px] h-[16px] flex items-center justify-center rounded-full"
+              style={{ background: "#C9A340", color: "#0a0f1e" }}
+            >
+              {galleryItems.length}
+            </span>
+          )}
+        </button>
+
         {/* Header Menu Button */}
         <button
           onClick={() => setHeaderMenuOpen(!headerMenuOpen)}
@@ -1990,6 +2333,15 @@ export default function PartnerChat() {
           )}
         </div>
       </div>
+
+      {/* ── Artifacts Sidebar ─────────────────────────────────── */}
+      <ArtifactsSidebar
+        items={galleryItems}
+        show={showArtifacts}
+        onClose={() => { setShowArtifacts(false); setSelectedArtifact(null); }}
+        selectedArtifact={selectedArtifact}
+        onSelectArtifact={setSelectedArtifact}
+      />
     </div>
   );
 }
