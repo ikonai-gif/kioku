@@ -4,7 +4,8 @@ import { useAuth, useTheme } from "../App";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
-  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart, Palette, Library
+  CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart, Palette, Library,
+  FolderOpen, Plug
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -25,6 +26,8 @@ const baseNavItems = [
   { href: "/",          icon: Heart,            label: "Partner"   },
   { href: "/gallery",   icon: Palette,          label: "Gallery"   },
   { href: "/knowledge", icon: Library,          label: "Knowledge" },
+  { href: "/files",     icon: FolderOpen,       label: "Files"     },
+  { href: "/connectors",icon: Plug,             label: "Connectors"},
   { href: "/dashboard", icon: LayoutDashboard,  label: "Dashboard" },
   { href: "/agents",    icon: Bot,              label: "Agents"    },
   { href: "/memory",    icon: Brain,            label: "Memory"    },
@@ -44,7 +47,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const isOwnerUser = user?.role === "owner";
   const navItems = isOwnerUser ? [bossNavItem, ...baseNavItems] : baseNavItems;
-  const mobileNav = navItems;
+  const mobileNav = [
+    { href: "/",        icon: Heart,      label: "Chat"     },
+    { href: "/memory",  icon: Brain,      label: "Memory"   },
+    { href: "/files",   icon: FolderOpen, label: "Files"    },
+    { href: "/billing", icon: CreditCard, label: "Settings" },
+  ];
 
   const planColors: Record<string, string> = {
     dev:      "text-muted-foreground",

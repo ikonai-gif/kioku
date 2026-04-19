@@ -27,6 +27,8 @@ import BossBoardPage from "./pages/boss-board";
 import PartnerChatPage from "./pages/partner-chat";
 import GalleryPage from "./pages/gallery";
 import KnowledgePage from "./pages/knowledge";
+import FilesPage from "./pages/files";
+import ConnectorsPage from "./pages/connectors";
 import AppLayout from "./components/layout";
 import NotFound from "./pages/not-found";
 import VerifyPage from "./pages/verify";
@@ -40,6 +42,8 @@ const PAGE_TITLES: Record<string, string> = {
   "/memory":  "Memory — KIOKU™",
   "/gallery": "Gallery — KIOKU™",
   "/knowledge": "Knowledge — KIOKU™",
+  "/files":   "Files — KIOKU™",
+  "/connectors": "Connectors — KIOKU™",
   "/flows":   "Flows — KIOKU™",
   "/rooms":   "Rooms — KIOKU™",
   "/logs":    "Live Feed — KIOKU™",
@@ -235,6 +239,8 @@ export default function App() {
                       <Switch>
                         <Route path="/gallery" component={GalleryPage} />
                         <Route path="/knowledge" component={KnowledgePage} />
+                        <Route path="/files" component={FilesPage} />
+                        <Route path="/connectors" component={ConnectorsPage} />
                         <Route path="/dashboard" component={DashboardPage} />
                         <Route path="/boss" component={BossBoardPage} />
                         <Route path="/agents" component={AgentsPage} />
