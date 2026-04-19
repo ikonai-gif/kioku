@@ -221,7 +221,8 @@ export const savePreferenceSchema = z.object({
 
 export const feedbackReactionSchema = z.object({
   memoryId: z.number().int().optional(),
-  content: z.string().min(1).max(5000),
+  creationId: z.number().int().optional(),
+  content: z.string().min(1).max(5000).optional(),
   reaction: z.enum(["love", "like", "neutral", "dislike", "hate"]),
   creationType: z.string().max(50).optional(),
 });

@@ -686,7 +686,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/agent/turns/:turnId", asyncHandler(async (req, res) => {
     const auth = await getAgentAuth(req);
     if (!auth) return res.status(401).json({ error: "Invalid or expired agent token" });
-    const turn = await storage.getAgentTurn(Number(req.params.turnId));
+    const turnId = parseInt(req.params.turnId, 10);
+    if (isNaN(turnId)) return res.status(404).json({ error: "Turn not found" });
+    const turn = await storage.getAgentTurn(turnId);
     if (!turn || turn.agentId !== auth.agentId) {
       return res.status(404).json({ error: "Turn not found" });
     }
@@ -700,7 +702,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!auth.scopes.includes("deliberation.respond")) {
       return res.status(403).json({ error: "Token lacks deliberation.respond scope" });
     }
-    const turnId = Number(req.params.turnId);
+    const turnId = parseInt(req.params.turnId, 10);
+    if (isNaN(turnId)) return res.status(404).json({ error: "Turn not found" });
     const turn = await storage.getAgentTurn(turnId);
     if (!turn || turn.agentId !== auth.agentId) {
       return res.status(404).json({ error: "Turn not found" });
@@ -737,8 +740,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const agentId = Number(req.params.id);
     const agent = await storage.getAgent(agentId);
     if (!agent || agent.userId !== userId) return res.status(404).json({ error: "Not found" });
-    const webhookUrl = (agent as any).webhookUrl;
-    const webhookSecret = (agent as any).webhookSecret;
+    let webhookUrl = (agent as any).webhookUrl;
+    let webhookSecret = (agent as any).webhookSecret;
+    // Fall back to webhooks table if agent record doesn't have URL
+    if (!webhookUrl || !webhookSecret) {
+      const wh = await storage.getWebhook(agentId, userId);
+      if (wh) {
+        webhookUrl = wh.url;
+        webhookSecret = wh.secret;
+      }
+    }
     if (!webhookUrl || !webhookSecret) {
       return res.status(400).json({ error: "Agent has no webhook URL configured" });
     }
@@ -2266,8 +2277,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: "Invalid base64 image data" });
     }
 
-    // Use provided mimeType or default to jpeg
-    const mime = mimeType && mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+    // Detect mime type from base64 magic bytes if not provided
+    let mime = "image/jpeg";
+    if (mimeType && mimeType.startsWith("image/")) {
+      mime = mimeType;
+    } else {
+      // Auto-detect from base64 header bytes
+      if (cleanBase64.startsWith("iVBOR")) mime = "image/png";
+      else if (cleanBase64.startsWith("R0lGOD")) mime = "image/gif";
+      else if (cleanBase64.startsWith("UklGR")) mime = "image/webp";
+    }
     const dataUrl = `data:${mime};base64,${cleanBase64}`;
 
     try {
@@ -2616,6 +2635,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const data = validateBody(feedbackReactionSchema, req.body);
+
+    // Resolve content from creationId if content not provided
+    if (!data.content && data.creationId) {
+      const { rows } = await pool.query(
+        'SELECT content_text, title, prompt FROM gallery WHERE id = $1 AND user_id = $2',
+        [data.creationId, userId]
+      );
+      if (rows.length > 0) {
+        data.content = rows[0].content_text || rows[0].title || rows[0].prompt || `Creation #${data.creationId}`;
+      }
+    }
+    if (!data.content) {
+      return res.status(400).json({ error: "Either content or valid creationId required" });
+    }
 
     // Find primary agent
     const userAgents = await storage.getAgents(userId);
@@ -3049,7 +3082,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Verify room belongs to user
     const room = await pool.query('SELECT id FROM rooms WHERE id = $1 AND user_id = $2', [roomId, userId]);
     if (room.rows.length === 0) return res.status(404).json({ error: "Room not found" });
-    await pool.query('DELETE FROM messages WHERE room_id = $1', [roomId]);
+    await pool.query('DELETE FROM room_messages WHERE room_id = $1', [roomId]);
     res.json({ success: true });
   }));
 
