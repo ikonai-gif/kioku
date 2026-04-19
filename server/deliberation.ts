@@ -1118,10 +1118,34 @@ async function executePartnerTool(
         if (toolInput.action === "search") {
           const query = toolInput.query;
           if (!query) return "Please specify what you want to do (e.g. 'send email via gmail').";
-          // v2 search: GET /api/v2/actions with useCase query param
+          // v2 search: GET /api/v2/actions with useCase + apps filter
           const searchUrl = new URL(`${composioBase}/actions`);
           searchUrl.searchParams.set("useCase", query);
           searchUrl.searchParams.set("limit", "10");
+          // Auto-detect app name from query to improve search accuracy
+          const appKeywords: Record<string, string> = {
+            gmail: 'gmail', email: 'gmail', inbox: 'gmail', mail: 'gmail',
+            slack: 'slack', channel: 'slack',
+            github: 'github', repo: 'github', repository: 'github', 'pull request': 'github',
+            notion: 'notion', page: 'notion', database: 'notion',
+            calendar: 'googlecalendar', event: 'googlecalendar', schedule: 'googlecalendar', meeting: 'googlecalendar',
+            sheets: 'googlesheets', spreadsheet: 'googlesheets',
+            drive: 'googledrive',
+            dropbox: 'dropbox',
+            trello: 'trello', board: 'trello',
+            jira: 'jira', ticket: 'jira',
+            discord: 'discord',
+            twitter: 'twitter', tweet: 'twitter',
+            linkedin: 'linkedin',
+            spotify: 'spotify',
+          };
+          const queryLower = query.toLowerCase();
+          for (const [keyword, appName] of Object.entries(appKeywords)) {
+            if (queryLower.includes(keyword)) {
+              searchUrl.searchParams.set("apps", appName);
+              break;
+            }
+          }
           const resp = await fetch(searchUrl.toString(), {
             method: "GET",
             headers: { "x-api-key": COMPOSIO_KEY },
