@@ -2174,7 +2174,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!text || typeof text !== 'string') return res.status(400).json({ error: "Text required" });
     // SECURITY: validate voice to prevent injection into API call
     const ALLOWED_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer", "ash", "coral", "sage"];
-    const safeVoice = ALLOWED_VOICES.includes(voice) ? voice : "nova";
+    const safeVoice = ALLOWED_VOICES.includes(voice) ? voice : "coral";
 
     const OpenAI = (await import("openai")).default;
     const openai = new OpenAI();
