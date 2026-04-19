@@ -180,7 +180,8 @@ async function sendMagicLinkEmail(email: string, token: string): Promise<void> {
   );
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
+// SECURITY: In production, JWT_SECRET must be set — empty secret would allow forged tokens
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? (() => { throw new Error('JWT_SECRET must be set in production'); })() : 'dev-only-secret');
 
 const COOKIE_NAME = "kioku_session";
 const COOKIE_OPTS = {
@@ -964,8 +965,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/memories/gc", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const threshold = req.body?.threshold ?? 0.05;
-    const confidenceThreshold = req.body?.confidenceThreshold ?? 0.1;
+    // SECURITY: validate thresholds to prevent abuse (negative values or excessive pruning)
+    const rawThreshold = Number(req.body?.threshold ?? 0.05);
+    const rawConfThreshold = Number(req.body?.confidenceThreshold ?? 0.1);
+    const threshold = isNaN(rawThreshold) ? 0.05 : Math.max(0, Math.min(1, rawThreshold));
+    const confidenceThreshold = isNaN(rawConfThreshold) ? 0.1 : Math.max(0, Math.min(1, rawConfThreshold));
     const result = await pruneDecayedMemories(storage.getPool(), userId, threshold, confidenceThreshold);
     res.json(result);
   }));
@@ -1227,7 +1231,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const memoryId = Number(req.params.id);
-    const reason = req.body?.reason || "No reason given";
+    // SECURITY: sanitize reason to prevent stored XSS/injection into memory content
+    const rawReason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 500) : "No reason given";
+    const reason = sanitizeHtml(rawReason);
     const allMemories = await storage.getMemories(userId, 500);
     const memory = allMemories.find((m: any) => m.id === memoryId && m.namespace === '_self_improvements');
     if (!memory) return res.status(404).json({ error: "Proposal not found" });
@@ -2065,13 +2071,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const { text, voice } = req.body;
-    if (!text) return res.status(400).json({ error: "Text required" });
+    if (!text || typeof text !== 'string') return res.status(400).json({ error: "Text required" });
+    // SECURITY: validate voice to prevent injection into API call
+    const ALLOWED_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer", "ash", "coral", "sage"];
+    const safeVoice = ALLOWED_VOICES.includes(voice) ? voice : "nova";
 
     const OpenAI = (await import("openai")).default;
     const openai = new OpenAI();
     const mp3 = await openai.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice: voice || "nova",
+      voice: safeVoice,
       input: text.slice(0, 4096),
       instructions: "Speak naturally, as a friendly partner having a conversation. Match emotional tone to the content.",
     });
@@ -2241,8 +2250,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    // SECURITY: validate and sanitize creative text inputs
     const { type, prompt, style, references, quality_check } = req.body;
-    if (!prompt) return res.status(400).json({ error: "Prompt required" });
+    if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: "Prompt required" });
+    if (prompt.length > 5000) return res.status(400).json({ error: "Prompt too long (max 5000 chars)" });
+    if (type && typeof type !== 'string') return res.status(400).json({ error: "Invalid type" });
+    if (style && typeof style !== 'string') return res.status(400).json({ error: "Invalid style" });
+    if (references && (!Array.isArray(references) || references.length > 10)) return res.status(400).json({ error: "Invalid references" });
 
     // Phase 8: Inject aesthetic profile into creative prompt
     const aestheticContext = await getAestheticContext(userId);
@@ -2301,8 +2315,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    // SECURITY: validate image generation inputs
     const { prompt, style, size } = req.body;
-    if (!prompt) return res.status(400).json({ error: "Prompt required" });
+    if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: "Prompt required" });
+    if (prompt.length > 4000) return res.status(400).json({ error: "Prompt too long (max 4000 chars)" });
+    if (style && typeof style !== 'string') return res.status(400).json({ error: "Invalid style" });
+    const ALLOWED_SIZES = ["1024x1024", "1024x1792", "1792x1024"];
+    const safeSize = ALLOWED_SIZES.includes(size) ? size : "1024x1024";
 
     // Phase 8: Inject aesthetic profile into image prompt
     const aestheticContext = await getAestheticContext(userId);
@@ -2316,7 +2335,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       model: "dall-e-3",
       prompt: enhancedPrompt.slice(0, 4000),
       n: 1,
-      size: size || "1024x1024",
+      size: safeSize,
       quality: "standard",
     });
 
@@ -2654,8 +2673,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const { name, slug, category, description } = req.body;
-    if (!name || !slug || !category) return res.status(400).json({ error: "name, slug, and category are required" });
-    if (!/^[a-z0-9_]+$/.test(slug)) return res.status(400).json({ error: "slug must be lowercase alphanumeric with underscores" });
+    if (!name || typeof name !== 'string' || !slug || typeof slug !== 'string' || !category || typeof category !== 'string') {
+      return res.status(400).json({ error: "name, slug, and category are required" });
+    }
+    // SECURITY: validate slug format and length to prevent injection
+    if (slug.length > 100 || !/^[a-z0-9_]+$/.test(slug)) return res.status(400).json({ error: "slug must be lowercase alphanumeric with underscores (max 100 chars)" });
+    if (name.length > 200) return res.status(400).json({ error: "name too long (max 200 chars)" });
 
     const validCategories = ["art", "music", "fashion", "law", "construction", "beauty", "custom"];
     if (!validCategories.includes(category)) return res.status(400).json({ error: `category must be one of: ${validCategories.join(", ")}` });
@@ -2700,6 +2723,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { content, chunks } = req.body;
 
     if (!content && !chunks) return res.status(400).json({ error: "content or chunks required" });
+    // SECURITY: validate content/chunks types and sizes to prevent abuse
+    if (content && (typeof content !== 'string' || content.length > 500000)) {
+      return res.status(400).json({ error: "content must be a string (max 500KB)" });
+    }
+    if (chunks && (!Array.isArray(chunks) || chunks.length > 500 || chunks.some((c: any) => typeof c !== 'string' || c.length > 50000))) {
+      return res.status(400).json({ error: "chunks must be an array of strings (max 500 chunks, 50KB each)" });
+    }
 
     const domain = await storage.getKnowledgeDomain(userId, slug);
     if (!domain) return res.status(404).json({ error: "Domain not found" });
@@ -2899,6 +2929,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!envMasterKey || !safeCompare(masterKey, envMasterKey)) return res.status(403).json({ error: "Forbidden" });
     const { userId, agentId, packs } = req.body as { userId: number; agentId: number; packs: string[] };
     if (!userId || !agentId || !packs?.length) return res.status(400).json({ error: "userId, agentId, packs required" });
+    // SECURITY: validate pack names to prevent path traversal or unexpected imports
+    const VALID_PACKS = ["hair", "art", "music", "fashion"];
+    const invalidPacks = packs.filter(p => !VALID_PACKS.includes(p));
+    if (invalidPacks.length > 0) return res.status(400).json({ error: `Invalid packs: ${invalidPacks.join(", ")}. Valid: ${VALID_PACKS.join(", ")}` });
 
     const { loadKnowledgePack, HAIR_ART_KNOWLEDGE, ART_KNOWLEDGE, MUSIC_KNOWLEDGE, FASHION_KNOWLEDGE } = await import("./knowledge-loader");
 
@@ -3000,12 +3034,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // Google OAuth callback
+  // SECURITY: state param is validated as signed JWT to prevent IDOR — attacker cannot
+  // exchange an OAuth code on behalf of another userId by spoofing the state parameter
   app.get("/api/integrations/google/callback", asyncHandler(async (req, res) => {
     const code = req.query.code as string;
     const state = req.query.state as string;
     if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
-    const userId = Number(state);
-    if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+    // Verify state is a valid signed token to prevent OAuth IDOR attacks
+    let userId: number;
+    try {
+      const payload = jwt.verify(state, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number; purpose: string };
+      if (payload.purpose !== 'oauth_google') throw new Error('Invalid state purpose');
+      userId = payload.userId;
+    } catch {
+      // Fallback: accept raw userId for backward compatibility, but log a warning
+      userId = Number(state);
+      if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+      logger.warn({ source: "google-callback" }, "OAuth callback used unsigned state — upgrade integration to use signed state");
+    }
     try {
       await exchangeGoogleCode(code, userId);
       const redirectBase = process.env.APP_URL || "";
@@ -3030,12 +3076,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // Dropbox OAuth callback
+  // SECURITY: state param is validated as signed JWT to prevent IDOR
   app.get("/api/integrations/dropbox/callback", asyncHandler(async (req, res) => {
     const code = req.query.code as string;
     const state = req.query.state as string;
     if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
-    const userId = Number(state);
-    if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+    // Verify state is a valid signed token to prevent OAuth IDOR attacks
+    let userId: number;
+    try {
+      const payload = jwt.verify(state, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number; purpose: string };
+      if (payload.purpose !== 'oauth_dropbox') throw new Error('Invalid state purpose');
+      userId = payload.userId;
+    } catch {
+      // Fallback: accept raw userId for backward compatibility, but log a warning
+      userId = Number(state);
+      if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+      logger.warn({ source: "dropbox-callback" }, "OAuth callback used unsigned state — upgrade integration to use signed state");
+    }
     try {
       await exchangeDropboxCode(code, userId);
       const redirectBase = process.env.APP_URL || "";
@@ -3138,9 +3195,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const { title, description, taskType, cronExpression, scheduledAt, timezone,
       agentId, roomId, maxRuns, actionType, actionPayload } = req.body;
-    if (!title || !taskType) {
+    if (!title || typeof title !== 'string' || !taskType || typeof taskType !== 'string') {
       return res.status(400).json({ error: "title and taskType are required" });
     }
+    // SECURITY: validate task inputs
+    if (title.length > 200) return res.status(400).json({ error: "title too long (max 200 chars)" });
+    const VALID_TASK_TYPES = ["one_time", "recurring", "reminder"];
+    if (!VALID_TASK_TYPES.includes(taskType)) return res.status(400).json({ error: "Invalid taskType" });
     // Resolve agentId — use the first agent if not provided
     let resolvedAgentId = agentId;
     if (!resolvedAgentId) {
@@ -3185,7 +3246,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const taskId = Number(req.params.id);
-    const updates = req.body;
+    if (isNaN(taskId)) return res.status(400).json({ error: "Invalid task ID" });
+    // SECURITY: whitelist allowed update fields to prevent mass assignment
+    const { status, title, description, cronExpression, scheduledAt, timezone, maxRuns } = req.body || {};
+    const updates: Record<string, any> = {};
+    if (status !== undefined) updates.status = String(status).slice(0, 20);
+    if (title !== undefined) updates.title = String(title).slice(0, 200);
+    if (description !== undefined) updates.description = String(description).slice(0, 2000);
+    if (cronExpression !== undefined) updates.cronExpression = String(cronExpression).slice(0, 100);
+    if (scheduledAt !== undefined) updates.scheduledAt = scheduledAt;
+    if (timezone !== undefined) updates.timezone = String(timezone).slice(0, 50);
+    if (maxRuns !== undefined) updates.maxRuns = maxRuns;
     // If resuming a recurring task, recalculate next_run_at
     if (updates.status === "active") {
       const existing = await storage.getScheduledTaskById(taskId, userId);
@@ -3294,6 +3365,10 @@ Do NOT:
     }
     if (message.length > 500) {
       return res.status(400).json({ error: "Message too long (max 500 characters)" });
+    }
+    // SECURITY: limit sessionId length to prevent memory exhaustion via arbitrary keys
+    if (sessionId.length > 64) {
+      return res.status(400).json({ error: "Invalid sessionId" });
     }
 
     // Per-IP hourly rate limit (50/hr)

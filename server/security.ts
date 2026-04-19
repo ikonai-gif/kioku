@@ -44,6 +44,8 @@ export const helmetMiddleware = helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:     ["'self'"],
+      // NOTE: 'unsafe-inline' is required for Stripe.js and Vite dev mode
+      // TODO: Replace with nonce-based CSP when migrating off inline scripts
       scriptSrc:      ["'self'", "'unsafe-inline'", "https://js.stripe.com", "https://fonts.googleapis.com"],
       styleSrc:       ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc:        ["'self'", "https://fonts.gstatic.com"],

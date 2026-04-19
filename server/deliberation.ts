@@ -1493,7 +1493,7 @@ async function executePartnerTool(
         const command = toolInput.command;
         if (!command || typeof command !== "string") return "No command provided.";
 
-        // Block dangerous commands
+        // SECURITY: Block dangerous and data-exfiltration commands in sandbox
         const dangerous = [
           /rm\s+-rf\s+\/(?!\S)/,
           /rm\s+-rf\s+\/\s*$/,
@@ -1504,12 +1504,22 @@ async function executePartnerTool(
           /halt/,
           /poweroff/,
           /init\s+0/,
-          /:\(\)\s*\{\s*:\|:\s*&\s*\}\s*;?\s*:/,
+          /:\(\)\s*\{\s*:\|:\s*&\s*\}\s*;?\s*:/,       // fork bomb
           />\s*\/dev\/sda/,
           /chmod\s+-R\s+777\s+\//,
+          /curl\s+.*\|\s*(?:bash|sh|zsh)/i,             // curl pipe to shell
+          /wget\s+.*\|\s*(?:bash|sh|zsh)/i,             // wget pipe to shell
+          /nc\s+-[elp]/,                                  // netcat listener/connect
+          /ncat\s+-[elp]/,                                // ncat listener/connect
+          /python3?\s+-m\s+http\.server/,                 // python HTTP server (data exfil)
+          /nmap\s/,                                       // network scanning
         ];
         if (dangerous.some((re) => re.test(command))) {
           return "Command blocked: this command is potentially destructive and not allowed in the sandbox.";
+        }
+        // SECURITY: limit command length to prevent abuse
+        if (command.length > 10000) {
+          return "Command too long (max 10000 chars).";
         }
 
         const timeoutSec = Math.min(Math.max(toolInput.timeout_seconds || 30, 1), 120);
@@ -2355,6 +2365,12 @@ print("Converted MD to DOCX")
       case "browse_website": {
         const url = toolInput.url;
         if (!url || typeof url !== "string") return "No URL provided.";
+        // SECURITY: validate URL to prevent SSRF via browser sandbox
+        try {
+          await validateUrl(url);
+        } catch (e: any) {
+          return `URL blocked: ${e.message}`;
+        }
 
         try {
           const { browseWebsite } = await import("./browser-agent");

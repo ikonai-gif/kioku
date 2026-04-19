@@ -306,6 +306,17 @@ setInterval(() => {
   }
 }, 300_000);
 
+// SECURITY: export Redis status for admin health check — avoids unhandled import error in boss-board
+export async function getRedisStatus(): Promise<string> {
+  if (!redis) return "not configured";
+  try {
+    await redis.ping();
+    return "connected";
+  } catch {
+    return "disconnected";
+  }
+}
+
 async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<string> {
   // Try API key lookup
   if (apiKey && apiKey.startsWith("kk_")) {
@@ -319,6 +330,7 @@ async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<
   if (sessionToken) {
     try {
       const jwt = await import("jsonwebtoken");
+      // SECURITY: must match routes.ts — empty secret in production would allow forged tokens
       const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
       const payload = jwt.default.verify(sessionToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       if (payload.userId) {
