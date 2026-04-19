@@ -11,6 +11,8 @@ import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CapabilityCards } from "@/components/CapabilityCards";
+import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -1297,6 +1299,8 @@ export default function PartnerChat() {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
+  const [toolSteps, setToolSteps] = useState<ToolStep[]>([]);
+  const toolStepIdRef = useRef(0);
   const [fileExtractedText, setFileExtractedText] = useState<string | null>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [showArtifacts, setShowArtifacts] = useState(false);
@@ -1389,6 +1393,7 @@ export default function PartnerChat() {
           const data = JSON.parse(event.data);
           if (data.type === "message") {
             setIsThinking(false);
+            setToolSteps([]);
             queryClient.setQueryData<any[]>(
               ["/api/rooms", partnerRoomId, "messages"],
               (prev) => {
@@ -1397,6 +1402,35 @@ export default function PartnerChat() {
                 return [...prev, data];
               }
             );
+          } else if (data.type === "tool_call" || data.type === "tool_start") {
+            const toolName = data.toolName || data.tool_name || data.name || "unknown";
+            const stepId = `ts-${++toolStepIdRef.current}`;
+            setToolSteps((prev) => [
+              ...prev,
+              { id: stepId, toolName, status: "running", startedAt: Date.now() },
+            ]);
+          } else if (data.type === "tool_result" || data.type === "tool_end") {
+            const toolName = data.toolName || data.tool_name || data.name || "";
+            setToolSteps((prev) => {
+              const updated = [...prev];
+              // Mark the last running step matching this tool as done
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].status === "running" && (!toolName || updated[i].toolName === toolName)) {
+                  updated[i] = { ...updated[i], status: "done" };
+                  break;
+                }
+              }
+              // If no match found, mark the last running step
+              if (toolName && !updated.some((s) => s.status === "done" && s.toolName === toolName)) {
+                for (let i = updated.length - 1; i >= 0; i--) {
+                  if (updated[i].status === "running") {
+                    updated[i] = { ...updated[i], status: "done" };
+                    break;
+                  }
+                }
+              }
+              return updated;
+            });
           }
         } catch {}
       };
@@ -1444,6 +1478,7 @@ export default function PartnerChat() {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg && lastMsg.agentName !== user?.name && lastMsg.agentName !== "You") {
         setIsThinking(false);
+        setToolSteps([]);
       }
     }
     lastMessageCountRef.current = messages.length;
@@ -1533,6 +1568,18 @@ export default function PartnerChat() {
   const isUser = (msg: any) => {
     return msg.agentName === user?.name || msg.agentName === "You" || (!msg.agentId && msg.agentName === (user?.name || "You"));
   };
+
+  // ── Auto-send a prompt from capability cards ──────────────────
+  const sendCapabilityPrompt = useCallback((prompt: string) => {
+    if (!partnerRoomId) return;
+    sendMutation.mutate({
+      agentId: null,
+      agentName: user?.name || "You",
+      agentColor: "#C9A340",
+      content: prompt,
+      isDecision: false,
+    });
+  }, [partnerRoomId, user, sendMutation]);
 
   // ── Voice Recording (auto-send on release) ──────────────────────
   // After recording stops: transcribe → auto-send → Luca answers with voice
@@ -1999,6 +2046,7 @@ export default function PartnerChat() {
                 I'm Luca, your AI partner. Ask me anything, share your thoughts, or start a conversation.
               </p>
             </div>
+            <CapabilityCards onSelectPrompt={sendCapabilityPrompt} />
           </div>
         ) : (
           // Merge messages + creative results into one timeline
@@ -2025,7 +2073,13 @@ export default function PartnerChat() {
             )
         )}
 
-        <AnimatePresence>{isThinking && <TypingIndicator emotion={emotion} />}</AnimatePresence>
+        <AnimatePresence>
+          {isThinking && toolSteps.length > 0 ? (
+            <TaskProgress key="task-progress" steps={toolSteps} emotion={emotion} />
+          ) : isThinking ? (
+            <TypingIndicator key="typing" emotion={emotion} />
+          ) : null}
+        </AnimatePresence>
         <AnimatePresence>
           {isCreating && (
             <motion.div
