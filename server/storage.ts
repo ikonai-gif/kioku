@@ -458,6 +458,18 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_delib_provenance_chain_id ON kioku_deliberation_sessions(provenance_chain_id) WHERE provenance_chain_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_delib_parent_decision ON kioku_deliberation_sessions(parent_decision_id) WHERE parent_decision_id IS NOT NULL;
   `);
+
+  // Phase 11: Privacy/Compliance — consent management & age verification
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_basic BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_sensitive BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_biometric BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_ai_memory BOOLEAN DEFAULT TRUE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_updated_at BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS date_of_birth DATE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS age_verified BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT DEFAULT 'us';
+  `);
 }
 
 function generateApiKey(): string {

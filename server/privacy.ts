@@ -204,6 +204,138 @@ export function registerPrivacyRoutes(app: Express, getUser: (req: any) => Promi
     });
   }));
 
+  // ── GET /api/privacy/consent ────────────────────────────────────
+  app.get("/api/privacy/consent", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { rows } = await pool.query(
+      `SELECT consent_basic, consent_sensitive, consent_biometric, consent_ai_memory, consent_updated_at
+       FROM users WHERE id = $1`, [userId]
+    );
+    const row = rows[0];
+    res.json({
+      basic: row?.consent_basic ?? false,
+      sensitive: row?.consent_sensitive ?? false,
+      biometric: row?.consent_biometric ?? false,
+      aiMemory: row?.consent_ai_memory ?? true,
+      updatedAt: row?.consent_updated_at || null,
+    });
+  }));
+
+  // ── PUT /api/privacy/consent ──────────────────────────────────
+  app.put("/api/privacy/consent", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { basic, sensitive, biometric, aiMemory } = req.body;
+    await pool.query(
+      `UPDATE users SET
+        consent_basic = COALESCE($1, consent_basic),
+        consent_sensitive = COALESCE($2, consent_sensitive),
+        consent_biometric = COALESCE($3, consent_biometric),
+        consent_ai_memory = COALESCE($4, consent_ai_memory),
+        consent_updated_at = $5
+       WHERE id = $6`,
+      [basic, sensitive, biometric, aiMemory, Date.now(), userId]
+    );
+
+    // If sensitive consent revoked, delete health-related memories
+    if (sensitive === false) {
+      await pool.query(
+        `DELETE FROM memories WHERE user_id = $1 AND (namespace = '_health' OR namespace = '_allergies' OR content ILIKE '%allerg%' OR content ILIKE '%skin condition%')`,
+        [userId]
+      );
+    }
+    // If biometric consent revoked, delete biometric data
+    if (biometric === false) {
+      await pool.query(
+        `DELETE FROM memories WHERE user_id = $1 AND (namespace = '_biometric' OR namespace = '_face_scan')`,
+        [userId]
+      );
+    }
+    // If AI memory consent revoked, stop storing new memories
+    if (aiMemory === false) {
+      await pool.query(
+        `DELETE FROM memories WHERE user_id = $1 AND namespace NOT IN ('_system', '_identity')`,
+        [userId]
+      );
+    }
+
+    res.json({ ok: true });
+  }));
+
+  // ── POST /api/privacy/age-verify ──────────────────────────────
+  app.post("/api/privacy/age-verify", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { dateOfBirth, region } = req.body;
+    if (!dateOfBirth) return res.status(400).json({ error: "Date of birth required" });
+
+    const dob = new Date(dateOfBirth);
+    const now = new Date();
+    const age = Math.floor((now.getTime() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+
+    // Determine minimum age based on region
+    const minAge = (region === 'eu' || region === 'uk') ? 16 : 13;
+    const isMinor = age < minAge;
+
+    await pool.query(
+      `UPDATE users SET date_of_birth = $1, age_verified = TRUE, region = COALESCE($2, region) WHERE id = $3`,
+      [dateOfBirth, region, userId]
+    );
+
+    // If minor, disable AI memory and sensitive data collection
+    if (isMinor) {
+      await pool.query(
+        `UPDATE users SET consent_ai_memory = FALSE, consent_sensitive = FALSE, consent_biometric = FALSE WHERE id = $1`,
+        [userId]
+      );
+    }
+
+    res.json({ ok: true, age, isMinor, minAge, aiMemoryEnabled: !isMinor });
+  }));
+
+  // ── POST /api/privacy/retention-cleanup ────────────────────────
+  app.post("/api/privacy/retention-cleanup", asyncHandler(async (req, res) => {
+    // Only master key can trigger
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    const apiKey = req.headers["x-api-key"];
+    if (!masterKey || apiKey !== masterKey) return res.status(403).json({ error: "Forbidden" });
+
+    const now = Date.now();
+    const MONTHS_24 = 24 * 30 * 24 * 60 * 60 * 1000;
+    const MONTHS_12 = 12 * 30 * 24 * 60 * 60 * 1000;
+
+    // Delete health/allergy memories older than 24 months for inactive users
+    const healthDeleted = await pool.query(
+      `DELETE FROM memories WHERE namespace IN ('_health', '_allergies')
+       AND created_at < $1
+       AND user_id NOT IN (SELECT DISTINCT user_id FROM room_messages WHERE created_at > $2)
+       RETURNING id`,
+      [now - MONTHS_24, now - MONTHS_24]
+    );
+
+    // Delete preference memories older than 12 months for users with no activity
+    const prefDeleted = await pool.query(
+      `DELETE FROM memories WHERE namespace = '_preferences'
+       AND created_at < $1
+       AND user_id NOT IN (SELECT DISTINCT user_id FROM room_messages WHERE created_at > $2)
+       RETURNING id`,
+      [now - MONTHS_12, now - MONTHS_12]
+    );
+
+    // Delete expired agent turns
+    const turnsDeleted = await pool.query(
+      `DELETE FROM agent_turns WHERE status = 'expired' AND expires_at < $1 RETURNING id`,
+      [now - MONTHS_12]
+    );
+
+    res.json({
+      healthMemoriesDeleted: healthDeleted.rows.length,
+      preferenceMemoriesDeleted: prefDeleted.rows.length,
+      expiredTurnsDeleted: turnsDeleted.rows.length,
+    });
+  }));
+
   // ── PUT /api/privacy/training-consent ─────────────────────────
   app.put("/api/privacy/training-consent", asyncHandler(async (req, res) => {
     const userId = await getUser(req);

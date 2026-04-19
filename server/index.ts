@@ -281,6 +281,19 @@ app.use((req, res, next) => {
     } catch { /* ignore startup errors */ }
   }, 60000);
 
+  // Retention policy — daily cleanup
+  setInterval(async () => {
+    try {
+      const masterKey = process.env.KIOKU_MASTER_KEY;
+      if (masterKey) {
+        await fetch(`http://localhost:${port}/api/privacy/retention-cleanup`, {
+          method: "POST",
+          headers: { "x-api-key": masterKey, "Content-Type": "application/json" },
+        });
+      }
+    } catch { /* retention cleanup failure is non-fatal */ }
+  }, 24 * 60 * 60 * 1000);
+
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.

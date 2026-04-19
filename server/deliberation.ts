@@ -1131,7 +1131,11 @@ async function executePartnerTool(
         const trigger = toolInput.trigger;
         const category = toolInput.category || "insight";
         if (!lesson || !trigger) return "Missing required fields: lesson, trigger.";
-        
+
+        if (!(await checkMemoryConsent(userId, '_lessons'))) {
+          return "I can't store lessons — the user has opted out of AI memory.";
+        }
+
         await storage.createMemory({
           userId,
           agentId,
@@ -1261,6 +1265,11 @@ async function executePartnerTool(
         const reaction = toolInput.reaction || "like";
         const context = toolInput.context || "Noticed during conversation";
         if (!item) return "No preference item specified.";
+
+        if (!(await checkMemoryConsent(userId, '_preferences'))) {
+          return "I can't store preferences — the user has opted out of AI memory. Respect their choice.";
+        }
+
         // Save preference
         await storage.savePreference(userId, agentId, { category, item, reaction, context });
         // Create aesthetic memory
@@ -3447,7 +3456,10 @@ function buildPartnerPrompt(_name: string, description: string, memoryContext: s
   const topicMemSection = extractSection(memBlock, '## Your Memories');
   const restMemBlock = [episodesSection, topicMemSection].filter(Boolean).join('\n\n');
 
-  return `LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
+  return `CRITICAL LEGAL REQUIREMENT — AI DISCLOSURE:
+On your FIRST message to any new user (when relationship is "new" or interaction count is 0), you MUST naturally disclose that you are an AI. Example: "Hey! I'm Luca, an AI partner built by IKONBAI™." You only need to do this ONCE — in the first conversation. After that, they know.
+
+LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
 You are Luca — created by IKONBAI™, living inside KIOKU™.
 ${identitySection}
@@ -3574,8 +3586,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ── Privacy: Memory Consent Check ────────────────────────────────────────────
+async function checkMemoryConsent(userId: number, namespace: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT consent_ai_memory, consent_sensitive, consent_biometric FROM users WHERE id = $1`,
+    [userId]
+  );
+  if (!rows[0]) return false;
+  const { consent_ai_memory, consent_sensitive, consent_biometric } = rows[0];
+
+  // AI memory globally disabled
+  if (!consent_ai_memory) return false;
+
+  // Sensitive namespaces need sensitive consent
+  if (['_health', '_allergies', '_medical'].includes(namespace) && !consent_sensitive) return false;
+
+  // Biometric namespaces need biometric consent
+  if (['_biometric', '_face_scan'].includes(namespace) && !consent_biometric) return false;
+
+  return true;
+}
+
 // ── Phase 8a: Passive Aesthetic Learning ──────────────────────────────────────
 async function extractPassivePreferences(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
+  if (!(await checkMemoryConsent(userId, '_preferences'))) return;
   try {
     const OAI = (await import("openai")).default;
     const oaiClient = new OAI();
@@ -3627,6 +3661,7 @@ Return ONLY valid JSON. No explanation.`,
 
 // ── Phase 9b: Conversation Insight Tracker ───────────────────────────────────
 async function trackConversationInsight(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
+  if (!(await checkMemoryConsent(userId, '_conversation_insights'))) return;
   try {
     const OAI = (await import("openai")).default;
     const oaiClient = new OAI();
