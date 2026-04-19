@@ -1915,57 +1915,37 @@ export default function PartnerChat() {
 
 
   const handlePaste = (e: React.ClipboardEvent) => {
-    // Always read text synchronously before any async work
-    const pastedText = e.clipboardData?.getData("text/plain") || "";
     const items = e.clipboardData?.items;
+    if (!items) return; // let browser handle normally
 
-    // Check for images first
-    if (items) {
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.type.startsWith("image/")) {
-          e.preventDefault();
-          const file = item.getAsFile();
-          if (!file) return;
-          compressImage(file).then(({ preview, base64, mimeType }) => {
-            setImagePreview(preview);
-            setImageBase64(`${mimeType}:${base64}`);
+    // Only intercept image pastes — let text paste flow through to onChange naturally
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) return;
+        compressImage(file).then(({ preview, base64, mimeType }) => {
+          setImagePreview(preview);
+          setImageBase64(`${mimeType}:${base64}`);
+          toast({ title: "Image pasted — tap send" });
+        }).catch(() => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            setImagePreview(result);
+            const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
+            const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+            setImageBase64(`${mime}:${result.split(",")[1]}`);
             toast({ title: "Image pasted — tap send" });
-          }).catch(() => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const result = reader.result as string;
-              setImagePreview(result);
-              const mimeMatch = result.match(/^data:(image\/[^;]+);base64,/);
-              const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
-              setImageBase64(`${mime}:${result.split(",")[1]}`);
-              toast({ title: "Image pasted — tap send" });
-            };
-            reader.readAsDataURL(file);
-          });
-          return;
-        }
-      }
-    }
-
-    // Text paste — always prevent default and handle manually for controlled textarea
-    if (pastedText) {
-      e.preventDefault();
-      const el = inputRef.current;
-      if (el) {
-        const start = el.selectionStart ?? input.length;
-        const end = el.selectionEnd ?? input.length;
-        const newValue = input.slice(0, start) + pastedText + input.slice(end);
-        setInput(newValue);
-        requestAnimationFrame(() => {
-          el.selectionStart = el.selectionEnd = start + pastedText.length;
-          el.style.height = "auto";
-          el.style.height = Math.min(el.scrollHeight, 120) + "px";
+          };
+          reader.readAsDataURL(file);
         });
-      } else {
-        setInput((prev) => prev + pastedText);
+        return;
       }
     }
+    // Text paste: do NOT preventDefault — let the browser insert text,
+    // React onChange will pick it up via the controlled value.
   };
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
