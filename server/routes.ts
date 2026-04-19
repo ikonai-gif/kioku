@@ -3737,6 +3737,202 @@ Do NOT:
     res.json(result);
   }));
 
+  // ── Memory Import/Export ───────────────────────────────────────
+
+  // POST /api/privacy/export — generate full JSON export of user data
+  app.post("/api/privacy/export", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Gather memories
+    const userMemories = await pool.query(
+      `SELECT id, content, type, importance, namespace, strength, emotional_valence,
+              confidence, created_at, encrypted, iv, auth_tag
+       FROM memories WHERE user_id = $1 ORDER BY created_at DESC`, [userId]
+    );
+
+    // Gather conversations (room messages from last 90 days)
+    const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    const conversations = await pool.query(
+      `SELECT rm.id, rm.room_id, rm.agent_name, rm.content, rm.is_decision, rm.created_at
+       FROM room_messages rm
+       JOIN rooms r ON r.id = rm.room_id
+       WHERE r.user_id = $1 AND rm.created_at > $2
+       ORDER BY rm.created_at DESC`, [userId, ninetyDaysAgo]
+    );
+
+    // Connected services
+    const integrations = await pool.query(
+      `SELECT provider, email, created_at FROM user_integrations WHERE user_id = $1`, [userId]
+    );
+
+    // User preferences (aesthetic preferences)
+    const preferences = await pool.query(
+      `SELECT category, item, reaction, tags, created_at FROM aesthetic_preferences WHERE user_id = $1`, [userId]
+    );
+
+    const exportData = {
+      _meta: {
+        format: "kioku-export",
+        version: "1.0",
+        exportDate: new Date().toISOString(),
+        user: { id: user.id, email: user.email, name: user.name },
+      },
+      memories: userMemories.rows.map((m: any) => ({
+        id: m.id,
+        content: m.content,
+        type: m.type,
+        importance: m.importance,
+        namespace: m.namespace,
+        strength: m.strength,
+        emotionalValence: m.emotional_valence,
+        confidence: m.confidence,
+        encrypted: m.encrypted || false,
+        iv: m.iv || null,
+        authTag: m.auth_tag || null,
+        createdAt: m.created_at,
+      })),
+      conversations: conversations.rows.map((c: any) => ({
+        id: c.id,
+        roomId: c.room_id,
+        agentName: c.agent_name,
+        content: c.content,
+        isDecision: c.is_decision,
+        createdAt: c.created_at,
+      })),
+      connectedServices: integrations.rows.map((i: any) => ({
+        provider: i.provider,
+        email: i.email,
+        connectedAt: i.created_at,
+      })),
+      preferences: preferences.rows.map((p: any) => ({
+        category: p.category,
+        item: p.item,
+        reaction: p.reaction,
+        tags: JSON.parse(p.tags || "[]"),
+        createdAt: p.created_at,
+      })),
+    };
+
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="kioku-export-${Date.now()}.json"`);
+    res.json(exportData);
+  }));
+
+  // GET /api/privacy/export/status — export readiness check
+  app.get("/api/privacy/export/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    // Exports are generated synchronously, so always ready
+    res.json({ ready: true });
+  }));
+
+  // POST /api/privacy/import — import memories from JSON
+  app.post("/api/privacy/import", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { data } = req.body;
+    if (!data || !data._meta || !Array.isArray(data.memories)) {
+      return res.status(400).json({ error: "Invalid import format. Expected KIOKU export JSON with _meta and memories array." });
+    }
+
+    if (data._meta.format !== "kioku-export") {
+      return res.status(400).json({ error: "Unsupported format. Only KIOKU native JSON is supported." });
+    }
+
+    let imported = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    // Get existing memory contents for dedup
+    const existing = await pool.query(
+      `SELECT content FROM memories WHERE user_id = $1`, [userId]
+    );
+    const existingSet = new Set(existing.rows.map((r: any) => r.content));
+
+    for (const mem of data.memories) {
+      try {
+        if (!mem.content || typeof mem.content !== "string") {
+          errors.push(`Memory missing content field`);
+          skipped++;
+          continue;
+        }
+
+        // Deduplicate by content
+        if (existingSet.has(mem.content)) {
+          skipped++;
+          continue;
+        }
+
+        await pool.query(
+          `INSERT INTO memories (user_id, content, type, importance, namespace, strength, confidence, encrypted, iv, auth_tag, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [
+            userId,
+            sanitizeHtml(mem.content),
+            mem.type || "semantic",
+            Math.min(1, Math.max(0, mem.importance ?? 0.5)),
+            mem.namespace || null,
+            mem.strength ?? 1.0,
+            mem.confidence ?? 1.0,
+            mem.encrypted || false,
+            mem.iv || null,
+            mem.authTag || null,
+            mem.createdAt || Date.now(),
+          ]
+        );
+        existingSet.add(mem.content);
+        imported++;
+      } catch (err: any) {
+        errors.push(`Failed to import memory: ${err.message}`);
+      }
+    }
+
+    res.json({ imported, skipped, errors });
+  }));
+
+  // ── E2E Encryption ────────────────────────────────────────────
+
+  // POST /api/encryption/setup — store salt and enable E2E
+  app.post("/api/encryption/setup", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { salt } = req.body;
+    if (!salt || typeof salt !== "string") {
+      return res.status(400).json({ error: "Missing salt parameter" });
+    }
+
+    await pool.query(
+      `UPDATE users SET encryption_public_key = $1, e2e_enabled = true WHERE id = $2`,
+      [salt, userId]
+    );
+
+    res.json({ ok: true, e2eEnabled: true });
+  }));
+
+  // GET /api/encryption/status — check if E2E is configured
+  app.get("/api/encryption/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const result = await pool.query(
+      `SELECT e2e_enabled, encryption_public_key FROM users WHERE id = $1`, [userId]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: "User not found" });
+
+    const row = result.rows[0];
+    res.json({
+      enabled: row.e2e_enabled || false,
+      hasSalt: !!row.encryption_public_key,
+    });
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {

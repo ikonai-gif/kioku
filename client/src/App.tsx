@@ -29,6 +29,7 @@ import GalleryPage from "./pages/gallery";
 import KnowledgePage from "./pages/knowledge";
 import FilesPage from "./pages/files";
 import ConnectorsPage from "./pages/connectors";
+import PrivacyDashboardPage from "./pages/privacy-dashboard";
 import AppLayout from "./components/layout";
 import NotFound from "./pages/not-found";
 import VerifyPage from "./pages/verify";
@@ -52,6 +53,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/docs":    "API Docs — KIOKU™",
   "/boss":    "Boss Board — KIOKU™",
   "/privacy": "Privacy Policy — KIOKU™",
+  "/privacy-dashboard": "Privacy & Security — KIOKU™",
   "/terms":   "Terms of Service — KIOKU™",
   "/cookies": "Cookie Policy — KIOKU™",
 };
@@ -252,6 +254,7 @@ export default function App() {
                         <Route path="/billing" component={BillingPage} />
                         <Route path="/pricing" component={PricingPage} />
                         <Route path="/docs" component={DocsPage} />
+                        <Route path="/privacy-dashboard" component={PrivacyDashboardPage} />
                         <Route path="/privacy" component={PrivacyPage} />
                         <Route path="/terms" component={TermsPage} />
                         <Route path="/cookies" component={CookiesPage} />

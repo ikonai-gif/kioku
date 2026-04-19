@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
   CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart, Palette, Library,
-  FolderOpen, Plug
+  FolderOpen, Plug, Shield
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -35,6 +35,7 @@ const baseNavItems = [
   { href: "/rooms",     icon: MessageSquare,    label: "Rooms"     },
   { href: "/logs",      icon: Activity,         label: "Live Feed" },
   { href: "/docs",      icon: BookOpen,         label: "API Docs"  },
+  { href: "/privacy-dashboard", icon: Shield, label: "Privacy"   },
   { href: "/billing",   icon: CreditCard,       label: "Billing"   },
 ];
 
