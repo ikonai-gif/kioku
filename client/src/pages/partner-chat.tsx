@@ -20,6 +20,9 @@ import { DailyBriefCard, isDailyBriefMessage } from "@/components/DailyBriefCard
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DeliberationView } from "@/components/DeliberationView";
 import { ProvenanceViewer } from "@/components/ProvenanceViewer";
+import { VoiceOutput } from "@/components/voice/VoiceOutput";
+import { CameraCapture } from "@/components/vision/CameraCapture";
+import { VisionResult } from "@/components/vision/VisionResult";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -670,7 +673,7 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
         )}
         <div className="whitespace-pre-wrap break-words">{renderMessageContent(message.content)}</div>
         <div className="flex items-center justify-between mt-1 gap-2">
-          {!isUser && <SpeakButton text={message.content} />}
+          {!isUser && <VoiceOutput text={message.content} compact />}
           <span className={cn("text-[10px] text-muted-foreground/40", !isUser ? "ml-auto" : "")}>
             {new Date(Number(message.createdAt) || message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
@@ -1422,6 +1425,7 @@ export default function PartnerChat() {
   const [selectedArtifact, setSelectedArtifact] = useState<any | null>(null);
   const [showActionPanel, setShowActionPanel] = useState(false);
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
+  const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
   const isMobile = useIsMobile();
 
   // ── Deliberation state ────────────────────────────────────────
@@ -2469,6 +2473,31 @@ export default function PartnerChat() {
           )}
         </AnimatePresence>
 
+        {/* Vision analysis result */}
+        <AnimatePresence>
+          {visionResult && (
+            <div className="mb-2 px-1">
+              <VisionResult
+                analysis={visionResult.analysis}
+                suggestions={visionResult.suggestions}
+                imagePreview={visionResult.imagePreview}
+                onAction={(s) => {
+                  if (s.type === "chat") {
+                    setInput((prev) => prev ? `${prev}\n\n${s.payload}` : s.payload);
+                  } else if (s.type === "memory") {
+                    // Post as chat message for Luca to save
+                    setInput(`Please save this to memory: ${s.payload}`);
+                  } else {
+                    setInput(s.label + ": " + s.payload);
+                  }
+                  setVisionResult(null);
+                }}
+                onDismiss={() => setVisionResult(null)}
+              />
+            </div>
+          )}
+        </AnimatePresence>
+
         {/* Creative mode indicator */}
         <AnimatePresence>
           {creativeMode && (
@@ -2491,7 +2520,7 @@ export default function PartnerChat() {
           )}
         </AnimatePresence>
 
-        {/* Input Row: [ + Attach ] [ Text input ] [ Mic ] [ Send ] */}
+        {/* Input Row: [ + Attach ] [ Text input ] [ Camera ] [ Mic ] [ Send ] */}
         <div className="flex items-end gap-1.5 relative">
           {/* Attach Menu Button */}
           <motion.button
@@ -2688,6 +2717,16 @@ export default function PartnerChat() {
               target.style.height = "auto";
               target.style.height = Math.min(target.scrollHeight, 120) + "px";
             }}
+          />
+
+          {/* Camera Button — Vision Pipeline */}
+          <CameraCapture
+            onAnalysis={(result) => setVisionResult({ ...result, imagePreview: undefined })}
+            onImageAttach={(preview, base64, mime) => {
+              setImagePreview(preview);
+              setImageBase64(`${mime}:${base64}`);
+            }}
+            disabled={sendMutation.isPending}
           />
 
           {/* Mic Button */}

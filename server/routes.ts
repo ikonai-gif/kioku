@@ -3536,6 +3536,130 @@ Do NOT:
     }
   }, 1800000);
 
+  // ── Phase 3: Voice-First Interface + Camera Vision Pipeline ────
+
+  // POST /api/voice/transcribe — Accept audio blob, transcribe with Whisper
+  app.post("/api/voice/transcribe", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const multer = (await import("multer")).default;
+    const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } }).single("audio");
+
+    await new Promise<void>((resolve, reject) => {
+      upload(req as any, res as any, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "Audio file required" });
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const transcription = await openai.audio.transcriptions.create({
+      model: "whisper-1",
+      file: new File([file.buffer], file.originalname || "audio.webm", { type: file.mimetype || "audio/webm" }),
+    });
+
+    res.json({ text: transcription.text });
+  }));
+
+  // POST /api/voice/synthesize — Accept { text, voice? }, return audio stream
+  app.post("/api/voice/synthesize", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { text, voice } = req.body;
+    if (!text || typeof text !== "string") return res.status(400).json({ error: "Text required" });
+
+    const ALLOWED_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer", "ash", "coral", "sage"];
+    const safeVoice = ALLOWED_VOICES.includes(voice) ? voice : "alloy";
+
+    const OpenAI = (await import("openai")).default;
+    const openai = new OpenAI();
+    const mp3 = await openai.audio.speech.create({
+      model: "tts-1",
+      voice: safeVoice,
+      input: text.slice(0, 4096),
+    });
+
+    res.set("Content-Type", "audio/mpeg");
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    res.send(buffer);
+  }));
+
+  // POST /api/vision/analyze — Accept image, analyze with GPT-4o vision
+  app.post("/api/vision/analyze", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { image, mimeType, prompt } = req.body;
+    if (!image) return res.status(400).json({ error: "Image required" });
+
+    const cleanBase64 = image.replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/]+=*$/.test(cleanBase64.slice(0, 100))) {
+      return res.status(400).json({ error: "Invalid base64 image data" });
+    }
+
+    let mime = "image/jpeg";
+    if (mimeType && mimeType.startsWith("image/")) {
+      mime = mimeType;
+    } else {
+      if (cleanBase64.startsWith("iVBOR")) mime = "image/png";
+      else if (cleanBase64.startsWith("R0lGOD")) mime = "image/gif";
+      else if (cleanBase64.startsWith("UklGR")) mime = "image/webp";
+    }
+    const dataUrl = `data:${mime};base64,${cleanBase64}`;
+
+    try {
+      const OpenAI = (await import("openai")).default;
+      const openai = new OpenAI();
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [{
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: prompt || "Analyze this image thoroughly. Describe what you see in detail, identify key elements, and suggest potential actions the user might want to take based on the image content. Structure your response with: 1) Description 2) Key observations 3) Suggested actions",
+            },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        }],
+        max_tokens: 1000,
+      });
+
+      const analysis = response.choices[0]?.message?.content || "Could not analyze the image.";
+
+      // Parse suggested actions from the analysis
+      const suggestions: Array<{ type: string; label: string; payload: string }> = [];
+      const actionPatterns = [
+        { pattern: /search|look up|find/i, type: "search", label: "Search for more info" },
+        { pattern: /share|send|forward/i, type: "share", label: "Share this" },
+        { pattern: /save|store|remember/i, type: "memory", label: "Save to memory" },
+        { pattern: /translate|language/i, type: "translate", label: "Translate text" },
+        { pattern: /code|program|script/i, type: "code", label: "Analyze code" },
+        { pattern: /document|text|read/i, type: "extract", label: "Extract text" },
+      ];
+
+      for (const ap of actionPatterns) {
+        if (ap.pattern.test(analysis)) {
+          suggestions.push({ type: ap.type, label: ap.label, payload: analysis.slice(0, 200) });
+        }
+      }
+
+      // Always include a "discuss" action
+      suggestions.push({ type: "chat", label: "Discuss with Luca", payload: analysis.slice(0, 200) });
+
+      res.json({ analysis, suggestions });
+    } catch (err: any) {
+      logger.error({ source: "vision-analyze", error: err?.message }, "Vision analysis failed");
+      res.status(500).json({ error: "Vision analysis failed", detail: err?.message || "Unknown error" });
+    }
+  }));
+
   // ── Global error handler ──────────────────────────────────────
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {
