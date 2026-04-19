@@ -4,6 +4,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Check, Zap, ExternalLink, Settings, Brain, Bot, MessageSquare, ArrowUpRight, CreditCard, Activity, Webhook, Coins, AlertTriangle, Download, FileJson, FileSpreadsheet, FileText } from "lucide-react";
+import NotificationSettings from "@/components/push/NotificationSettings";
 import { cn } from "@/lib/utils";
 
 // ── KIOKU™ backend (Railway) — real Stripe ─────────────────────────────────
@@ -263,6 +264,18 @@ export default function BillingPage() {
               <div className="text-[10px] text-muted-foreground">{op}</div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Push Notifications Settings */}
+      <div className="bg-card border border-card-border rounded-xl p-5 relative overflow-hidden">
+        {/* Gold glow corners */}
+        <div className="absolute top-0 left-0 w-24 h-24 pointer-events-none"
+          style={{ background: "radial-gradient(circle at 0% 0%, rgba(255,215,0,0.06), transparent 70%)" }} />
+        <div className="absolute bottom-0 right-0 w-24 h-24 pointer-events-none"
+          style={{ background: "radial-gradient(circle at 100% 100%, rgba(255,215,0,0.06), transparent 70%)" }} />
+        <div className="relative z-10">
+          <NotificationSettings />
         </div>
       </div>
 
