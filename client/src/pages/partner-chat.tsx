@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -16,6 +16,7 @@ import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
 import { ActionPanel } from "@/components/ActionPanel";
 import { ActionPanelToggle } from "@/components/ActionPanelToggle";
 import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
+import { DailyBriefCard, isDailyBriefMessage } from "@/components/DailyBriefCard";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { DeliberationView } from "@/components/DeliberationView";
 import { ProvenanceViewer } from "@/components/ProvenanceViewer";
@@ -2018,6 +2019,24 @@ export default function PartnerChat() {
     setHeaderMenuOpen(false);
   };
 
+  // ── Refresh Daily Brief ────────────────────────────────────────
+  const refreshDailyBrief = async () => {
+    if (!partnerRoomId) return;
+    try {
+      proactiveCheckedRef.current = false;
+      const data = await apiRequest("POST", `/api/rooms/${partnerRoomId}/proactive-check`).then((r) => r.json());
+      if (data.message) {
+        queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoomId, "messages"] });
+        toast({ title: "Summary refreshed" });
+      } else {
+        toast({ title: "No new summary available" });
+      }
+    } catch {
+      toast({ title: "Failed to refresh summary", variant: "destructive" });
+    }
+    setHeaderMenuOpen(false);
+  };
+
   // ── Creative Mode ────────────────────────────────────────────
   const handleCreativeSelect = (mode: string, subType?: string) => {
     if (mode === "write") {
@@ -2254,6 +2273,13 @@ export default function PartnerChat() {
                       <span className="text-sm text-foreground">Knowledge</span>
                     </a>
                   </Link>
+                  <button
+                    onClick={refreshDailyBrief}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                  >
+                    <RefreshCw className="w-4 h-4 text-[#C9A340]" />
+                    <span className="text-sm text-foreground">Refresh Summary</span>
+                  </button>
                   <div className="my-1 border-t border-white/5" />
                   <button
                     onClick={clearChat}
@@ -2300,6 +2326,14 @@ export default function PartnerChat() {
             .map((item: any, idx: number, arr: any[]) =>
               item._type === "creative" ? (
                 <CreativeChatCard key={`cr-${item.id}`} message={item} />
+              ) : isDailyBriefMessage(item, idx, user?.name) ? (
+                <DailyBriefCard
+                  key={`brief-${item.id}`}
+                  message={item}
+                  userName={user?.name}
+                  emotion={emotion}
+                  onRefresh={refreshDailyBrief}
+                />
               ) : (
                 <ChatBubble
                   key={item.id}
