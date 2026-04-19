@@ -1120,6 +1120,21 @@ async function executePartnerTool(
           const toolSlug = toolInput.tool_name;
           if (!toolSlug) return "Missing tool_name. First use action='search' to find the right tool, then use its enum name here.";
           const params = toolInput.params || {};
+          // Extract appName from tool slug (e.g. GMAIL_FETCH_EMAILS → gmail, GOOGLESHEETS_CREATE → googlesheets)
+          const composioAppMap: Record<string, string> = {
+            GMAIL: 'gmail', SLACK: 'slack', GITHUB: 'github', NOTION: 'notion',
+            GOOGLESHEETS: 'googlesheets', GOOGLECALENDAR: 'googlecalendar',
+            GOOGLEDRIVE: 'googledrive', DROPBOX: 'dropbox', TRELLO: 'trello',
+            HUBSPOT: 'hubspot', JIRA: 'jira', ASANA: 'asana', SPOTIFY: 'spotify',
+            TWITTER: 'twitter', LINKEDIN: 'linkedin', STRIPE: 'stripe',
+            SHOPIFY: 'shopify', DISCORD: 'discord', TELEGRAM: 'telegram',
+            WHATSAPP: 'whatsapp', ZOOM: 'zoom',
+          };
+          let appNameFromSlug: string | undefined;
+          for (const [prefix, app] of Object.entries(composioAppMap)) {
+            if (toolSlug.startsWith(prefix + '_')) { appNameFromSlug = app; break; }
+          }
+          if (!appNameFromSlug) appNameFromSlug = toolSlug.split('_')[0]?.toLowerCase();
           const resp = await fetch(`${composioBase}/actions/${toolSlug}/execute`, {
             method: "POST",
             headers: composioHeaders,
@@ -1127,6 +1142,7 @@ async function executePartnerTool(
             body: JSON.stringify({
               input: params,
               entityId: `kioku_user_${userId}`,
+              ...(appNameFromSlug ? { appName: appNameFromSlug } : {}),
             }),
           });
           if (!resp.ok) {
