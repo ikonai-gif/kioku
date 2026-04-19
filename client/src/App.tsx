@@ -30,6 +30,7 @@ import GalleryPage from "./pages/gallery";
 import KnowledgePage from "./pages/knowledge";
 import FilesPage from "./pages/files";
 import ConnectorsPage from "./pages/connectors";
+import PrivacyDashboardPage from "./pages/privacy-dashboard";
 import AppLayout from "./components/layout";
 import NotFound from "./pages/not-found";
 import VerifyPage from "./pages/verify";

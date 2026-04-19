@@ -35,6 +35,7 @@ const baseNavItems = [
   { href: "/rooms",     icon: MessageSquare,    label: "Rooms"     },
   { href: "/logs",      icon: Activity,         label: "Live Feed" },
   { href: "/docs",      icon: BookOpen,         label: "API Docs"  },
+  { href: "/privacy-dashboard", icon: Shield, label: "Privacy"   },
   { href: "/billing",   icon: CreditCard,       label: "Billing"   },
   { href: "/privacy-dashboard", icon: Shield, label: "Privacy" },
 ];
