@@ -633,6 +633,19 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["url"],
     },
   },
+  {
+    name: "generate_video",
+    description: "Generate a short video (5-8 seconds) using Google Veo 3. Creates cinematic video WITH audio, dialogue, and sound effects from a text prompt. Use for: visualizing scenes, creating short clips, mini-episodes, product demos, mood videos. ALWAYS use when the user asks to create video, film, clip, or animate something.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "Detailed video description — scene, action, mood, camera movement, lighting. Be cinematic and specific. Include audio/dialogue directions if needed." },
+        aspect_ratio: { type: "string", enum: ["16:9", "9:16", "1:1"], description: "Aspect ratio. 16:9 for landscape/cinema, 9:16 for mobile/stories, 1:1 for square. Default: 16:9" },
+        duration: { type: "number", description: "Duration in seconds (5 or 8). Default: 8" },
+      },
+      required: ["prompt"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -2522,6 +2535,93 @@ print("Converted MD to DOCX")
           return response;
         } catch (err: any) {
           return `Browser failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "generate_video": {
+        const prompt = toolInput.prompt;
+        if (!prompt || typeof prompt !== "string") return "Missing required field: prompt.";
+        const aspectRatio = toolInput.aspect_ratio || "16:9";
+        const duration = toolInput.duration || 8;
+
+        const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY;
+        if (!geminiKey) return "Video generation requires GEMINI_API_KEY. Please ask the admin to configure it.";
+
+        try {
+          // Use Veo 3 via Gemini API (generativelanguage.googleapis.com)
+          const veoUrl = `https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-preview:predictLongRunning?key=${geminiKey}`;
+          const veoPayload = {
+            instances: [{ prompt: prompt.slice(0, 2000) }],
+            parameters: {
+              aspectRatio,
+              durationSeconds: Math.min(duration, 8),
+              personGeneration: "allow_adult",
+              generateAudio: true,
+            },
+          };
+
+          // Start generation (long-running operation)
+          const startResp = await fetch(veoUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(veoPayload),
+            signal: AbortSignal.timeout(30000),
+          });
+
+          if (!startResp.ok) {
+            const err = await startResp.text();
+            // Fallback: try imagen/veo via generateContent
+            const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:generateContent?key=${geminiKey}`;
+            const fallbackResp = await fetch(fallbackUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: `Generate a ${duration}-second cinematic video: ${prompt.slice(0, 1500)}` }] }],
+                generationConfig: { responseModalities: ["video"] },
+              }),
+              signal: AbortSignal.timeout(120000),
+            });
+            if (!fallbackResp.ok) {
+              return `Video generation failed: ${err.slice(0, 200)}. Veo 3 may not be available for this API key — check Vertex AI access.`;
+            }
+            const fallbackData = await fallbackResp.json() as any;
+            const videoData = fallbackData?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.mimeType?.startsWith("video/"));
+            if (videoData?.inlineData?.data) {
+              return `[Video generated via Veo 2] data:${videoData.inlineData.mimeType};base64,${videoData.inlineData.data}`;
+            }
+            return `Video generation returned no video content. The model may not support video output with this API key.`;
+          }
+
+          const opData = await startResp.json() as any;
+          const operationName = opData.name;
+
+          if (!operationName) {
+            // Direct response (not long-running)
+            const videoData = opData?.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
+            if (videoData?.uri) {
+              return `[Video generated] ${videoData.uri}`;
+            }
+            return "Video generation started but no operation ID returned. Check API configuration.";
+          }
+
+          // Poll for completion (max 2 minutes)
+          const pollUrl = `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${geminiKey}`;
+          for (let attempt = 0; attempt < 24; attempt++) {
+            await new Promise(r => setTimeout(r, 5000)); // 5s intervals
+            const pollResp = await fetch(pollUrl, { signal: AbortSignal.timeout(10000) });
+            if (!pollResp.ok) continue;
+            const pollData = await pollResp.json() as any;
+            if (pollData.done) {
+              const video = pollData.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
+              if (video?.uri) {
+                return `[Video generated] ${video.uri}`;
+              }
+              return "Video generation completed but no video URL returned.";
+            }
+          }
+          return "Video generation timed out after 2 minutes. The video may still be processing — try again later.";
+        } catch (err: any) {
+          return `Video generation failed: ${err?.message || String(err)}`;
         }
       }
 

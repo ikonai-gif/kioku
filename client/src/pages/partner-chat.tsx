@@ -310,6 +310,27 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   );
 }
 
+// ── Video player for generated videos ──────────────────────────
+function VideoPlayer({ src, caption }: { src: string; caption?: string }) {
+  return (
+    <div className="my-2 rounded-xl overflow-hidden" style={{ background: "rgba(0,0,0,0.4)", border: "1px solid rgba(201,163,64,0.3)" }}>
+      <video
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        className="w-full max-w-[360px] rounded-t-xl"
+        style={{ maxHeight: 400 }}
+      />
+      {caption && (
+        <div className="px-3 py-2 text-xs text-[#C9A340]/70 font-mono truncate" title={caption}>
+          {caption}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Execution output renderer (terminal-style block) ──────────
 function ExecOutputBlock({ output }: { output: string }) {
   return (
@@ -330,6 +351,18 @@ function ExecOutputBlock({ output }: { output: string }) {
 // ── Markdown renderer for chat messages ───────────────────────
 function renderMessageContent(content: string): React.ReactNode {
   if (!content) return null;
+
+  // Detect [Video generated] <url> or [Video generated via Veo 2] data:... patterns
+  const videoMatch = content.match(/\[Video generated(?:[^\]]*)\]\s*(\S+)/);
+  if (videoMatch) {
+    const videoUrl = videoMatch[1];
+    const rest = content.replace(videoMatch[0], '').trim();
+    return (
+      <>
+        <VideoPlayer src={videoUrl} caption={rest || undefined} />
+      </>
+    );
+  }
 
   // Detect [File: filename] pattern and render as a clean card
   const fileMatch = content.match(/^\[File: ([^\]]+)\]$/);
@@ -533,6 +566,21 @@ function parseArtifactsFromMessages(messages: any[], isUserFn: (msg: any) => boo
         title: `${lang.charAt(0).toUpperCase() + lang.slice(1)} snippet`,
         content: code,
         language: lang,
+        timestamp: ts,
+      });
+    }
+
+    // Extract video URLs from [Video generated] patterns
+    const videoRegex = /\[Video generated(?:[^\]]*)\]\s*(\S+)/g;
+    while ((match = videoRegex.exec(content)) !== null) {
+      const videoUrl = match[1];
+      artifacts.push({
+        id: `art-vid-${msg.id}-${artifactIdCounter++}`,
+        type: "video" as any,
+        category: "media",
+        title: "Generated video",
+        content: "",
+        url: videoUrl,
         timestamp: ts,
       });
     }
