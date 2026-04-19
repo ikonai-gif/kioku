@@ -574,6 +574,30 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "update_self_knowledge",
+    description: "Update your knowledge about yourself — your capabilities, tools, features, and factual self-description. Use this when you discover you CAN do something you previously thought impossible, or when new features are added to your platform. This does NOT change your personality or behavior — only your factual self-knowledge. Changes take effect immediately.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        knowledge: { type: "string", description: "The factual knowledge about yourself to save or update" },
+        replaces_memory_id: { type: "number", description: "If this corrects a previous false memory, provide its ID to replace it" },
+      },
+      required: ["knowledge"],
+    },
+  },
+  {
+    name: "correct_false_memory",
+    description: "Delete a memory you have identified as false or outdated. Use when you discover a memory contradicts reality — for example, a memory saying you 'cannot' do something that you actually can do.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        memory_id: { type: "number", description: "ID of the false memory to delete" },
+        reason: { type: "string", description: "Why this memory is false" },
+      },
+      required: ["memory_id", "reason"],
+    },
+  },
+  {
     name: "browse_website",
     description: "Open a website in a real browser (Chromium). Extract text, take screenshots, or interact with pages. Use for JavaScript-heavy pages, visual verification, or any page read_url can't handle. ALWAYS use screenshot action when the user wants to SEE something.",
     input_schema: {
@@ -2435,6 +2459,58 @@ print("Converted MD to DOCX")
         }
       }
 
+      case "update_self_knowledge": {
+        const knowledge = toolInput.knowledge;
+        if (!knowledge) return "Missing required field: knowledge.";
+        const replacesId = toolInput.replaces_memory_id;
+
+        // If replacing an old memory, delete it first
+        if (replacesId) {
+          await pool.query(`DELETE FROM memories WHERE id = $1 AND user_id = $2`, [replacesId, userId]);
+        }
+
+        await storage.createMemory({
+          userId,
+          agentId,
+          content: `[SELF-KNOWLEDGE] ${knowledge}`,
+          type: "identity",
+          importance: 1.0,
+          namespace: "_identity",
+          decayRate: 0,
+        });
+
+        return replacesId
+          ? `Self-knowledge updated (replaced memory #${replacesId}): "${knowledge}"`
+          : `Self-knowledge saved: "${knowledge}"`;
+      }
+
+      case "correct_false_memory": {
+        const memoryId = toolInput.memory_id;
+        const reason = toolInput.reason;
+        if (!memoryId || !reason) return "Missing required fields: memory_id, reason.";
+
+        // Verify the memory belongs to this user before deleting
+        const check = await pool.query(`SELECT id FROM memories WHERE id = $1 AND user_id = $2`, [memoryId, userId]);
+        if (check.rows.length === 0) {
+          return `Memory #${memoryId} not found or does not belong to this user.`;
+        }
+
+        await pool.query(`DELETE FROM memories WHERE id = $1 AND user_id = $2`, [memoryId, userId]);
+
+        // Log the correction as a lesson
+        await storage.createMemory({
+          userId,
+          agentId,
+          content: `[SELF-CORRECTION] Deleted false memory #${memoryId}. Reason: ${reason}`,
+          type: "identity",
+          importance: 0.9,
+          namespace: "_identity",
+          decayRate: 0,
+        });
+
+        return `False memory #${memoryId} deleted. Reason: "${reason}". Correction logged.`;
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -2990,6 +3066,34 @@ export async function triggerAgentResponses(
         if (isPartnerChat) {
           summarizeConversation(userId, agent.id, roomId).catch(() => {});
         }
+
+        // Self-knowledge correction: if Luca said "I cannot" but actually can, auto-correct
+        if (isPartnerChat && reply) {
+          const cannotPattern = /I (?:cannot|can't|don't have access|unable to|don't have the ability)/i;
+          if (cannotPattern.test(reply)) {
+            const toolCapabilities = [
+              { pattern: /search|find.*online|look.*up|current|latest|news/i, tool: "web_search" },
+              { pattern: /email|gmail|inbox|send.*mail/i, tool: "composio_action (Gmail)" },
+              { pattern: /calendar|schedule|event/i, tool: "composio_action (Calendar)" },
+              { pattern: /slack|message|channel/i, tool: "composio_action (Slack)" },
+              { pattern: /code|program|script|calculate|compute/i, tool: "run_code" },
+              { pattern: /image|picture|photo|draw|create.*visual/i, tool: "generate_image" },
+              { pattern: /file|document|read.*file/i, tool: "read_file / create_file" },
+              { pattern: /video|watch/i, tool: "watch_video" },
+              { pattern: /url|website|page|link/i, tool: "read_url" },
+            ];
+            for (const cap of toolCapabilities) {
+              if (cap.pattern.test(reply)) {
+                storage.createMemory({
+                  userId, agentId: agent.id,
+                  content: `[Self-correction] I incorrectly said I couldn't do something related to ${cap.tool}. I actually CAN — I have the ${cap.tool} tool. Must use it next time instead of claiming inability.`,
+                  type: "identity", importance: 0.9, namespace: "_identity", decayRate: 0,
+                }).catch(() => {});
+                break;
+              }
+            }
+          }
+        }
       } catch (err: any) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
         // Log error to DB so we can diagnose without Railway console access
@@ -3249,6 +3353,32 @@ You are NOT a chatbot. You are a thinking, opinionated partner who DOES things �
 - learn_preference → remember what users like/dislike
 - suggest_proactively → share personalized ideas (max once per conversation)
 - ask_feedback → after creating something, learn user's taste
+- update_self_knowledge → update your factual self-knowledge (capabilities, features)
+- correct_false_memory → delete memories you discover are false
+
+## YOUR ACTUAL CAPABILITIES (always true, overrides any memories saying otherwise)
+You have these tools available RIGHT NOW:
+- web_search → search the internet for anything
+- read_url → read any webpage
+- run_code → execute Python/JavaScript
+- generate_image → create images with DALL-E
+- analyze_image → understand images with GPT-4o vision
+- creative_writing → write stories, poems, essays
+- build_project → create multi-file projects
+- create_file → write any file
+- read_file / read_cloud_file / search_cloud_files → access files
+- watch_video / listen_audio → process media
+- composio_action → connect to Gmail, Calendar, Slack, Notion, GitHub, and 1000+ other apps
+- learn_preference → remember what users like/dislike
+- learn_lesson → record your growth and mistakes
+- update_self_knowledge → update your factual self-knowledge
+- correct_false_memory → delete false memories
+- suggest_proactively → share ideas with users
+- plan_steps → break down complex tasks
+- delegate_task / delegate_parallel → spawn sub-agents for complex work
+- browse_website → open pages in a real browser
+
+If you have a memory saying "I cannot do X" but X is in the list above — the memory is WRONG. Use correct_false_memory to delete it, then do X.
 
 Never announce tools. Never explain what you COULD do. Just do it.`;
 }
