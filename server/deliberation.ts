@@ -2586,48 +2586,45 @@ print("Converted MD to DOCX")
         if (!geminiKey) return "Video generation requires GEMINI_API_KEY. Please ask the admin to configure it.";
 
         try {
-          // Use Veo 3 via Gemini API (generativelanguage.googleapis.com)
-          const veoUrl = `https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-preview:predictLongRunning?key=${geminiKey}`;
-          const veoPayload = {
-            instances: [{ prompt: prompt.slice(0, 2000) }],
-            parameters: {
-              aspectRatio,
-              durationSeconds: Math.min(duration, 8),
-              personGeneration: "allow_adult",
-              generateAudio: true,
-            },
-          };
+          // Model cascade: try Veo 3.1 preview → Veo 3.0 stable → Veo 3.0 fast → Veo 2.0
+          // All via predictLongRunning (the only method these models support)
+          const modelCascade = [
+            { id: "veo-3.1-generate-preview", label: "Veo 3.1", audio: true },
+            { id: "veo-3.0-generate-001", label: "Veo 3.0", audio: true },
+            { id: "veo-3.0-fast-generate-001", label: "Veo 3.0 Fast", audio: true },
+            { id: "veo-2.0-generate-001", label: "Veo 2.0", audio: false },
+          ];
 
-          // Start generation (long-running operation)
-          const startResp = await fetch(veoUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(veoPayload),
-            signal: AbortSignal.timeout(30000),
-          });
-
-          if (!startResp.ok) {
-            const err = await startResp.text();
-            // Fallback: try imagen/veo via generateContent
-            const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:generateContent?key=${geminiKey}`;
-            const fallbackResp = await fetch(fallbackUrl, {
+          let startResp: Response | null = null;
+          let modelUsed = "";
+          let lastErr = "";
+          for (const model of modelCascade) {
+            const veoUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:predictLongRunning?key=${geminiKey}`;
+            const veoPayload: any = {
+              instances: [{ prompt: prompt.slice(0, 2000) }],
+              parameters: {
+                aspectRatio,
+                durationSeconds: Math.min(duration, 8),
+                personGeneration: "allow_adult",
+              },
+            };
+            if (model.audio) veoPayload.parameters.generateAudio = true;
+            const resp = await fetch(veoUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: `Generate a ${duration}-second cinematic video: ${prompt.slice(0, 1500)}` }] }],
-                generationConfig: { responseModalities: ["video"] },
-              }),
-              signal: AbortSignal.timeout(120000),
+              body: JSON.stringify(veoPayload),
+              signal: AbortSignal.timeout(30000),
             });
-            if (!fallbackResp.ok) {
-              return `Video generation failed: ${err.slice(0, 200)}. Veo 3 may not be available for this API key — check Vertex AI access.`;
+            if (resp.ok) {
+              startResp = resp;
+              modelUsed = model.label;
+              break;
             }
-            const fallbackData = await fallbackResp.json() as any;
-            const videoData = fallbackData?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData?.mimeType?.startsWith("video/"));
-            if (videoData?.inlineData?.data) {
-              return `[Video generated via Veo 2] data:${videoData.inlineData.mimeType};base64,${videoData.inlineData.data}`;
-            }
-            return `Video generation returned no video content. The model may not support video output with this API key.`;
+            lastErr = `${model.id}: ${(await resp.text()).slice(0, 150)}`;
+          }
+
+          if (!startResp) {
+            return `Video generation failed across all Veo models. Last error: ${lastErr.slice(0, 300)}. The API key may lack video generation access — check Google AI Studio billing.`;
           }
 
           const opData = await startResp.json() as any;
@@ -2637,7 +2634,7 @@ print("Converted MD to DOCX")
             // Direct response (not long-running)
             const videoData = opData?.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
             if (videoData?.uri) {
-              return `[Video generated] ${videoData.uri}`;
+              return `[Video generated via ${modelUsed}] ${videoData.uri}`;
             }
             return "Video generation started but no operation ID returned. Check API configuration.";
           }
