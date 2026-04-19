@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
@@ -13,6 +13,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CapabilityCards } from "@/components/CapabilityCards";
 import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
+import { ActionPanel } from "@/components/ActionPanel";
+import { ActionPanelToggle } from "@/components/ActionPanelToggle";
+import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -472,6 +476,114 @@ function renderMarkdownContent(content: string): React.ReactNode {
       {content}
     </ReactMarkdown>
   );
+}
+
+// ── Parse artifacts from AI messages ───────────────────────────
+let artifactIdCounter = 0;
+function parseArtifactsFromMessages(messages: any[], isUserFn: (msg: any) => boolean): Artifact[] {
+  const artifacts: Artifact[] = [];
+  for (const msg of messages) {
+    if (isUserFn(msg)) continue;
+    const content = msg.content || "";
+    const ts = Number(msg.createdAt) || new Date(msg.createdAt).getTime() || Date.now();
+
+    // Extract fenced code blocks: ```lang\ncode\n```
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    let match: RegExpExecArray | null;
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      const lang = match[1] || "code";
+      const code = match[2].trim();
+      if (code.length < 10) continue; // skip trivial snippets
+      artifacts.push({
+        id: `art-code-${msg.id}-${artifactIdCounter++}`,
+        type: "code",
+        category: "code",
+        title: `${lang.charAt(0).toUpperCase() + lang.slice(1)} snippet`,
+        content: code,
+        language: lang,
+        timestamp: ts,
+      });
+    }
+
+    // Extract image URLs from markdown: ![alt](url)
+    const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+    while ((match = imgRegex.exec(content)) !== null) {
+      const alt = match[1] || "Image";
+      const url = match[2];
+      artifacts.push({
+        id: `art-img-${msg.id}-${artifactIdCounter++}`,
+        type: "image",
+        category: "images",
+        title: alt,
+        content: alt,
+        url,
+        timestamp: ts,
+      });
+    }
+
+    // Extract inline images from message data
+    if (msg.imageUrl) {
+      artifacts.push({
+        id: `art-img-${msg.id}-inline-${artifactIdCounter++}`,
+        type: "image",
+        category: "images",
+        title: "Shared image",
+        content: "Image from conversation",
+        url: msg.imageUrl,
+        timestamp: ts,
+      });
+    }
+
+    // Extract file download links: [Download: filename](url) or markdown links to /api/files/
+    const fileLinkRegex = /\[([^\]]*(?:Download|download)[^\]]*)\]\(([^)]+)\)/g;
+    while ((match = fileLinkRegex.exec(content)) !== null) {
+      const fname = match[1].replace(/^(?:Download:\s*|📥\s*)/, "").trim();
+      const url = match[2];
+      artifacts.push({
+        id: `art-file-${msg.id}-${artifactIdCounter++}`,
+        type: "file",
+        category: "files",
+        title: fname || "File",
+        content: "",
+        url,
+        filename: fname,
+        timestamp: ts,
+      });
+    }
+
+    // Also catch /api/files/ links not caught above
+    const apiFileRegex = /\[([^\]]+)\]\((\/api\/files\/[^)]+)\)/g;
+    while ((match = apiFileRegex.exec(content)) !== null) {
+      const fname = match[1];
+      const url = match[2];
+      // skip if already captured by download regex
+      if (artifacts.some((a) => a.url === url)) continue;
+      artifacts.push({
+        id: `art-file-${msg.id}-${artifactIdCounter++}`,
+        type: "file",
+        category: "files",
+        title: fname,
+        content: "",
+        url,
+        filename: fname,
+        timestamp: ts,
+      });
+    }
+
+    // Extract execution output blocks as results
+    const execRegex = /Code executed successfully \(\w+\):\n([\s\S]*?)(?=\n\n|\n(?=\S)|$)/g;
+    while ((match = execRegex.exec(content)) !== null) {
+      artifacts.push({
+        id: `art-result-${msg.id}-${artifactIdCounter++}`,
+        type: "result",
+        category: "code",
+        title: "Execution output",
+        content: match[0],
+        timestamp: ts,
+      });
+    }
+  }
+  return artifacts;
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────
@@ -1305,6 +1417,14 @@ export default function PartnerChat() {
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<any | null>(null);
+  const [showActionPanel, setShowActionPanel] = useState(false);
+  const [actionPanelSeen, setActionPanelSeen] = useState(0);
+  const isMobile = useIsMobile();
+
+  // Stable isUser check for artifact parsing (defined early for useMemo)
+  const isUserFn = useCallback((msg: any) => {
+    return msg.agentName === user?.name || msg.agentName === "You" || (!msg.agentId && msg.agentName === (user?.name || "You"));
+  }, [user]);
 
   // ── Fetch gallery artifacts ──────────────────────────────────
   const { data: galleryItems = [] } = useQuery<any[]>({
@@ -1366,6 +1486,25 @@ export default function PartnerChat() {
     enabled: !!partnerRoomId,
     refetchInterval: wsConnected ? false : 4000,
   });
+
+  // ── Parse artifacts from messages for the Action Panel ────────
+  const parsedArtifacts = React.useMemo(
+    () => parseArtifactsFromMessages(messages, isUserFn),
+    [messages, isUserFn]
+  );
+  const hasNewArtifacts = parsedArtifacts.length > actionPanelSeen;
+
+  // When panel opens, mark all as seen
+  React.useEffect(() => {
+    if (showActionPanel) setActionPanelSeen(parsedArtifacts.length);
+  }, [showActionPanel, parsedArtifacts.length]);
+
+  // On desktop, auto-open panel when first artifact arrives
+  React.useEffect(() => {
+    if (!isMobile && parsedArtifacts.length > 0 && !showActionPanel && actionPanelSeen === 0) {
+      setShowActionPanel(true);
+    }
+  }, [parsedArtifacts.length, isMobile]);
 
   // ── WebSocket for real-time updates ───────────────────────────
   const { sessionToken } = useAuth();
@@ -1887,11 +2026,24 @@ export default function PartnerChat() {
 
   const glowColor = getGlowColor(emotion);
 
+  // ── Toggle action panel ────────────────────────────────────────
+  const toggleActionPanel = useCallback(() => {
+    setShowActionPanel((prev) => !prev);
+  }, []);
+
   // ── Render ────────────────────────────────────────────────────
   return (
     <div
-      className="flex flex-col h-[100dvh] w-full overflow-hidden"
+      className="flex h-[100dvh] w-full overflow-hidden"
       style={{ background: "linear-gradient(180deg, #0a0f1e 0%, #0F1B3D 50%, #0a0f1e 100%)" }}
+    >
+    {/* ── Left: Chat column ─────────────────────────────────── */}
+    <div
+      className="flex flex-col h-full overflow-hidden transition-all duration-300"
+      style={{
+        width: !isMobile && showActionPanel ? "55%" : "100%",
+        minWidth: 0,
+      }}
     >
       {/* ── Top Bar ──────────────────────────────────────────── */}
       <header
@@ -1938,7 +2090,29 @@ export default function PartnerChat() {
           <Volume2 className="w-3.5 h-3.5" />
         </button>
 
-        {/* Artifacts Toggle */}
+        {/* Artifacts / Action Panel Toggle (desktop header) */}
+        <button
+          onClick={toggleActionPanel}
+          className="relative hidden md:flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors"
+          style={{
+            background: showActionPanel ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+            color: showActionPanel ? "#C9A340" : "rgba(255,255,255,0.5)",
+            border: `1px solid ${showActionPanel ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
+          }}
+          title="Artifacts panel"
+        >
+          <Layers className="w-3.5 h-3.5" />
+          {parsedArtifacts.length > 0 && (
+            <span
+              className="absolute -top-1.5 -right-1.5 text-[9px] font-bold min-w-[16px] h-[16px] flex items-center justify-center rounded-full"
+              style={{ background: "#C9A340", color: "#0a0f1e" }}
+            >
+              {parsedArtifacts.length}
+            </span>
+          )}
+        </button>
+
+        {/* Legacy gallery artifacts toggle */}
         <button
           onClick={() => { setShowArtifacts(!showArtifacts); setSelectedArtifact(null); }}
           className="relative flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors"
@@ -1947,9 +2121,9 @@ export default function PartnerChat() {
             color: showArtifacts ? "#C9A340" : "rgba(255,255,255,0.5)",
             border: `1px solid ${showArtifacts ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
           }}
-          title="Artifacts"
+          title="Gallery artifacts"
         >
-          <Layers className="w-3.5 h-3.5" />
+          <ImageIcon className="w-3.5 h-3.5" />
           {galleryItems.length > 0 && (
             <span
               className="absolute -top-1.5 -right-1.5 text-[9px] font-bold min-w-[16px] h-[16px] flex items-center justify-center rounded-full"
@@ -2388,7 +2562,7 @@ export default function PartnerChat() {
         </div>
       </div>
 
-      {/* ── Artifacts Sidebar ─────────────────────────────────── */}
+      {/* ── Artifacts Sidebar (legacy gallery) ────────────────── */}
       <ArtifactsSidebar
         items={galleryItems}
         show={showArtifacts}
@@ -2396,6 +2570,44 @@ export default function PartnerChat() {
         selectedArtifact={selectedArtifact}
         onSelectArtifact={setSelectedArtifact}
       />
+    </div>{/* end chat column */}
+
+    {/* ── Right: Action Panel (desktop inline) ──────────────── */}
+    {!isMobile && showActionPanel && (
+      <motion.div
+        initial={{ width: 0, opacity: 0 }}
+        animate={{ width: "45%", opacity: 1 }}
+        exit={{ width: 0, opacity: 0 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        className="h-full overflow-hidden flex-shrink-0"
+        style={{ maxWidth: "45%", minWidth: 0 }}
+      >
+        <ActionPanel
+          artifacts={parsedArtifacts}
+          show={true}
+          onClose={() => setShowActionPanel(false)}
+          isMobile={false}
+        />
+      </motion.div>
+    )}
+
+    {/* ── Mobile: Action Panel overlay + FAB toggle ─────────── */}
+    {isMobile && (
+      <>
+        <ActionPanelToggle
+          onClick={toggleActionPanel}
+          isOpen={showActionPanel}
+          hasNew={hasNewArtifacts}
+          artifactCount={parsedArtifacts.length}
+        />
+        <ActionPanel
+          artifacts={parsedArtifacts}
+          show={showActionPanel}
+          onClose={() => setShowActionPanel(false)}
+          isMobile={true}
+        />
+      </>
+    )}
     </div>
   );
 }
