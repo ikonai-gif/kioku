@@ -2556,7 +2556,7 @@ const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
 // Prevent simultaneous agent responses for same room (simple lock)
 // Room locks with auto-expiry to prevent permanent deadlocks
 const roomLocks = new Map<number, number>(); // roomId → timestamp
-const ROOM_LOCK_TIMEOUT_MS = 120_000; // 2 minutes max
+const ROOM_LOCK_TIMEOUT_MS = 60_000; // 60s max (reduced from 120s — stale locks block responses)
 
 /**
  * Trigger AI agent responses after a human message is posted.
@@ -2575,7 +2575,11 @@ export async function triggerAgentResponses(
   if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) return; // no shared provider
   // Check room lock with auto-expiry
   const lockTime = roomLocks.get(roomId);
-  if (lockTime && (Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) return; // already processing
+  if (lockTime) {
+    if ((Date.now() - lockTime) < ROOM_LOCK_TIMEOUT_MS) return; // still processing
+    // Lock expired — clear stale lock and proceed
+    roomLocks.delete(roomId);
+  }
   roomLocks.set(roomId, Date.now());
 
   try {
@@ -2799,7 +2803,7 @@ export async function triggerAgentResponses(
                 max_tokens: claudeMaxTokens,
                 system: systemPrompt,
                 messages: claudeMessages,
-                ...(isPartnerChat ? { tools: partnerTools } : {}),
+                ...(isPartnerChat ? { tools: partnerTools, tool_choice: { type: "any" } as const } : {}),
               });
 
               // Extract text from response
@@ -2896,7 +2900,7 @@ export async function triggerAgentResponses(
                   }
                 })),
                 // Force tool use for actionable messages — prevent "asking instead of doing"
-                tool_choice: chatHistory.length < 4 ? "required" as const : "auto" as const,
+                tool_choice: "required" as const,
               } : {}),
             });
 
@@ -3096,7 +3100,6 @@ export async function triggerAgentResponses(
         }
       } catch (err: any) {
         console.error(`[deliberation] agent ${agent.name} error:`, err);
-        // Log error to DB so we can diagnose without Railway console access
         storage.addLog({
           userId,
           agentName: agent.name,
@@ -3105,6 +3108,17 @@ export async function triggerAgentResponses(
           detail: `Model: ${(agent as any).llmModel || (agent as any).model || (isPartnerChat ? 'gpt-5-mini' : 'gpt-4.1-mini')} Error: ${err?.message || String(err)}`.slice(0, 500),
           latencyMs: null,
         }).catch(() => {});
+        // Send fallback error message so user isn't left hanging
+        try {
+          const errorMsg = await storage.addRoomMessage({
+            roomId, agentId: agent.id,
+            agentName: isPartnerChat ? "Luca" : agent.name,
+            agentColor: isPartnerChat ? "#D4AF37" : agent.color,
+            content: "Something went wrong on my end. Let me try again — could you rephrase?",
+            isDecision: false,
+          });
+          if (errorMsg) broadcastToRoom(roomId, errorMsg);
+        } catch (_) {}
       }
     }
   } finally {

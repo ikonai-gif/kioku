@@ -177,6 +177,11 @@ app.use((req, res, next) => {
   // Health routes (registered before main routes so /health is never rate-limited)
   registerHealthRoutes(app);
 
+  // Alias: /api/health → same as /health (monitoring tools expect /api prefix)
+  app.get("/api/health", (_req: Request, res: Response) => {
+    res.redirect(307, "/health");
+  });
+
   // Monitor status endpoint — master key protected
   app.get("/health/monitor", (req: Request, res: Response) => {
     const masterKey = process.env.KIOKU_MASTER_KEY;

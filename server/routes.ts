@@ -1078,7 +1078,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         finalAgentIds = [primaryAgent.id];
         // Ensure primary agent is online so it can respond
         if (primaryAgent.status !== "online") {
-          await storage.updateAgent(primaryAgent.id, { status: "online" });
+          await storage.updateAgent(primaryAgent.id, userId, { status: "online" });
         }
       }
     }
@@ -1461,7 +1461,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
 
-    const apiKeyPrefix = user.apiKey.slice(0, 12) + "…";
+    const apiKeyPrefix = user.apiKey ? user.apiKey.slice(0, 12) + "…" : "none";
 
     const [todayResult, monthResult] = await Promise.all([
       pool.query(
@@ -1886,7 +1886,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Requests today
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    const apiKeyPrefix = user.apiKey.slice(0, 12) + "…";
+    const apiKeyPrefix = user.apiKey ? user.apiKey.slice(0, 12) + "…" : "none";
 
     const [todayResult, avgLatencyResult, errorResult, memoriesResult] = await Promise.all([
       pool.query(
@@ -3412,6 +3412,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const { text, voice = "alloy" } = req.body;
     if (!text) return res.status(400).json({ error: "text required" });
+    const ALLOWED_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer", "ash", "ballad", "coral", "sage", "verse"];
+    if (!ALLOWED_VOICES.includes(voice)) return res.status(400).json({ error: "Invalid voice" });
 
     const truncated = text.slice(0, 4096);
     const OpenAI = (await import("openai")).default;
@@ -3540,6 +3542,8 @@ Do NOT:
       const entry = demoIpHourly.get(keys[i]);
       if (entry && cutoff >= entry.reset) demoIpHourly.delete(keys[i]);
     }
+    // Also clean up demo session message counters
+    demoSessionMessages.clear();
   }, 1800000);
 
   // ── Phase 3: Voice-First Interface + Camera Vision Pipeline ────
