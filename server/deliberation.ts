@@ -1111,44 +1111,38 @@ async function executePartnerTool(
       case "composio_action": {
         const COMPOSIO_KEY = process.env.COMPOSIO_API_KEY;
         if (!COMPOSIO_KEY) return "Composio integration is not configured yet. Please ask the admin to add the COMPOSIO_API_KEY.";
-        const composioBase = "https://backend.composio.dev/api/v3";
+        // Composio API: v2 for actions search & execute (v3 returns 404 as of Apr 2026)
+        const composioBase = "https://backend.composio.dev/api/v2";
         const composioHeaders = { "x-api-key": COMPOSIO_KEY, "Content-Type": "application/json" };
 
         if (toolInput.action === "search") {
           const query = toolInput.query;
           if (!query) return "Please specify what you want to do (e.g. 'send email via gmail').";
-          // Search for relevant tools via Composio
-          const resp = await fetch(`${composioBase}/actions/COMPOSIO_SEARCH_TOOLS/execute`, {
-            method: "POST",
-            headers: composioHeaders,
+          // v2 search: GET /api/v2/actions with useCase query param
+          const searchUrl = new URL(`${composioBase}/actions`);
+          searchUrl.searchParams.set("useCase", query);
+          searchUrl.searchParams.set("limit", "10");
+          const resp = await fetch(searchUrl.toString(), {
+            method: "GET",
+            headers: { "x-api-key": COMPOSIO_KEY },
             signal: AbortSignal.timeout(20000),
-            body: JSON.stringify({
-              input: {
-                queries: [{ use_case: query }],
-              },
-              entityId: `kioku_user_${userId}`,
-              appName: "composio",
-            }),
           });
           if (!resp.ok) {
             const errBody = await resp.text().catch(() => "");
-            return `Composio search failed: HTTP ${resp.status}${errBody.includes("upgrade") || errBody.includes("no longer") ? " — Composio v3 migration in progress, endpoint may have changed" : `: ${errBody.slice(0, 300)}`}`;
+            return `Composio search failed: HTTP ${resp.status}: ${errBody.slice(0, 300)}`;
           }
           const data = await resp.json() as any;
-          if (!data.successful && !data.successfull) {
-            return `Composio search error: ${data.error || data.message || "Unknown error"}`;
-          }
-          // Parse search results
-          const results = data.data?.results || data.data?.tools || data.data;
-          if (!results) return `Search completed but no tools found for: ${query}. Try a different description.`;
-          return `Composio search results for "${query}":\n${JSON.stringify(results, null, 2).slice(0, 4000)}`;
+          const results = data.items || data.data || [];
+          if (!results || results.length === 0) return `No tools found for: ${query}. Try a different description or check available apps.`;
+          const formatted = results.map((t: any) => `- ${t.name}: ${(t.description || '').slice(0, 120)}`).join('\n');
+          return `Composio tools for "${query}":\n${formatted}`;
         }
 
         if (toolInput.action === "execute") {
           const toolSlug = toolInput.tool_name;
           if (!toolSlug) return "Missing tool_name. First use action='search' to find the right tool, then use its enum name here.";
           const params = toolInput.params || {};
-          // Extract appName from tool slug (e.g. GMAIL_FETCH_EMAILS → gmail, GOOGLESHEETS_CREATE → googlesheets)
+          // Extract appName from tool slug (e.g. GMAIL_FETCH_EMAILS → gmail)
           const composioAppMap: Record<string, string> = {
             GMAIL: 'gmail', SLACK: 'slack', GITHUB: 'github', NOTION: 'notion',
             GOOGLESHEETS: 'googlesheets', GOOGLECALENDAR: 'googlecalendar',
@@ -1156,16 +1150,15 @@ async function executePartnerTool(
             HUBSPOT: 'hubspot', JIRA: 'jira', ASANA: 'asana', SPOTIFY: 'spotify',
             TWITTER: 'twitter', LINKEDIN: 'linkedin', STRIPE: 'stripe',
             SHOPIFY: 'shopify', DISCORD: 'discord', TELEGRAM: 'telegram',
-            WHATSAPP: 'whatsapp', ZOOM: 'zoom',
+            WHATSAPP: 'whatsapp', ZOOM: 'zoom', YOUTUBE: 'youtube',
           };
           let appNameFromSlug: string | undefined;
           for (const [prefix, app] of Object.entries(composioAppMap)) {
             if (toolSlug.startsWith(prefix + '_')) { appNameFromSlug = app; break; }
           }
           if (!appNameFromSlug) appNameFromSlug = toolSlug.split('_')[0]?.toLowerCase();
-          // Try executing with user's entity, fall back to owner entity if auth fails
+          // v2 execute: POST /api/v2/actions/{slug}/execute
           const entityIds = [`kioku_user_${userId}`];
-          // Add owner entity as fallback if different from current user
           if (userId !== 10) entityIds.push('kioku_user_10');
 
           let lastError = '';
@@ -1182,6 +1175,8 @@ async function executePartnerTool(
             });
             if (!resp.ok) {
               lastError = await resp.text().catch(() => "");
+              // If HTML 404 page, strip tags
+              if (lastError.includes('<!DOCTYPE')) lastError = `HTTP ${resp.status} — endpoint not found`;
               continue;
             }
             const data = await resp.json() as any;
@@ -1189,7 +1184,7 @@ async function executePartnerTool(
               const errMsg = data.error || data.message || '';
               if (errMsg.includes("connection") || errMsg.includes("auth") || errMsg.includes("connected account")) {
                 lastError = errMsg;
-                continue; // Try next entity
+                continue;
               }
               return `Action ${toolSlug} failed: ${errMsg || JSON.stringify(data).slice(0, 500)}`;
             }

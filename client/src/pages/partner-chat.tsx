@@ -147,6 +147,7 @@ function SpeakButton({ text }: { text: string }) {
     }
     setState("loading");
     try {
+      unlockAudio(); // Ensure Safari allows playback
       const token = getSessionToken();
       const res = await fetch(`${API_BASE}/api/partner/speak`, {
         method: "POST",
@@ -607,6 +608,7 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
     
     if (!isUser && voiceMode && !autoPlayedRef.current && message.content && isRecent) {
       autoPlayedRef.current = true;
+      unlockAudio(); // Ensure Safari/mobile allows playback
       const token = getSessionToken();
       fetch(`${API_BASE}/api/partner/speak`, {
         method: "POST",
@@ -617,7 +619,10 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
         credentials: "include",
         body: JSON.stringify({ text: message.content }),
       })
-        .then((res) => res.blob())
+        .then((res) => {
+          if (!res.ok) throw new Error("TTS failed");
+          return res.blob();
+        })
         .then((blob) => {
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
@@ -627,7 +632,8 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
         })
         .catch(() => { onTTSDone?.(); });
     }
-  }, [voiceMode]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceMode, message.content]);
 
   return (
     <motion.div
