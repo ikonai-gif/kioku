@@ -1,5 +1,5 @@
-import React, { useState, useRef, useCallback } from "react";
-import { Camera, X, Send, Loader2, RotateCcw, ImageIcon } from "lucide-react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import { Camera, X, Send, Loader2, ImageIcon, SwitchCamera } from "lucide-react";
 import { getSessionToken } from "@/lib/auth";
 import { API_BASE } from "@/lib/queryClient";
 import { motion, AnimatePresence } from "framer-motion";
@@ -17,7 +17,13 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
   const [mimeType, setMimeType] = useState("image/jpeg");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const [stream, setStream] = useState<MediaStream | null>(null);
+
   const inputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const compressImage = useCallback((file: File): Promise<{ preview: string; base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
@@ -43,10 +49,104 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
     });
   }, []);
 
+  const stopCamera = useCallback(() => {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      setStream(null);
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, [stream]);
+
+  const startCamera = useCallback(async (facing: "environment" | "user") => {
+    stopCamera();
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false,
+      });
+      setStream(mediaStream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+      }
+    } catch {
+      // getUserMedia failed — close overlay and fall back to file picker
+      setShowCamera(false);
+      inputRef.current?.click();
+    }
+  }, [stopCamera]);
+
+  // Attach stream to video element when it mounts or stream changes
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream, showCamera]);
+
+  // Cleanup stream on unmount
+  useEffect(() => {
+    return () => {
+      stream?.getTracks().forEach(t => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const captureFrame = useCallback(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    // Mirror front camera capture to match viewfinder
+    if (facingMode === "user") {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0);
+
+    // Compress to max 1024px
+    const MAX = 1024;
+    let w = canvas.width, h = canvas.height;
+    if (w > MAX || h > MAX) {
+      if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+      else { w = Math.round(w * MAX / h); h = MAX; }
+      const tmpCanvas = document.createElement("canvas");
+      tmpCanvas.width = w;
+      tmpCanvas.height = h;
+      const tmpCtx = tmpCanvas.getContext("2d");
+      if (tmpCtx) {
+        tmpCtx.drawImage(canvas, 0, 0, w, h);
+        const dataUrl = tmpCanvas.toDataURL("image/jpeg", 0.8);
+        setPreview(dataUrl);
+        setBase64Data(dataUrl.split(",")[1]);
+        setMimeType("image/jpeg");
+      }
+    } else {
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+      setPreview(dataUrl);
+      setBase64Data(dataUrl.split(",")[1]);
+      setMimeType("image/jpeg");
+    }
+
+    stopCamera();
+    setShowCamera(false);
+    setShowPreview(true);
+  }, [facingMode, stopCamera]);
+
+  const flipCamera = useCallback(() => {
+    const next = facingMode === "environment" ? "user" : "environment";
+    setFacingMode(next);
+    startCamera(next);
+  }, [facingMode, startCamera]);
+
   const handleCapture = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     try {
       const result = await compressImage(file);
       setPreview(result.preview);
@@ -56,8 +156,6 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
     } catch (err) {
       console.error("Image processing error:", err);
     }
-
-    // Reset input so same file can be re-selected
     if (inputRef.current) inputRef.current.value = "";
   }, [compressImage]);
 
@@ -100,13 +198,25 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
     setShowPreview(false);
   };
 
-  const openCamera = () => {
-    if (!disabled) inputRef.current?.click();
-  };
+  const openCamera = useCallback(async () => {
+    if (disabled) return;
+    // Try getUserMedia for live camera; fall back to file picker
+    if (navigator.mediaDevices?.getUserMedia) {
+      setShowCamera(true);
+      startCamera(facingMode);
+    } else {
+      inputRef.current?.click();
+    }
+  }, [disabled, facingMode, startCamera]);
+
+  const closeCamera = useCallback(() => {
+    stopCamera();
+    setShowCamera(false);
+  }, [stopCamera]);
 
   return (
     <>
-      {/* Hidden camera input */}
+      {/* Hidden file input — fallback for when getUserMedia is unavailable */}
       <input
         ref={inputRef}
         type="file"
@@ -115,6 +225,9 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
         onChange={handleCapture}
         className="hidden"
       />
+
+      {/* Hidden canvas for frame capture */}
+      <canvas ref={canvasRef} className="hidden" />
 
       {/* Camera trigger button */}
       <button
@@ -133,7 +246,98 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
         <Camera className="w-4 h-4" />
       </button>
 
-      {/* Full-screen image preview overlay */}
+      {/* Live camera viewfinder overlay */}
+      <AnimatePresence>
+        {showCamera && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex flex-col"
+            style={{
+              background: "rgba(5,10,30,0.95)",
+            }}
+          >
+            {/* Camera header controls */}
+            <div
+              className="relative z-10 flex items-center justify-between px-4 py-3 safe-area-top"
+              style={{ background: "rgba(5,10,30,0.6)", backdropFilter: "blur(12px)" }}
+            >
+              <button
+                onClick={closeCamera}
+                className="flex items-center justify-center w-10 h-10 rounded-full"
+                style={{ background: "rgba(255,255,255,0.1)" }}
+              >
+                <X className="w-5 h-5 text-white" />
+              </button>
+              <span className="text-sm font-medium text-white/80">Camera</span>
+              <button
+                onClick={flipCamera}
+                className="flex items-center justify-center w-10 h-10 rounded-full"
+                style={{ background: "rgba(255,255,255,0.1)" }}
+              >
+                <SwitchCamera className="w-5 h-5 text-white" />
+              </button>
+            </div>
+
+            {/* Live video feed */}
+            <div className="flex-1 flex items-center justify-center overflow-hidden">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+                style={{
+                  transform: facingMode === "user" ? "scaleX(-1)" : "none",
+                }}
+              />
+            </div>
+
+            {/* Shutter button area */}
+            <div
+              className="relative z-10 flex items-center justify-center px-4 pb-8 pt-5 safe-area-bottom"
+              style={{ background: "rgba(5,10,30,0.6)", backdropFilter: "blur(12px)" }}
+            >
+              <button
+                onClick={captureFrame}
+                className="shutter-btn flex items-center justify-center rounded-full transition-transform active:scale-90"
+                style={{
+                  width: 72,
+                  height: 72,
+                  background: "#C9A340",
+                  border: "4px solid rgba(201,163,64,0.4)",
+                  boxShadow: "0 0 24px rgba(201,163,64,0.4), 0 0 48px rgba(201,163,64,0.15)",
+                }}
+              >
+                <div
+                  className="rounded-full"
+                  style={{
+                    width: 56,
+                    height: 56,
+                    background: "#C9A340",
+                    border: "2px solid rgba(255,255,255,0.3)",
+                  }}
+                />
+              </button>
+            </div>
+
+            {/* Shutter pulse animation */}
+            <style>{`
+              .shutter-btn {
+                animation: shutter-pulse 2s ease-in-out infinite;
+              }
+              @keyframes shutter-pulse {
+                0%, 100% { box-shadow: 0 0 24px rgba(201,163,64,0.4), 0 0 48px rgba(201,163,64,0.15); }
+                50% { box-shadow: 0 0 32px rgba(201,163,64,0.6), 0 0 64px rgba(201,163,64,0.25); }
+              }
+            `}</style>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Image preview overlay (after capture) */}
       <AnimatePresence>
         {showPreview && preview && (
           <motion.div
@@ -161,7 +365,7 @@ export function CameraCapture({ onAnalysis, onImageAttach, disabled, className }
                 className="flex items-center justify-center w-10 h-10 rounded-full"
                 style={{ background: "rgba(255,255,255,0.1)" }}
               >
-                <RotateCcw className="w-5 h-5 text-white" />
+                <Camera className="w-5 h-5 text-white" />
               </button>
             </div>
 
