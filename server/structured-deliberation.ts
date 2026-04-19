@@ -27,6 +27,7 @@ import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { checkPositionLock, savePositionLock } from "./position-lock";
 import { checkSycophancy } from "./sycophancy-checker";
+import { autoLinkDeliberation as provenanceAutoLink } from "./provenance";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -638,6 +639,9 @@ export async function runDeliberation(
       const vote = consensus.votes.find((v: any) => v.agentName === agent.name);
       fastAppraisal(agent.id, userId, `Deliberation on "${topic.slice(0, 100)}". Position: "${vote?.position?.slice(0, 100) || 'unknown'}"`, storage).catch(() => {});
     }
+
+    // Fire-and-forget: auto-link to provenance chain if topic relates to a prior deliberation
+    autoLinkToProvenanceChain(roomId, sessionId, topic).catch(() => {});
 
     return session;
   } catch (err) {
@@ -1456,4 +1460,19 @@ async function buildProvenanceTree(session: DeliberationSession): Promise<Proven
     parentDecisionId: session.parentDecisionId,
     children: childNodes,
   };
+}
+
+// ── Cross-session Provenance Chain Auto-linking ─────────────────────
+
+/**
+ * Non-blocking auto-link: after a deliberation completes, check if the topic
+ * relates to a prior deliberation in the same room and link them in a provenance chain.
+ */
+async function autoLinkToProvenanceChain(roomId: number, sessionId: string, topic: string): Promise<void> {
+  try {
+    await provenanceAutoLink(roomId, sessionId, topic);
+  } catch (err) {
+    // Provenance auto-linking is best-effort — never block deliberation flow
+    console.warn("[provenance] Auto-link failed:", (err as Error).message);
+  }
 }

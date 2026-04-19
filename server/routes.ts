@@ -7,6 +7,7 @@ import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
 import { triggerAgentResponses, generateProactiveMessage } from "./deliberation";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
+import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
@@ -36,6 +37,7 @@ import {
   warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
   createMemoryLinkSchema,
   savePreferenceSchema, feedbackReactionSchema, creativeDeliberateSchema,
+  provenanceLinkSchema,
 } from "./validation";
 import { body, validationResult } from "express-validator";
 
@@ -1665,6 +1667,86 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const tree = await getProvenanceTree(decisionId);
     if (!tree) return res.status(404).json({ error: "Decision not found" });
     res.json(tree);
+  }));
+
+  // ── Cross-session Decision Provenance Chain (v1 API) ──────────
+
+  // GET /api/v1/provenance/:chainId — full chain with all deliberations
+  app.get("/api/v1/provenance/:chainId", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const chainId = String(req.params.chainId);
+    if (!chainId || chainId.length > 100) return res.status(400).json({ error: "Invalid chain ID" });
+    const chain = await provenanceModule.getProvenanceChainById(chainId);
+    if (!chain) return res.status(404).json({ error: "Provenance chain not found" });
+    // Verify at least one deliberation belongs to user
+    const firstDelib = await storage.getDeliberationSession(chain.deliberations[0]?.sessionId);
+    if (!firstDelib || firstDelib.userId !== userId) return res.status(404).json({ error: "Provenance chain not found" });
+    res.json({
+      chain_id: chain.chainId,
+      topic: chain.topic,
+      created_at: chain.createdAt,
+      deliberations: chain.deliberations,
+      summary: chain.summary,
+    });
+  }));
+
+  // GET /api/v1/rooms/:roomId/provenance — all chains for a room
+  app.get("/api/v1/rooms/:roomId/provenance", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.roomId);
+    if (!roomId || isNaN(roomId)) return res.status(400).json({ error: "Invalid room ID" });
+    // Verify room belongs to user
+    const room = await storage.getRoom(roomId, userId);
+    if (!room) return res.status(404).json({ error: "Room not found" });
+    const chains = await storage.getProvenanceChainsForRoom(roomId);
+    res.json({
+      chains: chains.map((c: any) => ({
+        chain_id: c.chainId,
+        topic: c.topic,
+        depth: c.depth,
+        last_updated: c.lastUpdated,
+        deliberation_count: c.deliberationCount,
+      })),
+    });
+  }));
+
+  // POST /api/v1/provenance/link — manually link two deliberations
+  app.post("/api/v1/provenance/link", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const validated = validateBody(provenanceLinkSchema, req.body);
+    // Verify both deliberations exist and belong to user
+    const deliberation = await storage.getDeliberationSession(validated.deliberation_id);
+    if (!deliberation || deliberation.userId !== userId) {
+      return res.status(404).json({ error: "Deliberation not found" });
+    }
+    const parent = await storage.getDeliberationSession(validated.parent_deliberation_id);
+    if (!parent || parent.userId !== userId) {
+      return res.status(404).json({ error: "Parent deliberation not found" });
+    }
+    // If parent has a chain, link to it. Otherwise, create a new chain.
+    let chainId = parent.provenanceChainId;
+    if (!chainId) {
+      chainId = await provenanceModule.startProvenanceChain(parent.roomId, validated.parent_deliberation_id, parent.topic);
+    }
+    await provenanceModule.linkToChain(chainId, validated.deliberation_id, validated.parent_deliberation_id, validated.metadata);
+    res.json({ chain_id: chainId, linked: true });
+  }));
+
+  // GET /api/v1/provenance/:chainId/tree — chain as tree structure
+  app.get("/api/v1/provenance/:chainId/tree", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const chainId = String(req.params.chainId);
+    if (!chainId || chainId.length > 100) return res.status(400).json({ error: "Invalid chain ID" });
+    const tree = await provenanceModule.getProvenanceTree(chainId);
+    if (!tree) return res.status(404).json({ error: "Provenance chain not found" });
+    // Verify ownership via root deliberation
+    const rootDelib = await storage.getDeliberationSession(tree.id);
+    if (!rootDelib || rootDelib.userId !== userId) return res.status(404).json({ error: "Provenance chain not found" });
+    res.json({ root: tree });
   }));
 
   // ── Agent Templates (Onboarding Quick Start) ──────────────────

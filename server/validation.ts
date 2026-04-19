@@ -239,3 +239,10 @@ export const creativeTextExtendedSchema = z.object({
   references: z.array(z.string().max(200)).optional(),
   quality_check: z.boolean().optional(),
 });
+
+// ── Provenance Chain schemas ───────────────────────────────────────────────────
+export const provenanceLinkSchema = z.object({
+  deliberation_id: z.string().min(1).max(200),
+  parent_deliberation_id: z.string().min(1).max(200),
+  metadata: z.record(z.unknown()).optional(),
+});

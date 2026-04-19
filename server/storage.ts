@@ -447,6 +447,17 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_gallery_user ON gallery(user_id, type);
     CREATE INDEX IF NOT EXISTS idx_gallery_created ON gallery(user_id, created_at DESC);
   `);
+
+  // Phase 10: Cross-session Decision Provenance Chain
+  await pool.query(`
+    ALTER TABLE kioku_deliberation_sessions ADD COLUMN IF NOT EXISTS parent_decision_id TEXT;
+    ALTER TABLE kioku_deliberation_sessions ADD COLUMN IF NOT EXISTS provenance_chain TEXT DEFAULT '[]';
+    ALTER TABLE kioku_deliberation_sessions ADD COLUMN IF NOT EXISTS provenance_chain_id TEXT;
+    ALTER TABLE kioku_deliberation_sessions ADD COLUMN IF NOT EXISTS chain_depth INTEGER DEFAULT 0;
+    ALTER TABLE kioku_deliberation_sessions ADD COLUMN IF NOT EXISTS chain_metadata JSONB;
+    CREATE INDEX IF NOT EXISTS idx_delib_provenance_chain_id ON kioku_deliberation_sessions(provenance_chain_id) WHERE provenance_chain_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_delib_parent_decision ON kioku_deliberation_sessions(parent_decision_id) WHERE parent_decision_id IS NOT NULL;
+  `);
 }
 
 function generateApiKey(): string {
@@ -1076,10 +1087,13 @@ export class Storage implements IStorage {
     startedAt: number; completedAt: number | null;
     parentDecisionId?: string | null;
     provenanceChain?: string[];
+    provenanceChainId?: string | null;
+    chainDepth?: number;
+    chainMetadata?: object | null;
   }) {
     await pool.query(
-      `INSERT INTO kioku_deliberation_sessions (id, room_id, user_id, topic, status, model, models_used, rounds, consensus, started_at, completed_at, parent_decision_id, provenance_chain)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      `INSERT INTO kioku_deliberation_sessions (id, room_id, user_id, topic, status, model, models_used, rounds, consensus, started_at, completed_at, parent_decision_id, provenance_chain, provenance_chain_id, chain_depth, chain_metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (id) DO UPDATE SET
          status = EXCLUDED.status,
          models_used = EXCLUDED.models_used,
@@ -1087,7 +1101,10 @@ export class Storage implements IStorage {
          consensus = EXCLUDED.consensus,
          completed_at = EXCLUDED.completed_at,
          parent_decision_id = EXCLUDED.parent_decision_id,
-         provenance_chain = EXCLUDED.provenance_chain`,
+         provenance_chain = EXCLUDED.provenance_chain,
+         provenance_chain_id = EXCLUDED.provenance_chain_id,
+         chain_depth = EXCLUDED.chain_depth,
+         chain_metadata = EXCLUDED.chain_metadata`,
       [
         session.id, session.roomId, session.userId, session.topic,
         session.status, session.model,
@@ -1097,6 +1114,9 @@ export class Storage implements IStorage {
         session.startedAt, session.completedAt,
         session.parentDecisionId || null,
         JSON.stringify(session.provenanceChain || []),
+        session.provenanceChainId || null,
+        session.chainDepth ?? 0,
+        session.chainMetadata ? JSON.stringify(session.chainMetadata) : null,
       ]
     );
   }
@@ -1719,6 +1739,9 @@ export class Storage implements IStorage {
       completedAt: row.completed_at ? Number(row.completed_at) : null,
       parentDecisionId: row.parent_decision_id || null,
       provenanceChain: JSON.parse(row.provenance_chain || '[]'),
+      provenanceChainId: row.provenance_chain_id || null,
+      chainDepth: row.chain_depth ?? 0,
+      chainMetadata: row.chain_metadata || null,
     };
   }
 
@@ -1770,6 +1793,88 @@ export class Storage implements IStorage {
     // Cap chain length at 50 to prevent unbounded growth
     const chain = [...parentChain, parentSessionId];
     return chain.slice(-50);
+  }
+
+  // ── Provenance Chain CRUD (Cross-session Decision Provenance) ────────────
+
+  /** Update a deliberation's provenance chain fields */
+  async updateProvenanceFields(sessionId: string, fields: {
+    provenanceChainId?: string | null;
+    parentDeliberationId?: string | null;
+    chainDepth?: number;
+    chainMetadata?: object | null;
+  }): Promise<void> {
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+    if (fields.provenanceChainId !== undefined) {
+      setClauses.push(`provenance_chain_id = $${idx++}`);
+      values.push(fields.provenanceChainId);
+    }
+    if (fields.parentDeliberationId !== undefined) {
+      setClauses.push(`parent_decision_id = $${idx++}`);
+      values.push(fields.parentDeliberationId);
+    }
+    if (fields.chainDepth !== undefined) {
+      setClauses.push(`chain_depth = $${idx++}`);
+      values.push(fields.chainDepth);
+    }
+    if (fields.chainMetadata !== undefined) {
+      setClauses.push(`chain_metadata = $${idx++}`);
+      values.push(fields.chainMetadata ? JSON.stringify(fields.chainMetadata) : null);
+    }
+    if (setClauses.length === 0) return;
+    values.push(sessionId);
+    await pool.query(
+      `UPDATE kioku_deliberation_sessions SET ${setClauses.join(', ')} WHERE id = $${idx}`,
+      values
+    );
+  }
+
+  /** Get all deliberations in a provenance chain by chain ID, ordered by depth */
+  async getDeliberationsByChainId(chainId: string): Promise<any[]> {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions WHERE provenance_chain_id = $1 ORDER BY chain_depth ASC, started_at ASC`,
+      [chainId]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  /** Get all provenance chains in a room (distinct chain IDs with summaries) */
+  async getProvenanceChainsForRoom(roomId: number): Promise<any[]> {
+    const { rows } = await pool.query(
+      `SELECT provenance_chain_id,
+              MIN(topic) as topic,
+              MIN(started_at) as created_at,
+              MAX(COALESCE(completed_at, started_at)) as last_updated,
+              MAX(chain_depth) as depth,
+              COUNT(*)::int as deliberation_count
+       FROM kioku_deliberation_sessions
+       WHERE room_id = $1 AND provenance_chain_id IS NOT NULL
+       GROUP BY provenance_chain_id
+       ORDER BY MAX(COALESCE(completed_at, started_at)) DESC`,
+      [roomId]
+    );
+    return rows.map((r: any) => ({
+      chainId: r.provenance_chain_id,
+      topic: r.topic,
+      createdAt: Number(r.created_at),
+      lastUpdated: Number(r.last_updated),
+      depth: r.depth,
+      deliberationCount: r.deliberation_count,
+    }));
+  }
+
+  /** Get recent completed deliberations in a room (last 30 days) for auto-linking */
+  async getRecentDeliberationsForRoom(roomId: number, daysBack: number = 30): Promise<any[]> {
+    const cutoff = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions
+       WHERE room_id = $1 AND started_at > $2 AND status = 'completed'
+       ORDER BY started_at DESC LIMIT 100`,
+      [roomId, cutoff]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
   }
 
   // ── Stripe Event Idempotency ─────────────────────────────────────────────
