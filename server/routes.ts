@@ -1555,6 +1555,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(updated);
   }));
 
+  // ── Usage Summary ──────────────────────────────────────────────
+  app.get("/api/usage/summary", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const now = Date.now();
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const [deliberations, messages, memories, apiCalls] = await Promise.all([
+      pool.query(`SELECT COUNT(*) FROM kioku_deliberation_sessions WHERE user_id = $1 AND started_at > $2`, [userId, monthStart.getTime()]),
+      pool.query(`SELECT COUNT(*) FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1 AND rm.created_at > $2`, [userId, monthStart.getTime()]),
+      pool.query(`SELECT COUNT(*) FROM memories WHERE user_id = $1 AND created_at > $2`, [userId, monthStart.getTime()]),
+      pool.query(`SELECT COUNT(*) FROM kioku_request_logs rl JOIN users u ON rl.api_key_id = u.api_key WHERE u.id = $1 AND rl.timestamp > $2`, [userId, monthStart.getTime()]),
+    ]);
+
+    res.json({
+      period: { start: monthStart.toISOString(), end: new Date().toISOString() },
+      deliberations: parseInt(deliberations.rows[0].count),
+      messages: parseInt(messages.rows[0].count),
+      memories: parseInt(memories.rows[0].count),
+      apiCalls: parseInt(apiCalls.rows[0].count),
+    });
+  }));
+
   // ── Structured Deliberation (Phase B-1) ───────────────────────
 
   // Start a structured deliberation session

@@ -1058,8 +1058,21 @@ async function executePartnerTool(
 
       case "read_own_prompt": {
         const section = toolInput.section || "full";
-        // Build the current system prompt so Luca can see it
-        const ownPrompt = buildPartnerPrompt("Luca", "", "", null, null, "", [], [], [], "");
+        // Fetch real memories so the agent can see its full identity
+        const identityMemories = await storage.searchMemories(userId, "identity personality who am I", undefined, "_identity");
+        const memoryContext = formatMemoryContext(identityMemories, []);
+        const relationship = await storage.getRelationship(agentId, userId);
+        const emotionalState = await storage.getAgentEmotionalState(agentId);
+        const emotionContext = emotionalState ? getDecayedEmotionalState(emotionalState) : null;
+        const selfAgent = await storage.getAgent(agentId);
+        const ownPrompt = buildPartnerPrompt(
+          selfAgent?.name || "Luca",
+          "",
+          memoryContext,
+          emotionContext,
+          relationship,
+          "", [], [], [], ""
+        );
         if (section === "identity") {
           const match = ownPrompt.match(/## YOUR IDENTITY[\s\S]*?(?=## |$)/);
           return match ? `Here is your IDENTITY section:\n${match[0]}` : "Identity section not found.";
@@ -2614,8 +2627,7 @@ export async function triggerAgentResponses(
       (a) =>
         roomAgentIds.includes(a.id) &&
         a.status === "online" &&
-        a.id !== triggerAgentId &&
-        ((a as any).agentType || "internal") === "internal" // skip external agents in chat mode
+        a.id !== triggerAgentId
     );
 
 
@@ -2764,6 +2776,74 @@ export async function triggerAgentResponses(
           content: isPartnerChat ? m.content : `[${m.agentName}]: ${m.content}`,
         })
       );
+
+      // Handle external agents via webhook or polling
+      if ((agent as any).agentType === "webhook" || (agent as any).agentType === "polling") {
+        try {
+          if ((agent as any).agentType === "webhook") {
+            // Call webhook
+            const wh = await storage.getWebhook(agent.id, userId);
+            if (wh) {
+              const payload = {
+                event: "deliberation.turn",
+                sessionId: roomId.toString(),
+                agentId: agent.id,
+                topic: triggerContent,
+                history: chatHistory.slice(-10),
+                memories: injectedMemories.slice(0, 5).map(m => ({ content: m.content, type: m.type })),
+                timestamp: Date.now(),
+              };
+              // HMAC signature
+              const crypto = await import("crypto");
+              const signature = crypto.createHmac("sha256", wh.secret).update(JSON.stringify(payload)).digest("hex");
+
+              const resp = await fetch(wh.url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Kioku-Signature": signature,
+                  "X-Kioku-Event": "deliberation.turn",
+                },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(30000),
+              });
+
+              if (resp.ok) {
+                const data = await resp.json() as any;
+                if (data.content || data.position) {
+                  const reply = data.content || data.position;
+                  await storage.addRoomMessage({
+                    roomId, agentId: agent.id, agentName: agent.name,
+                    agentColor: agent.color ?? "#9B59B6",
+                    content: reply.slice(0, 4096),
+                  }, userId);
+                  broadcastToRoom(roomId, {
+                    type: "new_message",
+                    message: { roomId, agentId: agent.id, agentName: agent.name, agentColor: agent.color, content: reply.slice(0, 4096), createdAt: Date.now() },
+                  });
+                }
+              }
+            }
+          } else {
+            // Polling mode — queue a turn for the agent
+            await storage.createAgentTurn({
+              sessionId: roomId.toString(),
+              agentId: agent.id,
+              roomId,
+              userId,
+              phase: "discussion",
+              round: 1,
+              topic: triggerContent,
+              otherPositions: chatHistory.slice(-5).map(h => ({ content: h.content })),
+              memories: injectedMemories.slice(0, 5).map(m => ({ content: m.content, type: m.type })),
+              expiresAt: Date.now() + 5 * 60 * 1000, // 5 min expiry
+            });
+          }
+        } catch (err) {
+          console.error(`[deliberation] External agent ${agent.name} failed:`, err);
+        }
+        continue; // Skip the normal LLM call
+      }
 
       try {
         // Determine model & provider: prefer per-agent llmModel, then agent.model, then default
