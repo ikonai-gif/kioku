@@ -1456,7 +1456,6 @@ export default function PartnerChat() {
   const [selectedArtifact, setSelectedArtifact] = useState<any | null>(null);
   const [showActionPanel, setShowActionPanel] = useState(false);
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
-  const initialLoadRef = useRef(true);
   const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
   const isMobile = useIsMobile();
 
@@ -1539,25 +1538,10 @@ export default function PartnerChat() {
   );
   const hasNewArtifacts = parsedArtifacts.length > actionPanelSeen;
 
-  // When panel opens, mark all as seen
+  // When panel is open, mark all artifacts as seen (for badge count)
   React.useEffect(() => {
     if (showActionPanel) setActionPanelSeen(parsedArtifacts.length);
   }, [showActionPanel, parsedArtifacts.length]);
-
-  // On desktop, auto-open panel only when NEW artifact arrives during session (not on reload)
-  React.useEffect(() => {
-    if (initialLoadRef.current) {
-      // First render with messages — mark initial count as seen, don't open panel
-      if (parsedArtifacts.length > 0) {
-        setActionPanelSeen(parsedArtifacts.length);
-        initialLoadRef.current = false;
-      }
-      return;
-    }
-    if (!isMobile && parsedArtifacts.length > actionPanelSeen && !showActionPanel) {
-      setShowActionPanel(true);
-    }
-  }, [parsedArtifacts.length, isMobile]);
 
   // ── WebSocket for real-time updates ───────────────────────────
   const { sessionToken } = useAuth();
