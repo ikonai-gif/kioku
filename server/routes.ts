@@ -11,6 +11,7 @@ import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
+import { registerPrivacyRoutes } from "./privacy";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
   exchangeGoogleCode, exchangeDropboxCode,
@@ -274,6 +275,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ── MCP Server ────────────────────────────────────────────────
   registerMcp(app);
   registerBilling(app);
+  registerPrivacyRoutes(app, getUser);
 
   // ── Health ────────────────────────────────────────────────────
   app.get("/health", async (_req, res) => {
