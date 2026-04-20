@@ -55,7 +55,7 @@ interface TaskProgressProps {
   startTime?: number;
 }
 
-// ── Living eyes (for Luca avatar in progress board) ─────────────
+// ── Living eyes — cheerful, with sparkle и улыбкой ────────────────
 function LivingEyes() {
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [blink, setBlink] = useState(false);
@@ -81,26 +81,76 @@ function LivingEyes() {
     return () => clearInterval(t);
   }, []);
 
-  const eyeStyle = (dx: number): React.CSSProperties => ({
+  // Bigger rounder eyes, warm white base + golden sparkle highlight
+  const eyeBase = (dx: number): React.CSSProperties => ({
     position: "absolute",
-    width: 5,
-    height: blink ? 1 : 5,
+    width: 7,
+    height: blink ? 1.5 : 7,
     borderRadius: 999,
-    background: "#C9A340",
-    boxShadow: "0 0 6px rgba(201,163,64,0.8)",
+    background: "#FFF6DC",
+    boxShadow: "0 0 4px rgba(255,246,220,0.6), inset 0 -1px 2px rgba(201,163,64,0.35)",
+    top: 10 + pos.y,
+    left: `calc(50% + ${dx + pos.x}px - 3.5px)`,
+    transition: "height 0.12s ease, left 0.22s ease, top 0.22s ease",
+  });
+  // Pupil with sparkle dot
+  const pupil = (dx: number): React.CSSProperties => ({
+    position: "absolute",
+    width: 3,
+    height: blink ? 0 : 3,
+    borderRadius: 999,
+    background: "#1a2744",
     top: 12 + pos.y,
-    left: `calc(50% + ${dx + pos.x}px - 2.5px)`,
+    left: `calc(50% + ${dx + pos.x}px - 1.5px)`,
+    transition: "height 0.12s ease, left 0.22s ease, top 0.22s ease",
+  });
+  const sparkle = (dx: number): React.CSSProperties => ({
+    position: "absolute",
+    width: 1.5,
+    height: blink ? 0 : 1.5,
+    borderRadius: 999,
+    background: "#FFFFFF",
+    boxShadow: "0 0 3px #FFFFFF",
+    top: 11.5 + pos.y,
+    left: `calc(50% + ${dx + pos.x}px - 0.25px)`,
     transition: "height 0.12s ease, left 0.22s ease, top 0.22s ease",
   });
 
   return (
     <>
-      <div style={eyeStyle(-6)} />
-      <div style={eyeStyle(6)} />
+      {/* Left eye: white base + dark pupil + white sparkle */}
+      <div style={eyeBase(-6)} />
+      <div style={pupil(-6)} />
+      <div style={sparkle(-5)} />
+      {/* Right eye */}
+      <div style={eyeBase(6)} />
+      <div style={pupil(6)} />
+      <div style={sparkle(7)} />
+      {/* Warm cheek blushes */}
       <div style={{
-        position: "absolute", top: 22, left: "calc(50% - 3px)",
-        width: 6, height: 1.5, borderRadius: 999, background: "rgba(201,163,64,0.5)",
+        position: "absolute", top: 18, left: 2,
+        width: 5, height: 3, borderRadius: 999,
+        background: "rgba(255,140,160,0.35)", filter: "blur(1px)",
       }} />
+      <div style={{
+        position: "absolute", top: 18, right: 2,
+        width: 5, height: 3, borderRadius: 999,
+        background: "rgba(255,140,160,0.35)", filter: "blur(1px)",
+      }} />
+      {/* Curved smile (SVG arc) */}
+      <svg
+        width="14" height="6" viewBox="0 0 14 6"
+        style={{ position: "absolute", top: 21, left: "calc(50% - 7px)" }}
+      >
+        <path
+          d="M 1 1 Q 7 6 13 1"
+          stroke="#C9A340"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          fill="none"
+          style={{ filter: "drop-shadow(0 0 2px rgba(201,163,64,0.7))" }}
+        />
+      </svg>
     </>
   );
 }

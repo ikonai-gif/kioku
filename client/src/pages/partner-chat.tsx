@@ -100,9 +100,18 @@ function LucaAvatar({ emotion, size = 40, pulse = false, alive = false }: { emot
     return () => clearInterval(timer);
   }, [alive]);
 
-  const eyeSize = Math.max(3, size * 0.14);
-  const eyeGap = size * 0.18;
-  const eyeY = size * 0.42;
+  // Proportions scaled to size for crisp look at 28-64 px
+  const eyeSize = Math.max(4, size * 0.22);
+  const pupilSize = Math.max(1.5, size * 0.09);
+  const sparkleSize = Math.max(1, size * 0.05);
+  const eyeGap = size * 0.19;
+  const eyeY = size * 0.35;
+  const cheekY = size * 0.58;
+  const cheekW = size * 0.17;
+  const cheekH = size * 0.09;
+  const mouthY = size * 0.68;
+  const mouthW = size * 0.4;
+  const mouthH = size * 0.18;
 
   return (
     <div
@@ -118,42 +127,127 @@ function LucaAvatar({ emotion, size = 40, pulse = false, alive = false }: { emot
         transition: "box-shadow 1.5s ease, border-color 1.5s ease",
       }}
     >
+      {/* Left eye base (white) */}
       <div
         className="absolute rounded-full"
         style={{
           width: eyeSize,
-          height: blinking ? 1 : eyeSize,
-          background: "#C9A340",
-          boxShadow: `0 0 ${eyeSize}px ${glowColor}88`,
+          height: blinking ? 1.5 : eyeSize,
+          background: "#FFF6DC",
+          boxShadow: `inset 0 -1px 2px rgba(201,163,64,0.35), 0 0 3px rgba(255,246,220,0.5)`,
           left: `calc(50% - ${eyeGap + eyeSize / 2}px + ${eyePos.x}px)`,
           top: eyeY + eyePos.y,
           transition: "height 0.12s ease, left 0.25s ease, top 0.25s ease",
         }}
       />
+      {/* Left pupil */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: pupilSize,
+          height: blinking ? 0 : pupilSize,
+          background: "#1a2744",
+          left: `calc(50% - ${eyeGap + pupilSize / 2}px + ${eyePos.x}px)`,
+          top: eyeY + eyeSize * 0.25 + eyePos.y,
+          transition: "height 0.12s ease, left 0.25s ease, top 0.25s ease",
+        }}
+      />
+      {/* Left sparkle */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: sparkleSize,
+          height: blinking ? 0 : sparkleSize,
+          background: "#FFFFFF",
+          boxShadow: "0 0 3px #FFFFFF",
+          left: `calc(50% - ${eyeGap + pupilSize / 2 - sparkleSize * 0.4}px + ${eyePos.x}px)`,
+          top: eyeY + eyeSize * 0.2 + eyePos.y,
+        }}
+      />
+
+      {/* Right eye base */}
       <div
         className="absolute rounded-full"
         style={{
           width: eyeSize,
-          height: blinking ? 1 : eyeSize,
-          background: "#C9A340",
-          boxShadow: `0 0 ${eyeSize}px ${glowColor}88`,
+          height: blinking ? 1.5 : eyeSize,
+          background: "#FFF6DC",
+          boxShadow: `inset 0 -1px 2px rgba(201,163,64,0.35), 0 0 3px rgba(255,246,220,0.5)`,
           left: `calc(50% + ${eyeGap - eyeSize / 2}px + ${eyePos.x}px)`,
           top: eyeY + eyePos.y,
           transition: "height 0.12s ease, left 0.25s ease, top 0.25s ease",
         }}
       />
-      {alive && (
-        <div
-          className="absolute rounded-full"
-          style={{
-            width: size * 0.15,
-            height: 1.5,
-            background: `${glowColor}66`,
-            left: `calc(50% - ${size * 0.075}px)`,
-            top: size * 0.68,
-          }}
+      {/* Right pupil */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: pupilSize,
+          height: blinking ? 0 : pupilSize,
+          background: "#1a2744",
+          left: `calc(50% + ${eyeGap - pupilSize / 2}px + ${eyePos.x}px)`,
+          top: eyeY + eyeSize * 0.25 + eyePos.y,
+          transition: "height 0.12s ease, left 0.25s ease, top 0.25s ease",
+        }}
+      />
+      {/* Right sparkle */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: sparkleSize,
+          height: blinking ? 0 : sparkleSize,
+          background: "#FFFFFF",
+          boxShadow: "0 0 3px #FFFFFF",
+          left: `calc(50% + ${eyeGap - pupilSize / 2 + sparkleSize * 0.6}px + ${eyePos.x}px)`,
+          top: eyeY + eyeSize * 0.2 + eyePos.y,
+        }}
+      />
+
+      {/* Left cheek blush */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: cheekW,
+          height: cheekH,
+          background: "rgba(255,140,160,0.35)",
+          filter: "blur(1px)",
+          left: size * 0.1,
+          top: cheekY,
+        }}
+      />
+      {/* Right cheek blush */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: cheekW,
+          height: cheekH,
+          background: "rgba(255,140,160,0.35)",
+          filter: "blur(1px)",
+          right: size * 0.1,
+          top: cheekY,
+        }}
+      />
+
+      {/* Warm curved smile */}
+      <svg
+        width={mouthW}
+        height={mouthH}
+        viewBox="0 0 14 6"
+        style={{
+          position: "absolute",
+          top: mouthY,
+          left: `calc(50% - ${mouthW / 2}px)`,
+        }}
+      >
+        <path
+          d="M 1 1 Q 7 6 13 1"
+          stroke={glowColor}
+          strokeWidth={Math.max(1, size * 0.045)}
+          strokeLinecap="round"
+          fill="none"
+          style={{ filter: `drop-shadow(0 0 2px ${glowColor}AA)` }}
         />
-      )}
+      </svg>
     </div>
   );
 }
