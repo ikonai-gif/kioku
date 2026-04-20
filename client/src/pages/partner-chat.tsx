@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -15,6 +15,7 @@ import { CapabilityCards } from "@/components/CapabilityCards";
 import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
 import { ActionPanel } from "@/components/ActionPanel";
 import { ActionPanelToggle } from "@/components/ActionPanelToggle";
+import { InboxPanel } from "@/components/InboxPanel";
 import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
 import { DailyBriefCard, isDailyBriefMessage } from "@/components/DailyBriefCard";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1845,6 +1846,7 @@ export default function PartnerChat() {
   const [selectedArtifact, setSelectedArtifact] = useState<any | null>(null);
   const [showActionPanel, setShowActionPanel] = useState(false);
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
+  const [showInboxPanel, setShowInboxPanel] = useState(false);
   const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
   const isMobile = useIsMobile();
 
@@ -2627,7 +2629,16 @@ export default function PartnerChat() {
   const glowColor = getGlowColor(emotion);
 
   // ── Toggle action panel ────────────────────────────────────────
+  const toggleInboxPanel = useCallback(() => {
+    setShowInboxPanel((prev) => {
+      const next = !prev;
+      if (next) setShowActionPanel(false);
+      return next;
+    });
+  }, []);
+
   const toggleActionPanel = useCallback(() => {
+    setShowInboxPanel(false);
     setShowActionPanel((prev) => !prev);
   }, []);
 
@@ -2668,7 +2679,7 @@ export default function PartnerChat() {
     <div
       className="flex flex-col h-full overflow-hidden transition-all duration-300"
       style={{
-        width: !isMobile && showActionPanel ? "55%" : "100%",
+        width: !isMobile && (showActionPanel || showInboxPanel) ? "55%" : "100%",
         minWidth: 0,
       }}
     >
@@ -2715,6 +2726,20 @@ export default function PartnerChat() {
           title={voiceMode ? "Voice mode ON — auto-plays responses" : "Voice mode OFF"}
         >
           <Volume2 className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Inbox Panel Toggle (desktop header) */}
+        <button
+          onClick={toggleInboxPanel}
+          className="relative flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors"
+          style={{
+            background: showInboxPanel ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+            color: showInboxPanel ? "#C9A340" : "rgba(255,255,255,0.5)",
+            border: `1px solid ${showInboxPanel ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
+          }}
+          title="Inbox"
+        >
+          <Inbox className="w-3.5 h-3.5" />
         </button>
 
         {/* Artifacts / Action Panel Toggle (desktop header) */}
@@ -3384,6 +3409,43 @@ export default function PartnerChat() {
           hasActiveDeliberation={hasActiveDeliberation}
         />
       </motion.div>
+    )}
+
+    {/* ── Right: Inbox Panel (desktop inline) ──────────────── */}
+    {!isMobile && showInboxPanel && (
+      <motion.div
+        initial={{ width: 0, opacity: 0 }}
+        animate={{ width: "45%", opacity: 1 }}
+        exit={{ width: 0, opacity: 0 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        className="h-full overflow-hidden flex-shrink-0"
+        style={{ maxWidth: "45%", minWidth: 0 }}
+      >
+        <InboxPanel
+          show={true}
+          onClose={() => setShowInboxPanel(false)}
+          isMobile={false}
+          onReplyViaLuca={(msg) => {
+            const draft = `Ответь на это письмо в моём аккаунте ${msg.account}.\n\nОт: ${msg.from}\nТема: ${msg.subject}\nID: ${msg.id}\n\nСниппет: ${msg.snippet}\n\nТвой черновик ответа:`;
+            setInput((prev) => (prev ? `${prev}\n\n${draft}` : draft));
+            setShowInboxPanel(false);
+          }}
+        />
+      </motion.div>
+    )}
+
+    {/* ── Mobile: Inbox Panel overlay ───────────────────────── */}
+    {isMobile && (
+      <InboxPanel
+        show={showInboxPanel}
+        onClose={() => setShowInboxPanel(false)}
+        isMobile={true}
+        onReplyViaLuca={(msg) => {
+          const draft = `Ответь на это письмо в моём аккаунте ${msg.account}.\n\nОт: ${msg.from}\nТема: ${msg.subject}\nID: ${msg.id}\n\nСниппет: ${msg.snippet}\n\nТвой черновик ответа:`;
+          setInput((prev) => (prev ? `${prev}\n\n${draft}` : draft));
+          setShowInboxPanel(false);
+        }}
+      />
     )}
 
     {/* ── Mobile: Action Panel overlay + FAB toggle ─────────── */}
