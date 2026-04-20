@@ -323,6 +323,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }));
 
+  // Read-only admin: list user_integrations for a given user (master key only)
+  app.get("/api/admin/user-integrations", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.query.userId || ""), 10);
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    try {
+      const { pool } = await import("./storage");
+      const r = await pool.query(
+        `SELECT provider, email, created_at, updated_at, token_expiry FROM user_integrations WHERE user_id = $1 ORDER BY created_at ASC`,
+        [userId]
+      );
+      res.json({ userId, count: r.rows.length, rows: r.rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "query failed" });
+    }
+  }));
+
   // alias for frontend
   app.post("/api/auth/magic-link", ...validateMagicLink, asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
