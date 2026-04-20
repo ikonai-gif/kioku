@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/button";
 import {
   Shield, Activity, Database, Cpu, Users, Brain, Bot, MessageSquare,
   GitBranch, Zap, Download, FileText, Plus, BookOpen, Key, Clock,
-  CheckCircle2, AlertCircle, XCircle, ExternalLink, Crown,
+  CheckCircle2, AlertCircle, XCircle, ExternalLink, Crown, Plug,
 } from "lucide-react";
+import { Link } from "wouter";
 import { cn } from "@/lib/utils";
 
 function StatusDot({ status }: { status: string }) {
@@ -127,9 +128,17 @@ export default function BossBoardPage() {
           <h1 className="text-xl font-bold text-foreground tracking-tight">Boss Board</h1>
           <p className="text-xs text-muted-foreground">Owner Dashboard — Full System Overview</p>
         </div>
-        <Badge className="ml-auto bg-amber-500/15 text-amber-400 border-amber-500/25 hover:bg-amber-500/20">
-          {account.plan?.toUpperCase() ?? "DEV"} Plan
-        </Badge>
+        <div className="ml-auto flex items-center gap-2">
+          <Link href="/connectors">
+            <a className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-amber-500/25 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-medium transition-colors">
+              <Plug className="w-3.5 h-3.5" />
+              Коннекторы
+            </a>
+          </Link>
+          <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/25 hover:bg-amber-500/20">
+            {account.plan?.toUpperCase() ?? "DEV"} Plan
+          </Badge>
+        </div>
       </div>
 
       {/* Section 1: System Health */}
