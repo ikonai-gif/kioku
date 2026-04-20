@@ -24,6 +24,7 @@ import { ProvenanceViewer } from "@/components/ProvenanceViewer";
 import { VoiceOutput } from "@/components/voice/VoiceOutput";
 import { CameraCapture } from "@/components/vision/CameraCapture";
 import { VisionResult } from "@/components/vision/VisionResult";
+import { EmailConfirmModal, type EmailConfirmPayload } from "@/components/EmailConfirmModal";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -1848,6 +1849,8 @@ export default function PartnerChat() {
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
   const [showInboxPanel, setShowInboxPanel] = useState(false);
   const [activeInboxMessage, setActiveInboxMessage] = useState<InboxFullMessage | null>(null);
+  // Email confirm-modal state (for send_new_email / send_email_reply Luca tool calls)
+  const [emailConfirmPayload, setEmailConfirmPayload] = useState<EmailConfirmPayload | null>(null);
   const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
   const isMobile = useIsMobile();
 
@@ -2113,6 +2116,13 @@ export default function PartnerChat() {
                 return updated;
               });
             }
+          } else if (data.type === "email_confirm_required") {
+            // Luca prepared a send_new_email or send_email_reply — show confirm-modal.
+            setEmailConfirmPayload({
+              token: data.token,
+              expiresAt: data.expiresAt,
+              preview: data.preview,
+            });
           }
         } catch {}
       };
@@ -3517,5 +3527,13 @@ export default function PartnerChat() {
       </>
     )}
     </div>
+
+    {/* ── Email Send Confirm Modal (Luca tool: send_new_email / send_email_reply) ── */}
+    <EmailConfirmModal
+      payload={emailConfirmPayload}
+      onClose={() => setEmailConfirmPayload(null)}
+      onSent={() => setEmailConfirmPayload(null)}
+      onCancelled={() => setEmailConfirmPayload(null)}
+    />
   );
 }
