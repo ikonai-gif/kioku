@@ -457,6 +457,25 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "gmail_reconnect_link",
+    description: "Generate a clickable Gmail reconnect (re-authorize) link the user can click directly inside the chat to fix expired/broken Gmail tokens. Use this WHENEVER gmail_accounts_status reports any account as expired, broken, or needs-reconnect, OR when the user says 'почта не работает' / 'переподключи почту' / 'gmail broken'. Do NOT tell the user to 'go to Settings' — instead call this tool and present the returned link as a Markdown button so they can fix it in one click. Returns a Google OAuth URL bound to this user.",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "email_triage",
+    description: "Quickly triage the user's recent unread Gmail across ALL connected inboxes and group messages by category (urgent / work / promo / notifications / security). Use when the user says 'разбери почту', 'что в почте', 'inbox triage', 'check my email', or asks for a quick summary of what's new. Returns a structured summary with counts and the most important subjects per group. For deep reads, follow up with gmail_read on specific messages.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        max_messages: { type: "number", description: "How many recent unread messages to triage (default 30, max 100)", default: 30 },
+        only_unread: { type: "boolean", description: "Only consider unread messages (default true)", default: true },
+      },
+    },
+  },
+  {
     name: "reset_sandbox",
     description: "Reset the user's code execution sandbox. Kills the current persistent sandbox and starts fresh. Use when the user wants a clean environment, or when the sandbox is in a bad state.",
     input_schema: {
@@ -971,6 +990,8 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "gmail_search": return `Ищу письма в Gmail: "${truncate(input.query, 50)}"`;
     case "gmail_read": return `Читаю письмо${input.account ? ` (${truncate(input.account, 30)})` : ""}`;
     case "gmail_accounts_status": return `Проверяю статус подключённых Gmail-аккаунтов`;
+    case "gmail_reconnect_link": return `Готовлю ссылку для переподключения Gmail`;
+    case "email_triage": return `Разбираю почту по категориям`;
     case "stripe_list": return `Stripe: ${truncate(input.resource || "customers", 40)}`;
     case "github_call": return `GitHub: ${truncate(input.endpoint || input.action, 60)}`;
     case "vercel_call": return `Vercel: ${truncate(input.endpoint || input.action, 60)}`;
@@ -2089,6 +2110,101 @@ export async function executePartnerTool(
           return `${header}\n${lines.join("\n")}${footer}`;
         } catch (err: any) {
           return `Gmail status check failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "gmail_reconnect_link": {
+        try {
+          const { buildGmailOAuthUrl } = await import("./cloud-integrations");
+          const url = buildGmailOAuthUrl(userId);
+          return [
+            "Here is a one-click Gmail re-authorization link for the user. Present it to them as a Markdown button (e.g. **[➜ Переподключить Gmail](URL)**). Tell them: open the link, pick the same Google account that was connected, approve all permissions, then come back and ask me to check email again.",
+            "",
+            `URL: ${url}`,
+            "",
+            "After they click and approve, the new tokens are saved automatically and gmail_search / gmail_accounts_status will work immediately — no app restart needed.",
+          ].join("\n");
+        } catch (err: any) {
+          return `Failed to build Gmail reconnect link: ${err?.message || String(err)}. Tell the user to open Settings → Connectors → Gmail → Reconnect manually.`;
+        }
+      }
+
+      case "email_triage": {
+        try {
+          const { searchGmailAll } = await import("./cloud-integrations");
+          const max = Math.min(Math.max(Number(toolInput.max_messages) || 30, 1), 100);
+          const onlyUnread = toolInput.only_unread !== false;
+          const query = onlyUnread ? "in:inbox is:unread newer_than:14d" : "in:inbox newer_than:7d";
+          const result = await searchGmailAll(userId, query, max);
+
+          const broken = result.accountStatuses.filter(s => !s.ok);
+          const brokenWarn = broken.length > 0
+            ? `⚠️ ${broken.length} Gmail account(s) are broken (${broken.map(b => b.email).join(", ")}). Triage may be incomplete — call gmail_reconnect_link to fix.\n\n`
+            : "";
+
+          const messages = result.messages || [];
+          if (messages.length === 0) {
+            return `${brokenWarn}No ${onlyUnread ? "unread " : ""}messages found in the last ${onlyUnread ? "14" : "7"} days across ${result.accountStatuses.length} inbox(es).`;
+          }
+
+          // Categorize. Each message has: id, account, from, subject, date, snippet.
+          type Cat = "urgent" | "work" | "finance" | "security" | "promo" | "notifications" | "other";
+          const buckets: Record<Cat, any[]> = { urgent: [], work: [], finance: [], security: [], promo: [], notifications: [], other: [] };
+
+          const PROMO_KEYWORDS = /\b(sale|off|discount|deal|promo|free|exclusive|limited|last chance|new arrival|coupon|% off|bogo|clearance)\b/i;
+          const NOTIF_DOMAINS = /(noreply|no-reply|notifications?|updates?|info|hello|news|newsletter)@/i;
+          const SECURITY_KEYWORDS = /(security alert|sign[- ]?in|verification|2fa|password|suspicious|new device|unauthorized)/i;
+          const FINANCE_DOMAINS = /(stripe|paypal|chase|bank|amex|visa|mastercard|invoice|receipt|payment|payout|refund|wire|wise\.com|mercury|brex)/i;
+          const URGENT_KEYWORDS = /(urgent|asap|action required|deadline|overdue|expir(ing|es?)|immediate|critical|fail(ed|ure))/i;
+          const WORK_DOMAINS = /(github|gitlab|linear|jira|notion|slack|figma|vercel|supabase|prosperalaw|legal|attorney)/i;
+
+          for (const m of messages) {
+            const subj = String(m.subject || "");
+            const from = String(m.from || "");
+            const snip = String(m.snippet || "");
+            const all = `${subj} ${from} ${snip}`;
+
+            if (SECURITY_KEYWORDS.test(all)) buckets.security.push(m);
+            else if (URGENT_KEYWORDS.test(subj) || URGENT_KEYWORDS.test(snip)) buckets.urgent.push(m);
+            else if (FINANCE_DOMAINS.test(from) || FINANCE_DOMAINS.test(subj)) buckets.finance.push(m);
+            else if (PROMO_KEYWORDS.test(subj) || PROMO_KEYWORDS.test(snip)) buckets.promo.push(m);
+            else if (WORK_DOMAINS.test(from)) buckets.work.push(m);
+            else if (NOTIF_DOMAINS.test(from)) buckets.notifications.push(m);
+            else buckets.other.push(m);
+          }
+
+          const fmt = (m: any) => {
+            const d = m.date ? String(m.date).slice(0, 10) : "";
+            const subj = String(m.subject || "(no subject)").slice(0, 90);
+            const fromShort = String(m.from || "").replace(/<[^>]+>/, "").trim().slice(0, 40) || String(m.from || "").slice(0, 40);
+            return `  • [${d}] ${fromShort} — ${subj} {id:${m.id}, acct:${m.account}}`;
+          };
+
+          const lines: string[] = [];
+          lines.push(brokenWarn + `Triage of ${messages.length} ${onlyUnread ? "unread " : ""}message(s) across ${result.accountStatuses.length} inbox(es):`);
+          lines.push("");
+          const order: Cat[] = ["urgent", "security", "work", "finance", "notifications", "promo", "other"];
+          const labels: Record<Cat, string> = {
+            urgent: "🚨 URGENT (action required)",
+            security: "🔐 SECURITY",
+            work: "💼 WORK / DEV (GitHub, Linear, legal, etc.)",
+            finance: "💳 FINANCE (Stripe, banks, invoices)",
+            notifications: "📢 NOTIFICATIONS",
+            promo: "🏷️ PROMO / MARKETING (skim or skip)",
+            other: "📧 OTHER",
+          };
+          for (const cat of order) {
+            const items = buckets[cat];
+            if (items.length === 0) continue;
+            lines.push(`${labels[cat]} — ${items.length}`);
+            for (const m of items.slice(0, 8)) lines.push(fmt(m));
+            if (items.length > 8) lines.push(`  … and ${items.length - 8} more`);
+            lines.push("");
+          }
+          lines.push("To open any specific message use gmail_read with its account + id.");
+          return lines.join("\n");
+        } catch (err: any) {
+          return `Email triage failed: ${err?.message || String(err)}`;
         }
       }
 
