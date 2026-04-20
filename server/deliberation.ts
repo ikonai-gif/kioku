@@ -3461,8 +3461,10 @@ print("Converted MD to DOCX")
               { timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }
             );
           } catch (ffmpegErr: any) {
-            const stderr = (ffmpegErr?.stderr?.toString() || ffmpegErr?.message || "").slice(-800);
-            return `Title card ffmpeg failed. fontFile=${fontFile || "none"}. stderr: ${stderr}`;
+            // ffmpeg prints version banner first, real error is at the END of stderr
+            const allErr = (ffmpegErr?.stderr?.toString() || ffmpegErr?.message || String(ffmpegErr));
+            const tail = allErr.slice(-1200);
+            return `Title card ffmpeg failed. fontFile=${fontFile || "none"}. stderr_tail: ${tail}`;
           }
 
           // Concat card + video (or video + card)
