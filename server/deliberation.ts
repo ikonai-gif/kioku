@@ -863,13 +863,24 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "run_code": return `Выполняю код`;
     case "read_file": return `Читаю файл`;
     case "plan_steps": return `Планирую шаги`;
-    case "sandbox_shell": return `Запускаю команду: ${truncate(input.command, 60)}`;
+    case "sandbox_shell": return `Терминал: ${truncate(input.command, 120)}`;
+    case "sandbox_list_files": return `Смотрю файлы в песочнице${input.path ? `: ${truncate(input.path, 50)}` : ""}`;
     case "sandbox_list": return `Смотрю файлы в песочнице`;
-    case "sandbox_read": return `Читаю файл: ${truncate(input.path, 60)}`;
-    case "sandbox_write": return `Пишу файл: ${truncate(input.path, 60)}`;
+    case "sandbox_read_file": return `Читаю файл: ${truncate(input.path, 80)}`;
+    case "sandbox_read": return `Читаю файл: ${truncate(input.path, 80)}`;
+    case "sandbox_write_file": return `Пишу файл: ${truncate(input.path, 80)}`;
+    case "sandbox_write": return `Пишу файл: ${truncate(input.path, 80)}`;
+    case "sandbox_download": return `Скачиваю из песочницы: ${truncate(input.path, 60)}`;
     case "create_file": return `Создаю файл`;
     case "set_reminder": return `Ставлю напоминание`;
     case "search_cloud_files": return `Ищу файлы в облаке: "${truncate(input.query, 50)}"`;
+    case "stripe_list": return `Stripe: ${truncate(input.resource || "customers", 40)}`;
+    case "github_call": return `GitHub: ${truncate(input.endpoint || input.action, 60)}`;
+    case "vercel_call": return `Vercel: ${truncate(input.endpoint || input.action, 60)}`;
+    case "supabase_query": return `Supabase: ${truncate(input.table || input.query, 60)}`;
+    case "google_sheets": return `Google Sheets: ${truncate(input.action || input.range, 50)}`;
+    case "google_drive": return `Google Drive: ${truncate(input.action || input.query, 50)}`;
+    case "gcal": return `Calendar: ${truncate(input.action, 40)}`;
     case "workspace_list": return `Смотрю файлы в workspace${input.prefix ? `: ${truncate(input.prefix, 40)}` : ""}`;
     case "workspace_save": return `Сохраняю в workspace: ${truncate(input.path, 60)}`;
     case "workspace_read": return `Читаю из workspace: ${truncate(input.path, 60)}`;
@@ -1916,7 +1927,42 @@ export async function executePartnerTool(
         const timeoutSec = Math.min(Math.max(toolInput.timeout_seconds || 30, 1), 120);
         try {
           const sbx = await sandboxManager.getOrCreate(userId);
-          const result = await sbx.commands.run(command, { timeoutMs: timeoutSec * 1000 });
+
+          // Live-stream stdout/stderr to the partner chat so the user sees
+          // terminal output as it happens, not only after the command finishes.
+          // Throttle to at most one broadcast per 400ms to avoid flooding the
+          // WebSocket on chatty commands (npm install, docker pull, etc).
+          let lastLine = "";
+          let lastEmit = 0;
+          const emitLive = (chunk: string, stream: "stdout" | "stderr") => {
+            if (!roomId) return;
+            // Track only the most recent non-empty line so the UI shows
+            // "terminal: <cmd> → <last output line>".
+            const lines = String(chunk).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            if (lines.length) lastLine = lines[lines.length - 1];
+            const now = Date.now();
+            if (now - lastEmit < 400) return;
+            lastEmit = now;
+            try {
+              const cmdShort = command.length > 60 ? command.slice(0, 60) + "…" : command;
+              const lineShort = lastLine.length > 140 ? lastLine.slice(0, 140) + "…" : lastLine;
+              broadcastToolActivity(roomId, {
+                agentId,
+                tool: "sandbox_shell",
+                status: "running",
+                description: stream === "stderr"
+                  ? `Терминал (err): ${cmdShort} → ${lineShort}`
+                  : `Терминал: ${cmdShort} → ${lineShort}`,
+                timestamp: now,
+              });
+            } catch { /* best-effort */ }
+          };
+
+          const result = await sbx.commands.run(command, {
+            timeoutMs: timeoutSec * 1000,
+            onStdout: (data: string) => emitLive(data, "stdout"),
+            onStderr: (data: string) => emitLive(data, "stderr"),
+          } as any);
           let output = "";
           if (result.stdout) output += result.stdout;
           if (result.stderr) output += (output ? "\n" : "") + `stderr: ${result.stderr}`;
@@ -3798,9 +3844,20 @@ Start with step 1 now.`;
 
     if (roomId) {
       try {
-        const preview = typeof __finalResult === "string" && __finalResult.length > 160
-          ? __finalResult.slice(0, 160) + "…"
-          : (typeof __finalResult === "string" ? __finalResult : "");
+        // Build a richer preview so the user can actually see what the tool
+        // returned, not just the first 160 chars. For terminal output the
+        // tail is far more useful than the head; for everything else, head
+        // is fine.
+        const raw = typeof __finalResult === "string" ? __finalResult : String(__finalResult ?? "");
+        const previewLimit = 500;
+        let preview: string;
+        if (raw.length <= previewLimit) {
+          preview = raw;
+        } else if (toolName === "sandbox_shell") {
+          preview = `…${raw.slice(-previewLimit)}`;
+        } else {
+          preview = raw.slice(0, previewLimit) + "…";
+        }
         broadcastToolActivity(roomId, {
           agentId,
           tool: toolName,

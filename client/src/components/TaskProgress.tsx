@@ -47,6 +47,10 @@ export interface ToolStep {
   toolName: string;
   status: "running" | "done" | "error";
   startedAt: number;
+  /** Live/server-sent description — e.g. "Терминал: npm install → added 124 packages". */
+  description?: string;
+  /** Short preview of the tool result (shown when status=done). */
+  preview?: string;
 }
 
 interface TaskProgressProps {
@@ -274,26 +278,37 @@ export function TaskProgress({ steps, emotion, startTime }: TaskProgressProps) {
               >
                 <span className="text-sm flex-shrink-0 select-none">{tool.icon}</span>
 
-                <span
-                  className="text-xs flex-1"
-                  style={{
-                    color: isRunning
-                      ? "rgba(201,163,64,0.9)"
-                      : isDone
-                      ? "rgba(255,255,255,0.5)"
-                      : "rgba(239,68,68,0.8)",
-                  }}
-                >
-                  {tool.label}
-                  {isRunning && (
-                    <motion.span
-                      animate={{ opacity: [1, 0.3, 1] }}
-                      transition={{ duration: 1.5, repeat: Infinity }}
+                <div className="flex-1 min-w-0">
+                  <span
+                    className="text-xs block truncate"
+                    style={{
+                      color: isRunning
+                        ? "rgba(201,163,64,0.9)"
+                        : isDone
+                        ? "rgba(255,255,255,0.5)"
+                        : "rgba(239,68,68,0.8)",
+                    }}
+                  >
+                    {step.description || tool.label}
+                    {isRunning && (
+                      <motion.span
+                        animate={{ opacity: [1, 0.3, 1] }}
+                        transition={{ duration: 1.5, repeat: Infinity }}
+                      >
+                        ...
+                      </motion.span>
+                    )}
+                  </span>
+                  {step.preview && (isDone || isError) && (
+                    <span
+                      className="text-[10px] block truncate mt-0.5 font-mono"
+                      style={{ color: isError ? "rgba(239,68,68,0.55)" : "rgba(255,255,255,0.32)" }}
+                      title={step.preview}
                     >
-                      ...
-                    </motion.span>
+                      {step.preview.replace(/\s+/g, " ").slice(0, 120)}
+                    </span>
                   )}
-                </span>
+                </div>
 
                 <ElapsedTime startedAt={step.startedAt} running={isRunning} />
 
