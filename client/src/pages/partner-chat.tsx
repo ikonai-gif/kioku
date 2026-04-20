@@ -71,39 +71,120 @@ function getGlowColor(emotion: string): string {
   return EMOTION_GLOW[emotion] || "#60A5FA";
 }
 
-// ── Luca Avatar ─────────────────────────────────────────────────
-function LucaAvatar({ emotion, size = 40, pulse = false }: { emotion: string; size?: number; pulse?: boolean }) {
+// ── Luca Avatar (living creature with darting eyes) ──────────────
+function LucaAvatar({ emotion, size = 40, pulse = false, alive = false }: { emotion: string; size?: number; pulse?: boolean; alive?: boolean }) {
   const glowColor = getGlowColor(emotion);
+  const [eyePos, setEyePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [blinking, setBlinking] = useState(false);
+
+  useEffect(() => {
+    if (!alive) return;
+    const positions = [
+      { x: 0, y: 0 }, { x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: -1 },
+      { x: 1, y: 1 }, { x: -1, y: 1 }, { x: 0, y: 0 }, { x: -1, y: -1 },
+    ];
+    let i = 0;
+    const dart = setInterval(() => {
+      i = (i + 1) % positions.length;
+      setEyePos(positions[i]);
+    }, 600 + Math.random() * 400);
+    return () => clearInterval(dart);
+  }, [alive]);
+
+  useEffect(() => {
+    const blink = () => {
+      setBlinking(true);
+      setTimeout(() => setBlinking(false), 150);
+    };
+    const timer = setInterval(blink, alive ? 2200 + Math.random() * 1500 : 5000 + Math.random() * 3000);
+    return () => clearInterval(timer);
+  }, [alive]);
+
+  const eyeSize = Math.max(3, size * 0.14);
+  const eyeGap = size * 0.18;
+  const eyeY = size * 0.42;
+
   return (
     <div
-      className={cn("relative flex-shrink-0 flex items-center justify-center rounded-full", pulse && "animate-pulse")}
+      className={cn("relative flex-shrink-0 flex items-center justify-center rounded-full overflow-hidden", pulse && "animate-pulse")}
       style={{
         width: size,
         height: size,
         background: "linear-gradient(135deg, #0a0f1e 0%, #1a2744 100%)",
         border: `2px solid ${glowColor}44`,
-        boxShadow: `0 0 12px ${glowColor}33, 0 0 24px ${glowColor}18`,
-        transition: "box-shadow 2.5s ease, border-color 2.5s ease",
+        boxShadow: alive
+          ? `0 0 16px ${glowColor}66, 0 0 32px ${glowColor}22, inset 0 0 8px ${glowColor}10`
+          : `0 0 12px ${glowColor}33, 0 0 24px ${glowColor}18`,
+        transition: "box-shadow 1.5s ease, border-color 1.5s ease",
       }}
     >
-      <span
-        className="font-bold select-none"
+      <div
+        className="absolute rounded-full"
         style={{
-          color: "#C9A340",
-          fontSize: size * 0.4,
-          fontFamily: "Inter, sans-serif",
-          letterSpacing: "-0.02em",
+          width: eyeSize,
+          height: blinking ? 1 : eyeSize,
+          background: "#C9A340",
+          boxShadow: `0 0 ${eyeSize}px ${glowColor}88`,
+          left: `calc(50% - ${eyeGap + eyeSize / 2}px + ${eyePos.x}px)`,
+          top: eyeY + eyePos.y,
+          transition: "height 0.12s ease, left 0.25s ease, top 0.25s ease",
         }}
-      >
-        L
-      </span>
+      />
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: eyeSize,
+          height: blinking ? 1 : eyeSize,
+          background: "#C9A340",
+          boxShadow: `0 0 ${eyeSize}px ${glowColor}88`,
+          left: `calc(50% + ${eyeGap - eyeSize / 2}px + ${eyePos.x}px)`,
+          top: eyeY + eyePos.y,
+          transition: "height 0.12s ease, left 0.25s ease, top 0.25s ease",
+        }}
+      />
+      {alive && (
+        <div
+          className="absolute rounded-full"
+          style={{
+            width: size * 0.15,
+            height: 1.5,
+            background: `${glowColor}66`,
+            left: `calc(50% - ${size * 0.075}px)`,
+            top: size * 0.68,
+          }}
+        />
+      )}
     </div>
   );
 }
 
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  return `${m}m ${rs}s`;
+}
+
 // ── Typing Indicator ─────────────────────────────────────────────
-function TypingIndicator({ emotion }: { emotion: string }) {
+function TypingIndicator({ emotion, startTime }: { emotion: string; startTime?: number }) {
   const glowColor = getGlowColor(emotion);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (!startTime) return;
+    const tick = () => setElapsed(Date.now() - startTime);
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [startTime]);
+
+  const label = elapsed > 10000
+    ? `думаю глубоко · ${formatElapsed(elapsed)}`
+    : elapsed > 3000
+    ? `думаю · ${formatElapsed(elapsed)}`
+    : "думаю…";
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -111,24 +192,18 @@ function TypingIndicator({ emotion }: { emotion: string }) {
       exit={{ opacity: 0, y: -4 }}
       className="flex items-center gap-2 px-4 py-3"
     >
-      <LucaAvatar emotion={emotion} size={28} pulse />
+      <LucaAvatar emotion={emotion} size={32} alive />
       <div
-        className="flex items-center gap-1 px-3 py-2 rounded-2xl"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-2xl"
         style={{
           background: "rgba(255,255,255,0.05)",
           border: "1px solid rgba(255,255,255,0.08)",
           boxShadow: `0 0 8px ${glowColor}10`,
         }}
       >
-        {[0, 1, 2].map((i) => (
-          <motion.div
-            key={i}
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ background: glowColor }}
-            animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.1, 0.8] }}
-            transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
-          />
-        ))}
+        <span className="text-xs font-medium" style={{ color: `${glowColor}CC` }}>
+          {label}
+        </span>
       </div>
     </motion.div>
   );
@@ -1517,6 +1592,7 @@ export default function PartnerChat() {
   const [partnerRoomId, setPartnerRoomId] = useState<number | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
+  const [thinkingStart, setThinkingStart] = useState<number | null>(null);
   const [voiceMode, setVoiceModeRaw] = useState(() => getCookie("kioku_voice_mode") === "on");
   const setVoiceMode = useCallback((on: boolean) => {
     setVoiceModeRaw(on);
@@ -1661,7 +1737,7 @@ export default function PartnerChat() {
         try {
           const data = JSON.parse(event.data);
           if (data.type === "message") {
-            setIsThinking(false);
+            setIsThinking(false); setThinkingStart(null);
             setToolSteps([]);
             queryClient.setQueryData<any[]>(
               ["/api/rooms", partnerRoomId, "messages"],
@@ -1754,7 +1830,7 @@ export default function PartnerChat() {
     if (messages.length > lastMessageCountRef.current) {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg && lastMsg.agentName !== user?.name && lastMsg.agentName !== "You") {
-        setIsThinking(false);
+        setIsThinking(false); setThinkingStart(null);
         setToolSteps([]);
       }
     }
@@ -1772,7 +1848,7 @@ export default function PartnerChat() {
       setImageBase64(null);
       setAttachedFileName(null);
       setFileExtractedText(null);
-      setIsThinking(true);
+      setIsThinking(true); setThinkingStart(Date.now());
     },
     onError: () => toast({ title: "Failed to send", variant: "destructive" }),
   });
@@ -1893,7 +1969,7 @@ export default function PartnerChat() {
   // After recording stops: transcribe → auto-send → Luca answers with voice
   const voiceAutoSend = useCallback((text: string) => {
     if (!text.trim() || !partnerRoomId) return;
-    setIsThinking(true);
+    setIsThinking(true); setThinkingStart(Date.now());
     apiRequest("POST", `/api/rooms/${partnerRoomId}/messages`, {
       agentId: null,
       agentName: user?.name || "You",
@@ -1903,7 +1979,7 @@ export default function PartnerChat() {
     }).then(() => {
       queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoomId, "messages"] });
     }).catch(() => {
-      setIsThinking(false);
+      setIsThinking(false); setThinkingStart(null);
     });
   }, [partnerRoomId, user]);
 
@@ -2481,9 +2557,9 @@ export default function PartnerChat() {
 
         <AnimatePresence>
           {isThinking && toolSteps.length > 0 ? (
-            <TaskProgress key="task-progress" steps={toolSteps} emotion={emotion} />
+            <TaskProgress key="task-progress" steps={toolSteps} emotion={emotion} startTime={thinkingStart ?? undefined} />
           ) : isThinking ? (
-            <TypingIndicator key="typing" emotion={emotion} />
+            <TypingIndicator key="typing" emotion={emotion} startTime={thinkingStart ?? undefined} />
           ) : null}
         </AnimatePresence>
         <AnimatePresence>
