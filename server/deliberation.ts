@@ -3452,12 +3452,14 @@ print("Converted MD to DOCX")
           ];
           const fontFile = fontCandidates.find(p => fs.existsSync(p));
           const fontArg = fontFile ? `:fontfile=${fontFile}` : "";
+          // NOTE: -vf must be in OUTPUT section (after all -i inputs), otherwise ffmpeg
+          // thinks the filter applies to the next input. Use -filter:v on output side.
           try {
             execSync(
               `ffmpeg -y -f lavfi -i "color=c=0x${bg}:s=${width}x${height}:d=${duration}:r=30" ` +
-              `-vf "drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2${fontArg}" ` +
-              `-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" -t ${duration} ` +
-              `-c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${cardPath}"`,
+              `-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" ` +
+              `-filter:v "drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2${fontArg}" ` +
+              `-t ${duration} -c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${cardPath}"`,
               { timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }
             );
           } catch (ffmpegErr: any) {
