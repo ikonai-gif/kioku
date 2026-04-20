@@ -406,6 +406,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: dump user snapshot (master key only) — for periodic backup to Drive ──
+  app.get("/api/admin/dump-user", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.query.userId || ""), 10);
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    const includeEmbeddings = String(req.query.includeEmbeddings || "false") === "true";
+    try {
+      const { pool } = await import("./storage");
+
+      // user
+      const userR = await pool.query(`SELECT id, email, name, role, plan, created_at FROM users WHERE id = $1`, [userId]);
+      if (userR.rows.length === 0) return res.status(404).json({ error: "user not found" });
+      const user = userR.rows[0];
+
+      // agents
+      const agentsR = await pool.query(`SELECT * FROM agents WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+
+      // memories — strip embedding by default to keep dump small
+      const memCols = includeEmbeddings
+        ? "*"
+        : "id, user_id, agent_id, agent_name, content, type, importance, namespace, created_at";
+      const memoriesR = await pool.query(`SELECT ${memCols} FROM memories WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+
+      // rooms
+      const roomsR = await pool.query(`SELECT * FROM rooms WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+
+      // room_messages — only those belonging to user's rooms
+      const roomMsgsR = await pool.query(
+        `SELECT rm.* FROM room_messages rm JOIN rooms r ON r.id = rm.room_id WHERE r.user_id = $1 ORDER BY rm.id ASC`,
+        [userId]
+      );
+
+      // flows
+      const flowsR = await pool.query(`SELECT * FROM flows WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+
+      // user_integrations — strip secret tokens, keep metadata only
+      const integrR = await pool.query(
+        `SELECT id, provider, email, created_at, updated_at, token_expiry FROM user_integrations WHERE user_id = $1 ORDER BY id ASC`,
+        [userId]
+      );
+
+      const dump = {
+        meta: {
+          dumpedAt: new Date().toISOString(),
+          dumpedAtMs: Date.now(),
+          userId,
+          includeEmbeddings,
+          version: 1,
+        },
+        user,
+        counts: {
+          agents: agentsR.rows.length,
+          memories: memoriesR.rows.length,
+          rooms: roomsR.rows.length,
+          room_messages: roomMsgsR.rows.length,
+          flows: flowsR.rows.length,
+          integrations: integrR.rows.length,
+        },
+        agents: agentsR.rows,
+        memories: memoriesR.rows,
+        rooms: roomsR.rows,
+        room_messages: roomMsgsR.rows,
+        flows: flowsR.rows,
+        integrations_meta: integrR.rows,
+      };
+      res.json(dump);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "dump failed" });
+    }
+  }));
+
   // ── Admin: list all users (master key only) ──────────────────
   app.get("/api/admin/users", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";
