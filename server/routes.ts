@@ -4149,6 +4149,115 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Inbox API for Partner UI: grouped emails + actions ──────────────────────
+
+  // GET /api/partner/inbox — returns recent emails grouped by category for the side panel
+  app.get("/api/partner/inbox", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const onlyUnread = String(req.query.onlyUnread || "true") === "true";
+    const days = Math.min(Math.max(parseInt(String(req.query.days || "14"), 10) || 14, 1), 90);
+    const perAccount = Math.min(Math.max(parseInt(String(req.query.perAccount || "40"), 10) || 40, 1), 100);
+    try {
+      const { searchGmailAll } = await import("./cloud-integrations");
+      const query = onlyUnread ? `in:inbox is:unread newer_than:${days}d` : `in:inbox newer_than:${days}d`;
+      const result = await searchGmailAll(userId, query, perAccount);
+
+      // Categorise (mirror logic from email_triage tool in deliberation.ts)
+      const PROMO_KEYWORDS = /\b(sale|off|discount|deal|promo|free|exclusive|limited|last chance|new arrival|coupon|% off|bogo|clearance|скидк|распродаж)\b/i;
+      const NOTIF_DOMAINS = /(noreply|no-reply|notifications?|updates?|info|hello|news|newsletter)@/i;
+      const SECURITY_KEYWORDS = /(security alert|sign[- ]?in|verification|2fa|password|suspicious|new device|unauthorized|безопасн|вход в аккаунт)/i;
+      const FINANCE_DOMAINS = /(stripe|paypal|chase|bank|amex|visa|mastercard|invoice|receipt|payment|payout|refund|wire|wise\.com|mercury|brex|чек|оплат|счёт|счет)/i;
+      const URGENT_KEYWORDS = /(urgent|asap|action required|deadline|overdue|expir(ing|es?)|immediate|critical|fail(ed|ure)|срочн|важн|истек)/i;
+      const WORK_DOMAINS = /(github|gitlab|linear|jira|notion|slack|figma|vercel|supabase|prosperalaw|legal|attorney)/i;
+
+      type Cat = "urgent" | "security" | "work" | "finance" | "notifications" | "promo" | "other";
+      const buckets: Record<Cat, any[]> = { urgent: [], security: [], work: [], finance: [], notifications: [], promo: [], other: [] };
+
+      for (const m of result.messages) {
+        const subj = String(m.subject || "");
+        const from = String(m.from || "");
+        const snip = String(m.snippet || "");
+        const all = `${subj} ${from} ${snip}`;
+        if (SECURITY_KEYWORDS.test(all)) buckets.security.push(m);
+        else if (URGENT_KEYWORDS.test(subj) || URGENT_KEYWORDS.test(snip)) buckets.urgent.push(m);
+        else if (FINANCE_DOMAINS.test(from) || FINANCE_DOMAINS.test(subj)) buckets.finance.push(m);
+        else if (PROMO_KEYWORDS.test(subj) || PROMO_KEYWORDS.test(snip)) buckets.promo.push(m);
+        else if (WORK_DOMAINS.test(from)) buckets.work.push(m);
+        else if (NOTIF_DOMAINS.test(from)) buckets.notifications.push(m);
+        else buckets.other.push(m);
+      }
+
+      // Sort each bucket: most recent first (Gmail dates may be RFC2822, parse defensively)
+      const parseTs = (d: string) => { const t = Date.parse(d); return Number.isNaN(t) ? 0 : t; };
+      for (const k of Object.keys(buckets) as Cat[]) {
+        buckets[k].sort((a, b) => parseTs(b.date) - parseTs(a.date));
+      }
+
+      const groups = [
+        { key: "urgent",        label: "🚨 Срочные",        color: "red",     count: buckets.urgent.length,        messages: buckets.urgent },
+        { key: "security",      label: "🔐 Безопасность",      color: "orange",  count: buckets.security.length,      messages: buckets.security },
+        { key: "work",          label: "💼 Работа / Разработка", color: "blue",    count: buckets.work.length,          messages: buckets.work },
+        { key: "finance",       label: "💳 Финансы",         color: "green",   count: buckets.finance.length,       messages: buckets.finance },
+        { key: "notifications", label: "📢 Уведомления",     color: "slate",   count: buckets.notifications.length, messages: buckets.notifications },
+        { key: "promo",         label: "🏷️ Промо",          color: "gray",    count: buckets.promo.length,         messages: buckets.promo },
+        { key: "other",         label: "📧 Остальные",       color: "slate",   count: buckets.other.length,         messages: buckets.other },
+      ];
+
+      res.json({
+        meta: {
+          fetchedAt: Date.now(),
+          query,
+          totalMessages: result.messages.length,
+          totalAccounts: result.accountStatuses.length,
+          brokenAccounts: result.accountStatuses.filter(s => !s.ok).length,
+        },
+        accountStatuses: result.accountStatuses,
+        groups,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // GET /api/partner/inbox/message?account=&id= — read full body of a single message
+  app.get("/api/partner/inbox/message", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const account = String(req.query.account || "");
+    const id = String(req.query.id || "");
+    if (!account || !id) return res.status(400).json({ error: "account and id are required" });
+    try {
+      const { readGmailMessage } = await import("./cloud-integrations");
+      const m = await readGmailMessage(userId, account, id);
+      res.json(m);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // POST /api/partner/inbox/action { account, id, action: 'mark_read'|'mark_unread'|'archive' }
+  app.post("/api/partner/inbox/action", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { account, id, action } = req.body || {};
+    if (!account || !id || !action) return res.status(400).json({ error: "account, id, action required" });
+    try {
+      const { modifyGmailMessage } = await import("./cloud-integrations");
+      let opts: { addLabels?: string[]; removeLabels?: string[] };
+      switch (action) {
+        case "mark_read":   opts = { removeLabels: ["UNREAD"] }; break;
+        case "mark_unread": opts = { addLabels: ["UNREAD"] }; break;
+        case "archive":     opts = { removeLabels: ["INBOX"] }; break;
+        default: return res.status(400).json({ error: `Unknown action: ${action}` });
+      }
+      await modifyGmailMessage(userId, account, id, opts);
+      res.json({ ok: true, account, id, action });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
   // ── Scheduled Tasks API ─────────────────────────────────────────────────────
 
   // GET /api/tasks — list all tasks for user

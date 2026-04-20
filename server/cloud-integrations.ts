@@ -657,6 +657,36 @@ export async function readGmailMessage(userId: number, accountEmail: string, mes
   };
 }
 
+// ── Gmail: modify labels (mark read/unread, archive, etc.) ────────────────
+export async function modifyGmailMessage(
+  userId: number,
+  accountEmail: string,
+  messageId: string,
+  opts: { addLabels?: string[]; removeLabels?: string[] }
+): Promise<{ ok: true }> {
+  const accounts = await listGmailAccounts(userId);
+  const acct = accounts.find(a => a.email.toLowerCase() === accountEmail.toLowerCase());
+  if (!acct) throw new Error(`Gmail account ${accountEmail} not connected`);
+  const { token } = await getGmailTokenForAccount(acct.id);
+  const body: any = {};
+  if (opts.addLabels && opts.addLabels.length) body.addLabelIds = opts.addLabels;
+  if (opts.removeLabels && opts.removeLabels.length) body.removeLabelIds = opts.removeLabels;
+  const r = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    }
+  );
+  if (!r.ok) {
+    const errBody = await r.text().catch(() => "");
+    throw new Error(`Gmail modify failed: ${r.status} ${errBody.slice(0, 200)}`);
+  }
+  return { ok: true };
+}
+
 export function buildGoogleOAuthUrl(userId: number): string {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
     throw new Error("Google OAuth not configured (missing GOOGLE_CLIENT_ID or redirect URI)");
