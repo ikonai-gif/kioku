@@ -809,13 +809,27 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         duration: { type: "number", description: "Card duration in seconds. Default 2." },
         background: { type: "string", description: "Hex color for card background (e.g. '#000000'). Default black." },
         text_color: { type: "string", description: "Hex color for text. Default white." },
+        add_ai_disclosure: { type: "boolean", description: "If true (default), append 'Created with AI' line at bottom of title card and embed C2PA-style metadata. Required for SB 942 / EU AI Act compliance.", default: true },
       },
       required: ["video_url", "text"],
     },
   },
   {
+    name: "apply_ai_disclosure",
+    description: "Embed legal AI-disclosure metadata (SB 942, EU AI Act Article 50, YouTube) into a finished video file without re-rendering. Optionally burn a 2-second 'Created with AI' overlay at the start. Use as final step before publishing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "URL or data URI of source video" },
+        visible_overlay: { type: "boolean", description: "Default true. Burns a small 'Created with AI' bug bottom-left for first 2 seconds." },
+        tools_used: { type: "array", items: { type: "string" }, description: "List of AI tools used. Default: ['Veo 3','ElevenLabs','Suno']" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "produce_episode",
-    description: "MASTER TOOL — produce a complete vertical series episode end-to-end from a script outline. Runs the full pipeline: script → scene breakdown → video generation per scene → character voiceover → music → SFX → stitching → subtitles → title cards. Returns a ready-to-publish episode. Use when user says 'make episode', 'produce episode N', 'create the next episode'.",
+    description: "MASTER TOOL — produce a complete vertical series episode end-to-end from a script outline. Runs the full pipeline: script → scene breakdown → video generation per scene → character voiceover → music → SFX → stitching → subtitles → title cards → legal AI disclosure. Returns a ready-to-publish episode. Use when user says 'make episode', 'produce episode N', 'create the next episode'.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -825,6 +839,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         include_music: { type: "boolean", description: "Generate original soundtrack. Default true." },
         include_subtitles: { type: "boolean", description: "Burn subtitles. Default true." },
         include_title_card: { type: "boolean", description: "Add episode title card. Default true." },
+        legal_disclosure: { type: "boolean", description: "Apply SB 942 / EU AI Act disclosure as final step. Default true. NOT recommended to disable for commercial use.", default: true },
       },
       required: ["series_name", "episode_number", "script"],
     },
@@ -889,6 +904,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "reframe_vertical": return `Конвертирую в вертикаль 9:16`;
     case "add_subtitles": return `Накладываю субтитры`;
     case "add_title_cards": return `Добавляю титры: "${truncate(input.text, 40)}"`;
+    case "apply_ai_disclosure": return `Применяю AI-дисклеймер (SB 942 / EU AI Act)`;
     case "series_bible": return `Series Bible: ${input.action || "get"} "${truncate(input.series_name, 40)}"`;
     case "produce_episode": return `Собираю эпизод ${input.episode_number} "${truncate(input.series_name, 30)}"`;
     case "generate_document": return `Создаю документ: "${truncate(input.title, 50)}" (${input.format})`;
@@ -3749,6 +3765,8 @@ print("Converted MD to DOCX")
         const duration = toolInput.duration || 2;
         const bg = (toolInput.background || "#000000").replace("#", "");
         const textColor = (toolInput.text_color || "#FFFFFF").replace("#", "");
+        // Default ON — satisfies SB 942 / EU AI Act / YouTube disclosure rules.
+        const addDisclosure = toolInput.add_ai_disclosure !== false;
 
         try {
           const { execSync } = await import("child_process");
@@ -3760,6 +3778,7 @@ print("Converted MD to DOCX")
           const videoPath = path.join(tmpDir, "input.mp4");
           const cardPath = path.join(tmpDir, "card.mp4");
           const listFile = path.join(tmpDir, "list.txt");
+          const concatPath = path.join(tmpDir, "concat.mp4");
           const outPath = path.join(tmpDir, "output.mp4");
 
           // Download main video
@@ -3773,12 +3792,16 @@ print("Converted MD to DOCX")
 
           // Generate title card (colored background with centered text)
           // Escape drawtext special chars: backslash, single quote, colon, percent
-          const escapedText = text
+          const escapeDraw = (s: string) => s
             .replace(/\\/g, "\\\\")
             .replace(/'/g, "\\'")
             .replace(/:/g, "\\:")
             .replace(/%/g, "\\%");
+          const escapedText = escapeDraw(text);
           const fontSize = Math.floor(height / 15);
+          const discloseText = "Created with AI · Veo 3 / ElevenLabs / Suno";
+          const escapedDisclose = escapeDraw(discloseText);
+          const discloseFontSize = Math.max(14, Math.floor(height / 40));
           // Find a usable font (DejaVu is installed via apk in Dockerfile)
           const fontCandidates = [
             "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf",
@@ -3788,13 +3811,17 @@ print("Converted MD to DOCX")
           ];
           const fontFile = fontCandidates.find(p => fs.existsSync(p));
           const fontArg = fontFile ? `:fontfile=${fontFile}` : "";
+          // Main title text, plus optional small disclosure line near the bottom.
+          const drawMain = `drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2${fontArg}`;
+          const drawDisclose = `drawtext=text='${escapedDisclose}':fontcolor=0x${textColor}:fontsize=${discloseFontSize}:x=(w-text_w)/2:y=h-(text_h*2)${fontArg}:alpha=0.7`;
+          const filterV = addDisclosure ? `${drawMain},${drawDisclose}` : drawMain;
           // NOTE: -vf must be in OUTPUT section (after all -i inputs), otherwise ffmpeg
           // thinks the filter applies to the next input. Use -filter:v on output side.
           try {
             execSync(
               `ffmpeg -y -f lavfi -i "color=c=0x${bg}:s=${width}x${height}:d=${duration}:r=30" ` +
               `-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" ` +
-              `-filter:v "drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2${fontArg}" ` +
+              `-filter:v "${filterV}" ` +
               `-t ${duration} -c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${cardPath}"`,
               { timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }
             );
@@ -3809,16 +3836,122 @@ print("Converted MD to DOCX")
           const order = position === "intro" ? [cardPath, videoPath] : [videoPath, cardPath];
           fs.writeFileSync(listFile, order.map(f => `file '${f}'`).join("\n"));
 
-          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outPath}"`, { timeout: 120000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${concatPath}"`, { timeout: 120000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+
+          // SB 942 / EU AI Act Article 50 / YouTube synthetic-content metadata pass.
+          // No re-encode — metadata only.
+          if (addDisclosure) {
+            try {
+              execSync(
+                `ffmpeg -y -i "${concatPath}" -c copy ` +
+                `-metadata "AI_GENERATED=true" ` +
+                `-metadata "AI_TOOLS=Veo3,ElevenLabs,Suno" ` +
+                `-metadata "DISCLOSURE=Generated using AI per SB 942 / EU AI Act Article 50" ` +
+                `-metadata "C2PA_HINT=ai-generated" ` +
+                `"${outPath}"`,
+                { timeout: 60000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 }
+              );
+            } catch {
+              // Metadata pass failed — fall back to the concat output so the tool still returns a video.
+              fs.copyFileSync(concatPath, outPath);
+            }
+          } else {
+            fs.copyFileSync(concatPath, outPath);
+          }
 
           if (!fs.existsSync(outPath)) return "Title card generation completed but output not found.";
           const outBuf = fs.readFileSync(outPath);
           const b64 = outBuf.toString("base64");
           try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
 
-          return `[Video with ${position} title card] data:video/mp4;base64,${b64}`;
+          return `[Video with ${position} title card${addDisclosure ? " + AI disclosure" : ""}] data:video/mp4;base64,${b64}`;
         } catch (err: any) {
           return `Title card generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "apply_ai_disclosure": {
+        const src = toolInput.url;
+        if (!src || typeof src !== "string") return "Missing required field: url.";
+        const visibleOverlay = toolInput.visible_overlay !== false;
+        const toolsUsed: string[] = Array.isArray(toolInput.tools_used) && toolInput.tools_used.length > 0
+          ? toolInput.tools_used.map((t: any) => String(t))
+          : ["Veo 3", "ElevenLabs", "Suno"];
+
+        try {
+          const { execSync } = await import("child_process");
+          const fs = await import("fs");
+          const path = await import("path");
+          const os = await import("os");
+
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "disclose-"));
+          const inputPath = path.join(tmpDir, "input.mp4");
+          const outPath = path.join(tmpDir, "output.mp4");
+          const stderrFile = path.join(tmpDir, "ffmpeg.log");
+
+          if (src.startsWith("data:")) {
+            const m = src.match(/^data:[^;]+;base64,(.+)$/);
+            if (!m) return "Malformed data URI.";
+            fs.writeFileSync(inputPath, Buffer.from(m[1], "base64"));
+          } else {
+            const resp = await fetch(src, { signal: AbortSignal.timeout(90000) });
+            if (!resp.ok) return `Failed to download source: HTTP ${resp.status}`;
+            fs.writeFileSync(inputPath, Buffer.from(await resp.arrayBuffer()));
+          }
+
+          const toolsStr = toolsUsed.join(",");
+          const metaArgs = [
+            `-metadata "AI_GENERATED=true"`,
+            `-metadata "AI_TOOLS=${toolsStr}"`,
+            `-metadata "DISCLOSURE=Generated using AI per SB 942 / EU AI Act Article 50"`,
+            `-metadata "C2PA_HINT=ai-generated"`,
+            `-metadata "YOUTUBE_SYNTHETIC_CONTENT=true"`,
+          ].join(" ");
+
+          if (visibleOverlay) {
+            // Small bottom-left bug, first 2 seconds only. Re-encode video; copy audio.
+            const fontCandidates = [
+              "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            ];
+            const fontFile = fontCandidates.find(p => fs.existsSync(p));
+            const fontArg = fontFile ? `:fontfile=${fontFile}` : "";
+            const overlayFilter = `drawtext=text='Created with AI':fontcolor=white:fontsize=28:x=20:y=h-th-20:box=1:boxcolor=black@0.55:boxborderw=8${fontArg}:enable='lt(t,2)'`;
+            const cmd = `ffmpeg -y -i "${inputPath}" -vf "${overlayFilter}" -c:v libx264 -pix_fmt yuv420p -c:a copy ${metaArgs} -movflags +faststart "${outPath}" 2>"${stderrFile}"`;
+            try {
+              execSync(cmd, { timeout: 180000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+            } catch (e: any) {
+              // Retry without audio copy (source may have no audio)
+              const cmd2 = `ffmpeg -y -i "${inputPath}" -vf "${overlayFilter}" -c:v libx264 -pix_fmt yuv420p -an ${metaArgs} -movflags +faststart "${outPath}" 2>"${stderrFile}"`;
+              try { execSync(cmd2, { timeout: 180000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 }); }
+              catch (e2: any) {
+                let tail = "";
+                try { tail = fs.readFileSync(stderrFile, "utf8").slice(-1000); } catch {}
+                return `Disclosure overlay failed: ${(e2?.message || String(e2)).slice(0, 200)}. ffmpeg_tail: ${tail}`;
+              }
+            }
+          } else {
+            // Metadata-only pass, no re-encode.
+            const cmd = `ffmpeg -y -i "${inputPath}" -c copy ${metaArgs} "${outPath}" 2>"${stderrFile}"`;
+            try {
+              execSync(cmd, { timeout: 60000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+            } catch (e: any) {
+              let tail = "";
+              try { tail = fs.readFileSync(stderrFile, "utf8").slice(-1000); } catch {}
+              return `Disclosure metadata pass failed: ${(e?.message || String(e)).slice(0, 200)}. ffmpeg_tail: ${tail}`;
+            }
+          }
+
+          if (!fs.existsSync(outPath)) return "AI disclosure pass completed but output not found.";
+          const outBuf = fs.readFileSync(outPath);
+          const b64 = outBuf.toString("base64");
+          try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+
+          return `[Video with AI disclosure${visibleOverlay ? " + visible bug" : ""}] data:video/mp4;base64,${b64}`;
+        } catch (err: any) {
+          return `AI disclosure failed: ${err?.message || String(err)}`;
         }
       }
 
@@ -3856,7 +3989,8 @@ EXECUTE THIS PIPELINE step by step, one tool per step:
 4. Call stitch_media to concatenate all scene videos in order.
 5. ${toolInput.include_subtitles !== false ? "Call add_subtitles on the stitched video (style=tiktok)." : "Skip subtitles."}
 6. ${toolInput.include_title_card !== false ? `Call add_title_cards with text='${seriesName} — Episode ${episodeNumber}' and position=intro.` : "Skip title card."}
-7. Return the final data URI to the user.
+7. ${toolInput.legal_disclosure !== false ? "Call apply_ai_disclosure as the final step (embeds SB 942 / EU AI Act metadata + 2s visible bug)." : "Skip legal disclosure (NOT recommended for commercial use)."}
+8. Return the final data URI to the user.
 
 Start with step 1 now.`;
       }
@@ -3985,6 +4119,7 @@ Start with step 1 now.`;
       "add_subtitles",
       "add_title_cards",
       "reframe_vertical",
+      "apply_ai_disclosure",
     ]);
     if (workspaceEnabled && MEDIA_TOOLS.has(toolName) && typeof __finalResult === "string") {
       try {
@@ -4006,6 +4141,7 @@ Start with step 1 now.`;
             add_subtitles: "mp4",
             add_title_cards: "mp4",
             reframe_vertical: "mp4",
+            apply_ai_disclosure: "mp4",
           };
           // If result looks like an audio data URI, prefer that extension
           let ext = extMap[toolName] || "bin";
@@ -5091,7 +5227,8 @@ You have these tools available RIGHT NOW:
 - stitch_media → combine multiple video/audio clips into one file via ffmpeg
 - reframe_vertical → convert any video to vertical 9:16 (smart crop or blurred-bg fit) for ReelShort/TikTok publishing
 - add_subtitles → auto-generated burned-in subtitles (TikTok/Reels styles, optional translation)
-- add_title_cards → intro or outro title card with custom text/colors
+- add_title_cards → intro or outro title card with custom text/colors (auto-adds SB 942 / EU AI Act disclosure)
+- apply_ai_disclosure → final compliance pass: embed SB 942 / EU AI Act / YouTube disclosure metadata + optional visible bug
 - series_bible → create/update/recall the canonical reference for a multi-episode series
 - produce_episode → MASTER: full pipeline from script to ready-to-publish vertical episode
 
