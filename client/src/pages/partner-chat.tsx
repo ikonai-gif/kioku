@@ -15,7 +15,7 @@ import { CapabilityCards } from "@/components/CapabilityCards";
 import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
 import { ActionPanel } from "@/components/ActionPanel";
 import { ActionPanelToggle } from "@/components/ActionPanelToggle";
-import { InboxPanel } from "@/components/InboxPanel";
+import { InboxPanel, type InboxFullMessage } from "@/components/InboxPanel";
 import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
 import { DailyBriefCard, isDailyBriefMessage } from "@/components/DailyBriefCard";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1847,6 +1847,7 @@ export default function PartnerChat() {
   const [showActionPanel, setShowActionPanel] = useState(false);
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
   const [showInboxPanel, setShowInboxPanel] = useState(false);
+  const [activeInboxMessage, setActiveInboxMessage] = useState<InboxFullMessage | null>(null);
   const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
   const isMobile = useIsMobile();
 
@@ -2237,6 +2238,28 @@ export default function PartnerChat() {
       }
     }
 
+    // If user has an email expanded in the Inbox panel, inject it as visible
+    // context so Luca knows what "это письмо" / "this email" refers to.
+    if (activeInboxMessage) {
+      const m = activeInboxMessage;
+      const bodyTrim = (m.body || m.snippet || "").slice(0, 4000);
+      const inboxBlock = [
+        "[ACTIVE INBOX MESSAGE — user is currently viewing this email in the side panel]",
+        `Account: ${m.account}`,
+        `Message-ID: ${m.id}`,
+        `From: ${m.from}`,
+        `Subject: ${m.subject}`,
+        `Date: ${m.date}`,
+        "",
+        "--- BODY ---",
+        bodyTrim,
+        "--- END ---",
+        "",
+        "When the user says 'это письмо' / 'this email' / 'переведи' / 'ответь' — they mean THIS message above. Use inbox_read tool only if the body looks truncated and you need more.",
+      ].join("\n");
+      messageContent = `${inboxBlock}\n\n${messageContent}`;
+    }
+
     sendMutation.mutate({
       agentId: null,
       agentName: user?.name || "You",
@@ -2244,7 +2267,7 @@ export default function PartnerChat() {
       content: messageContent,
       isDecision: false,
     });
-  }, [input, partnerRoomId, user, imageBase64, attachedFileName, fileExtractedText]);
+  }, [input, partnerRoomId, user, imageBase64, attachedFileName, fileExtractedText, activeInboxMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -3269,6 +3292,30 @@ export default function PartnerChat() {
             )}
           </AnimatePresence>
 
+          {/* Active inbox-message context badge */}
+          {activeInboxMessage && (
+            <div
+              className="flex items-center gap-2 px-3 py-1.5 mx-1 mb-1.5 rounded-lg text-[11px]"
+              style={{
+                background: "rgba(201,163,64,0.08)",
+                border: "1px solid rgba(201,163,64,0.25)",
+                color: "rgba(201,163,64,0.95)",
+              }}
+            >
+              <Inbox className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate flex-1">
+                Luca видит открытое письмо: {activeInboxMessage.subject || "(без темы)"}
+              </span>
+              <button
+                onClick={() => setActiveInboxMessage(null)}
+                className="flex-shrink-0 hover:opacity-70 transition-opacity"
+                title="Открепить"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
           {/* Text Input */}
           <textarea
             ref={inputRef}
@@ -3425,6 +3472,7 @@ export default function PartnerChat() {
           show={true}
           onClose={() => setShowInboxPanel(false)}
           isMobile={false}
+          onActiveMessageChange={setActiveInboxMessage}
           onReplyViaLuca={(msg) => {
             const draft = `Ответь на это письмо в моём аккаунте ${msg.account}.\n\nОт: ${msg.from}\nТема: ${msg.subject}\nID: ${msg.id}\n\nСниппет: ${msg.snippet}\n\nТвой черновик ответа:`;
             setInput((prev) => (prev ? `${prev}\n\n${draft}` : draft));
@@ -3440,6 +3488,7 @@ export default function PartnerChat() {
         show={showInboxPanel}
         onClose={() => setShowInboxPanel(false)}
         isMobile={true}
+        onActiveMessageChange={setActiveInboxMessage}
         onReplyViaLuca={(msg) => {
           const draft = `Ответь на это письмо в моём аккаунте ${msg.account}.\n\nОт: ${msg.from}\nТема: ${msg.subject}\nID: ${msg.id}\n\nСниппет: ${msg.snippet}\n\nТвой черновик ответа:`;
           setInput((prev) => (prev ? `${prev}\n\n${draft}` : draft));

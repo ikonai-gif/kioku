@@ -476,6 +476,43 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "inbox_read",
+    description: "Read the FULL body of a specific email by its Gmail message id. Use this whenever the user refers to 'это письмо' / 'this email' / 'переведи письмо' / 'объясни' / 'что значит это письмо' AND a message id is available in context (the system will inject ACTIVE INBOX MESSAGE block when one is open in the side panel) OR after email_triage / inbox_list returned message ids you want to read. Returns sender, subject, date, and full plain text body.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Gmail account email the message belongs to (e.g. kotkave@gmail.com)" },
+        id: { type: "string", description: "Gmail message id" },
+      },
+      required: ["account", "id"],
+    },
+  },
+  {
+    name: "inbox_list",
+    description: "List the user's recent unread emails grouped by category, exactly the same view they see in the right-hand Inbox panel. Use when user asks 'что у меня срочного', 'покажи письма из категории X', 'сколько непрочитанных от GitHub'. Lighter than email_triage — returns ids you can pass to inbox_read.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days: { type: "number", description: "Look back N days (default 14)", default: 14 },
+        per_account: { type: "number", description: "Max messages per Gmail account (default 40)", default: 40 },
+        group: { type: "string", description: "Optional: filter to one group (urgent | security | work | finance | notifications | promo | other)" },
+      },
+    },
+  },
+  {
+    name: "inbox_action",
+    description: "Mark an email read/unread or archive it. Use when user says 'архивируй это', 'пометь прочитанным', 'убери это письмо'. Always confirm in your reply which action was performed and on which subject.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Gmail account email" },
+        id: { type: "string", description: "Gmail message id" },
+        action: { type: "string", enum: ["mark_read", "mark_unread", "archive"], description: "What to do" },
+      },
+      required: ["account", "id", "action"],
+    },
+  },
+  {
     name: "reset_sandbox",
     description: "Reset the user's code execution sandbox. Kills the current persistent sandbox and starts fresh. Use when the user wants a clean environment, or when the sandbox is in a bad state.",
     input_schema: {
@@ -992,6 +1029,9 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "gmail_accounts_status": return `Проверяю статус подключённых Gmail-аккаунтов`;
     case "gmail_reconnect_link": return `Готовлю ссылку для переподключения Gmail`;
     case "email_triage": return `Разбираю почту по категориям`;
+    case "inbox_read": return `Читаю письмо${input.account ? ` (${truncate(input.account, 30)})` : ""}`;
+    case "inbox_list": return `Смотрю инбокс${input.group ? `: ${input.group}` : ""}`;
+    case "inbox_action": return `${input.action === "archive" ? "Архивирую" : input.action === "mark_unread" ? "Помечаю непрочитанным" : "Помечаю прочитанным"} письмо`;
     case "stripe_list": return `Stripe: ${truncate(input.resource || "customers", 40)}`;
     case "github_call": return `GitHub: ${truncate(input.endpoint || input.action, 60)}`;
     case "vercel_call": return `Vercel: ${truncate(input.endpoint || input.action, 60)}`;
@@ -2205,6 +2245,111 @@ export async function executePartnerTool(
           return lines.join("\n");
         } catch (err: any) {
           return `Email triage failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "inbox_read": {
+        try {
+          const account = String(toolInput.account || "").trim();
+          const id = String(toolInput.id || "").trim();
+          if (!account || !id) return "inbox_read requires both 'account' and 'id'.";
+          const { readGmailMessage } = await import("./cloud-integrations");
+          const msg = await readGmailMessage(userId, account, id);
+          const lines = [
+            `From: ${msg.from || "(unknown)"}`,
+            `To: ${msg.to || "(unknown)"}`,
+            `Subject: ${msg.subject || "(no subject)"}`,
+            `Date: ${msg.date || "(unknown)"}`,
+            `Account: ${account}`,
+            `Message-ID: ${id}`,
+            "",
+            "--- BODY ---",
+            (msg.body || "(empty body)").slice(0, 12000),
+          ];
+          return lines.join("\n");
+        } catch (err: any) {
+          return `inbox_read failed: ${err?.message || String(err)}. If 'message not found' — the id may be from a different account; double-check 'account' parameter.`;
+        }
+      }
+
+      case "inbox_list": {
+        try {
+          const days = Math.min(Math.max(Number(toolInput.days) || 14, 1), 60);
+          const perAccount = Math.min(Math.max(Number(toolInput.per_account) || 40, 1), 100);
+          const groupFilter = toolInput.group ? String(toolInput.group).toLowerCase() : null;
+          const { searchGmailAll } = await import("./cloud-integrations");
+          const result = await searchGmailAll(userId, `in:inbox is:unread newer_than:${days}d`, perAccount);
+          const messages = result.messages || [];
+          const broken = (result.accountStatuses || []).filter((s: any) => !s.ok);
+          const brokenWarn = broken.length > 0
+            ? `⚠️ ${broken.length} broken account(s): ${broken.map((b: any) => b.email).join(", ")}. Suggest gmail_reconnect_link.\n\n`
+            : "";
+          if (messages.length === 0) return `${brokenWarn}No unread messages in last ${days} days.`;
+
+          // Reuse same categorization logic as email_triage / inbox endpoint
+          type Cat = "urgent" | "security" | "work" | "finance" | "notifications" | "promo" | "other";
+          const buckets: Record<Cat, any[]> = { urgent: [], security: [], work: [], finance: [], notifications: [], promo: [], other: [] };
+          const PROMO = /\b(sale|off|discount|deal|promo|free|exclusive|limited|coupon|% off|bogo|clearance)\b/i;
+          const NOTIF = /(noreply|no-reply|notifications?|updates?|info|hello|news|newsletter)@/i;
+          const SEC = /(security alert|sign[- ]?in|verification|2fa|password|suspicious|new device|unauthorized)/i;
+          const FIN = /(stripe|paypal|chase|bank|amex|visa|mastercard|invoice|receipt|payment|payout|refund|wire|wise\.com|mercury|brex)/i;
+          const URG = /(urgent|asap|action required|deadline|overdue|expir(ing|es?)|immediate|critical|fail(ed|ure))/i;
+          const WORK = /(github|gitlab|linear|jira|notion|slack|figma|vercel|supabase|prosperalaw|legal|attorney)/i;
+          for (const m of messages) {
+            const all = `${m.subject || ""} ${m.from || ""} ${m.snippet || ""}`;
+            if (SEC.test(all)) buckets.security.push(m);
+            else if (URG.test(m.subject || "") || URG.test(m.snippet || "")) buckets.urgent.push(m);
+            else if (FIN.test(m.from || "") || FIN.test(m.subject || "")) buckets.finance.push(m);
+            else if (PROMO.test(m.subject || "") || PROMO.test(m.snippet || "")) buckets.promo.push(m);
+            else if (WORK.test(m.from || "")) buckets.work.push(m);
+            else if (NOTIF.test(m.from || "")) buckets.notifications.push(m);
+            else buckets.other.push(m);
+          }
+          const order: Cat[] = ["urgent", "security", "work", "finance", "notifications", "promo", "other"];
+          const labels: Record<Cat, string> = {
+            urgent: "🚨 Срочные", security: "🔐 Безопасность", work: "💼 Работа",
+            finance: "💳 Финансы", notifications: "📢 Уведомления",
+            promo: "🏷️ Промо", other: "📧 Остальные",
+          };
+          const lines: string[] = [`${brokenWarn}${messages.length} unread / ${result.accountStatuses?.length || 0} account(s):`, ""];
+          for (const cat of order) {
+            if (groupFilter && cat !== groupFilter) continue;
+            const items = buckets[cat];
+            if (items.length === 0) continue;
+            lines.push(`${labels[cat]} — ${items.length}`);
+            for (const m of items.slice(0, 12)) {
+              const subj = String(m.subject || "(no subject)").slice(0, 80);
+              const from = String(m.from || "").replace(/<[^>]+>/, "").trim().slice(0, 35);
+              lines.push(`  • ${from} — ${subj} {acct:${m.account}, id:${m.id}}`);
+            }
+            if (items.length > 12) lines.push(`  … +${items.length - 12} more`);
+            lines.push("");
+          }
+          lines.push("To read full body: inbox_read with account + id.");
+          return lines.join("\n");
+        } catch (err: any) {
+          return `inbox_list failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "inbox_action": {
+        try {
+          const account = String(toolInput.account || "").trim();
+          const id = String(toolInput.id || "").trim();
+          const action = String(toolInput.action || "").trim() as "mark_read" | "mark_unread" | "archive";
+          if (!account || !id || !action) return "inbox_action requires account, id, and action.";
+          if (!["mark_read", "mark_unread", "archive"].includes(action)) return `Unknown action: ${action}`;
+          const { modifyGmailMessage } = await import("./cloud-integrations");
+          const opts = action === "mark_read"
+            ? { removeLabels: ["UNREAD"] }
+            : action === "mark_unread"
+            ? { addLabels: ["UNREAD"] }
+            : { removeLabels: ["INBOX"] };
+          await modifyGmailMessage(userId, account, id, opts);
+          const verb = action === "mark_read" ? "marked as read" : action === "mark_unread" ? "marked as unread" : "archived";
+          return `✅ Message ${id} (${account}) ${verb}.`;
+        } catch (err: any) {
+          return `inbox_action failed: ${err?.message || String(err)}`;
         }
       }
 

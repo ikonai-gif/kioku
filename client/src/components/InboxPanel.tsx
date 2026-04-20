@@ -58,16 +58,20 @@ interface InboxResponse {
   groups: InboxGroup[];
 }
 
-interface InboxFullMessage extends InboxMessage {
+export interface InboxFullMessage extends InboxMessage {
   body?: string;
   html?: string;
+  to?: string;
 }
+
+export type { InboxMessage };
 
 interface InboxPanelProps {
   show: boolean;
   onClose: () => void;
   isMobile: boolean;
   onReplyViaLuca?: (msg: InboxMessage) => void;
+  onActiveMessageChange?: (msg: InboxFullMessage | null) => void;
 }
 
 // ----- Color palette per group -----
@@ -190,7 +194,7 @@ async function performAction(
 
 // ----- Component -----
 
-export function InboxPanel({ show, onClose, isMobile, onReplyViaLuca }: InboxPanelProps) {
+export function InboxPanel({ show, onClose, isMobile, onReplyViaLuca, onActiveMessageChange }: InboxPanelProps) {
   const qc = useQueryClient();
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [expandedMsg, setExpandedMsg] = useState<string | null>(null); // `${account}|${id}`
@@ -229,6 +233,17 @@ export function InboxPanel({ show, onClose, isMobile, onReplyViaLuca }: InboxPan
     enabled: !!expandedMsg,
     staleTime: 60_000,
   });
+
+  // Notify parent when the active (expanded) message changes — used to inject
+  // "ACTIVE INBOX MESSAGE" context into Luca chat sends.
+  useEffect(() => {
+    if (!onActiveMessageChange) return;
+    if (!expandedMsg) {
+      onActiveMessageChange(null);
+      return;
+    }
+    if (messageQ.data) onActiveMessageChange(messageQ.data);
+  }, [expandedMsg, messageQ.data, onActiveMessageChange]);
 
   const actionM = useMutation({
     mutationFn: async (args: {
