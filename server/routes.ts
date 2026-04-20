@@ -4303,6 +4303,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // POST /api/partner/inbox/reply { account, id, body } — send a reply within thread
+  // Returns { confirmation_required: true, token, preview } for the UI confirm-modal.
+  // Actual send happens via POST /api/partner/inbox/confirm/:token { action: "confirm" }.
   app.post("/api/partner/inbox/reply", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -4310,29 +4312,98 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!account || !id || !body || typeof body !== "string") {
       return res.status(400).json({ error: "account, id, body (string) required" });
     }
-    try {
-      const { sendGmailReply } = await import("./cloud-integrations");
-      const result = await sendGmailReply(userId, account, id, body);
-      res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
+    const { createPending } = await import("./send-confirm");
+    const { token, expiresAt } = createPending({ kind: "send_reply", userId, account, messageId: id, body });
+    res.json({
+      confirmation_required: true,
+      token,
+      expiresAt,
+      preview: {
+        kind: "reply",
+        account,
+        message_id: id,
+        body_preview: body.slice(0, 500),
+      },
+    });
   }));
 
-  // POST /api/partner/inbox/send { account, to, subject, body, cc? } — brand-new email
+  // POST /api/partner/inbox/send { account, to, subject, body, cc?, bcc? } — brand-new email
+  // Returns { confirmation_required: true, token, preview } for the UI confirm-modal.
   app.post("/api/partner/inbox/send", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { account, to, subject, body, cc } = req.body || {};
+    const { account, to, subject, body, cc, bcc } = req.body || {};
     if (!account || !to || !subject || !body) {
       return res.status(400).json({ error: "account, to, subject, body required" });
     }
+    const { createPending } = await import("./send-confirm");
+    const { token, expiresAt } = createPending({ kind: "send_new", userId, account, to, subject, body, cc, bcc });
+    res.json({
+      confirmation_required: true,
+      token,
+      expiresAt,
+      preview: {
+        kind: "new",
+        account,
+        to,
+        subject,
+        cc: cc || null,
+        bcc: bcc || null,
+        body_preview: body.slice(0, 500),
+      },
+    });
+  }));
+
+  // POST /api/partner/inbox/confirm/:token { action: "confirm" | "cancel" }
+  // Confirms or cancels a pending email send.
+  app.post("/api/partner/inbox/confirm/:token", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { token } = req.params;
+    const { action } = req.body || {};
+    if (!token) return res.status(400).json({ error: "token required" });
+    if (action !== "confirm" && action !== "cancel") {
+      return res.status(400).json({ error: 'action must be "confirm" or "cancel"' });
+    }
     try {
-      const { sendGmailNew } = await import("./cloud-integrations");
-      const result = await sendGmailNew(userId, account, to, subject, body, cc);
-      res.json(result);
+      const { consumePending } = await import("./send-confirm");
+      const entry = consumePending(token);
+      // Verify the token belongs to the authenticated user
+      if (entry.action.userId !== userId) {
+        return res.status(403).json({ error: "Token does not belong to this user" });
+      }
+      if (action === "cancel") {
+        logger.info({ source: "send-confirm", kind: entry.action.kind, userId }, "Email send cancelled by user");
+        return res.json({ ok: true, status: "cancelled" });
+      }
+      // action === "confirm": execute the actual send
+      if (entry.action.kind === "send_reply") {
+        const { sendGmailReply } = await import("./cloud-integrations");
+        const result = await sendGmailReply(
+          userId,
+          entry.action.account,
+          entry.action.messageId,
+          entry.action.body,
+        );
+        logger.info({ source: "send-confirm", kind: "send_reply", userId, sent_id: result.sent_id }, "Email reply confirmed and sent");
+        return res.json({ ok: true, status: "sent", ...result });
+      } else {
+        const { sendGmailNew } = await import("./cloud-integrations");
+        const result = await sendGmailNew(
+          userId,
+          entry.action.account,
+          entry.action.to,
+          entry.action.subject,
+          entry.action.body,
+          entry.action.cc,
+          entry.action.bcc,
+        );
+        logger.info({ source: "send-confirm", kind: "send_new", userId, sent_id: result.sent_id }, "New email confirmed and sent");
+        return res.json({ ok: true, status: "sent", ...result });
+      }
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      const status = (err as any).status || 500;
+      res.status(status).json({ error: err.message });
     }
   }));
 

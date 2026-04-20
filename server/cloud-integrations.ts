@@ -809,6 +809,7 @@ export async function sendGmailNew(
   subject: string,
   bodyText: string,
   cc?: string,
+  bcc?: string,
 ): Promise<{ ok: true; sent_id: string; thread_id: string }> {
   const accounts = await listGmailAccounts(userId);
   const acct = accounts.find(a => a.email.toLowerCase() === accountEmail.toLowerCase());
@@ -820,6 +821,7 @@ export async function sendGmailNew(
     `To: ${to}`,
   ];
   if (cc) lines.push(`Cc: ${cc}`);
+  if (bcc) lines.push(`Bcc: ${bcc}`);
   lines.push(
     `Subject: ${subject}`,
     "MIME-Version: 1.0",

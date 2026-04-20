@@ -344,3 +344,94 @@ describe("sendGmailReply", () => {
     expect(decoded).toContain("Subject: Re: Already prefixed");
   });
 });
+
+// ── sendGmailNew — bcc field ──────────────────────────────────────────────────
+
+describe("sendGmailNew — bcc", () => {
+  it("includes Bcc header when bcc is provided", async () => {
+    const { sendGmailNew } = await import("../../server/cloud-integrations");
+    setupDbForConnectedAccount();
+
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchResponse({ id: "sent-bcc-001", threadId: "thread-bcc-001" }) as unknown as Response
+    );
+
+    await sendGmailNew(
+      1,
+      "test@example.com",
+      "to@example.com",
+      "Subject",
+      "Body text",
+      undefined,          // cc — not provided
+      "x@y.com"           // bcc
+    );
+
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(opts.body as string);
+    const decoded = Buffer.from(
+      body.raw.replace(/-/g, "+").replace(/_/g, "/"),
+      "base64"
+    ).toString("utf8");
+
+    expect(decoded).toContain("Bcc: x@y.com");
+    // Should not leak bcc in visible headers
+    expect(decoded).toContain("To: to@example.com");
+    // cc header should be absent when not provided
+    expect(decoded).not.toContain("Cc:");
+  });
+
+  it("includes both Cc and Bcc headers when both are provided", async () => {
+    const { sendGmailNew } = await import("../../server/cloud-integrations");
+    setupDbForConnectedAccount();
+
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchResponse({ id: "sent-cc-bcc", threadId: "thread-cc-bcc" }) as unknown as Response
+    );
+
+    await sendGmailNew(
+      1,
+      "test@example.com",
+      "to@example.com",
+      "Subject",
+      "Body",
+      "cc@example.com",
+      "bcc@example.com"
+    );
+
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(opts.body as string);
+    const decoded = Buffer.from(
+      body.raw.replace(/-/g, "+").replace(/_/g, "/"),
+      "base64"
+    ).toString("utf8");
+
+    expect(decoded).toContain("Cc: cc@example.com");
+    expect(decoded).toContain("Bcc: bcc@example.com");
+  });
+
+  it("does not include Bcc header when bcc is not provided", async () => {
+    const { sendGmailNew } = await import("../../server/cloud-integrations");
+    setupDbForConnectedAccount();
+
+    fetchSpy.mockResolvedValueOnce(
+      mockFetchResponse({ id: "sent-no-bcc", threadId: "thread-no-bcc" }) as unknown as Response
+    );
+
+    await sendGmailNew(
+      1,
+      "test@example.com",
+      "to@example.com",
+      "Subject",
+      "Body"
+    );
+
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(opts.body as string);
+    const decoded = Buffer.from(
+      body.raw.replace(/-/g, "+").replace(/_/g, "/"),
+      "base64"
+    ).toString("utf8");
+
+    expect(decoded).not.toContain("Bcc:");
+  });
+});

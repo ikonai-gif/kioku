@@ -2481,9 +2481,27 @@ export async function executePartnerTool(
           const messageId = String(toolInput.message_id || "").trim();
           const body = String(toolInput.body || "").trim();
           if (!account || !messageId || !body) return "send_email_reply requires 'account', 'message_id', and 'body'.";
-          const { sendGmailReply } = await import("./cloud-integrations");
-          const result = await sendGmailReply(userId, account, messageId, body);
-          return `✅ Reply sent. Sent message ID: ${result.sent_id}, Thread ID: ${result.thread_id}`;
+          // Create a pending confirmation token — actual send happens after UI owner approves.
+          const { createPending } = await import("./send-confirm");
+          const { token, expiresAt } = createPending({ kind: "send_reply", userId, account, messageId, body });
+          // Broadcast a dedicated WS event so the UI can show the confirm-modal.
+          if (roomId) {
+            try {
+              broadcastToRoom(roomId, {
+                type: "email_confirm_required",
+                token,
+                expiresAt,
+                preview: {
+                  kind: "reply",
+                  account,
+                  message_id: messageId,
+                  body_preview: body.slice(0, 500),
+                },
+              });
+            } catch { /* best-effort */ }
+          }
+          // Return a string to Luca indicating the send is pending owner approval.
+          return `⏳ Reply is pending owner confirmation in the UI (token: ${token}). The email will be sent once the owner clicks "Send" in the confirmation modal. Do NOT call this tool again for the same email.`;
         } catch (err: any) {
           return `send_email_reply failed: ${err?.message || String(err)}`;
         }
@@ -2496,10 +2514,32 @@ export async function executePartnerTool(
           const subject = String(toolInput.subject || "").trim();
           const body = String(toolInput.body || "").trim();
           const cc = toolInput.cc ? String(toolInput.cc).trim() : undefined;
+          const bcc = toolInput.bcc ? String(toolInput.bcc).trim() : undefined;
           if (!account || !to || !subject || !body) return "send_new_email requires 'account', 'to', 'subject', and 'body'.";
-          const { sendGmailNew } = await import("./cloud-integrations");
-          const result = await sendGmailNew(userId, account, to, subject, body, cc);
-          return `✅ Email sent to ${to}. Sent message ID: ${result.sent_id}, Thread ID: ${result.thread_id}`;
+          // Create a pending confirmation token — actual send happens after UI owner approves.
+          const { createPending } = await import("./send-confirm");
+          const { token, expiresAt } = createPending({ kind: "send_new", userId, account, to, subject, body, cc, bcc });
+          // Broadcast a dedicated WS event so the UI can show the confirm-modal.
+          if (roomId) {
+            try {
+              broadcastToRoom(roomId, {
+                type: "email_confirm_required",
+                token,
+                expiresAt,
+                preview: {
+                  kind: "new",
+                  account,
+                  to,
+                  subject,
+                  cc: cc || null,
+                  bcc: bcc || null,
+                  body_preview: body.slice(0, 500),
+                },
+              });
+            } catch { /* best-effort */ }
+          }
+          // Return a string to Luca indicating the send is pending owner approval.
+          return `⏳ Email to ${to} is pending owner confirmation in the UI (token: ${token}). The email will be sent once the owner clicks "Send" in the confirmation modal. Do NOT call this tool again for the same email.`;
         } catch (err: any) {
           return `send_new_email failed: ${err?.message || String(err)}`;
         }
