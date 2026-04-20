@@ -288,8 +288,8 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
   `);
-  // Set owner role for user ID 10 (idempotent)
-  await pool.query(`UPDATE users SET role = 'owner' WHERE id = 10 AND role != 'owner'`);
+  // Set owner role for user ID 10 (idempotent) — only promotes 'user', won't override 'blocked'/'owner'
+  await pool.query(`UPDATE users SET role = 'owner' WHERE id = 10 AND role = 'user'`);
 
   // Phase 3: Usage metering — per-user per-month tracking
   await pool.query(`

@@ -253,9 +253,17 @@ async function getApiKeyUser(req: any): Promise<number | null> {
 }
 
 // Unified auth — session token OR API key OR master key
+// Returns null if user is blocked.
 async function getUser(req: any): Promise<number | null> {
   const sessionUser = getSessionUser(req);
-  if (sessionUser !== null) return sessionUser;
+  if (sessionUser !== null) {
+    // Reject blocked users
+    try {
+      const r = await pool.query(`SELECT role FROM users WHERE id = $1`, [sessionUser]);
+      if (r.rows[0]?.role === 'blocked') return null;
+    } catch { /* DB hiccup — fall through, don't lock everyone out */ }
+    return sessionUser;
+  }
   // Master key grants admin access (owner user 10)
   const masterKey = process.env.KIOKU_MASTER_KEY;
   if (masterKey) {
@@ -340,6 +348,207 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "query failed" });
     }
+  }));
+
+  // ── Admin: list all users (master key only) ──────────────────
+  app.get("/api/admin/users", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const { pool } = await import("./storage");
+      const r = await pool.query(`
+        SELECT
+          u.id, u.email, u.name, u.role, u.plan, u.created_at,
+          (SELECT COUNT(*)::int FROM agents WHERE user_id = u.id) AS agents,
+          (SELECT COUNT(*)::int FROM rooms WHERE user_id = u.id) AS rooms,
+          (SELECT COUNT(*)::int FROM memories WHERE user_id = u.id) AS memories,
+          (SELECT COUNT(*)::int FROM user_integrations WHERE user_id = u.id) AS integrations
+        FROM users u
+        ORDER BY u.id ASC
+      `);
+      res.json({ count: r.rows.length, users: r.rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "query failed" });
+    }
+  }));
+
+  // ── Admin: set user role (master key only) ───────────────────
+  app.post("/api/admin/set-role", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const { userId, role } = req.body || {};
+    if (!userId || !role) return res.status(400).json({ error: "userId and role required" });
+    if (!['user', 'owner', 'admin', 'blocked'].includes(role)) {
+      return res.status(400).json({ error: "role must be one of: user, owner, admin, blocked" });
+    }
+    try {
+      const { pool } = await import("./storage");
+      const r = await pool.query(
+        `UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, role`,
+        [role, userId]
+      );
+      if (r.rows.length === 0) return res.status(404).json({ error: "User not found" });
+      res.json({ ok: true, user: r.rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "update failed" });
+    }
+  }));
+
+  // ── Admin: merge users (master key only) ─────────────────────
+  // Moves ALL data from srcUserId → dstUserId, then optionally blocks src.
+  // Includes Postgres rows AND Supabase Storage files (rewrites <srcId>/* → <dstId>/*).
+  // Use ?dryRun=true to preview counts without modifying.
+  app.post("/api/admin/merge-users", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const { srcUserId, dstUserId, blockSrc, dryRun } = req.body || {};
+    if (!srcUserId || !dstUserId) return res.status(400).json({ error: "srcUserId and dstUserId required" });
+    if (srcUserId === dstUserId) return res.status(400).json({ error: "src and dst must differ" });
+    const src = parseInt(String(srcUserId), 10);
+    const dst = parseInt(String(dstUserId), 10);
+    if (Number.isNaN(src) || Number.isNaN(dst)) return res.status(400).json({ error: "invalid ids" });
+
+    const { pool } = await import("./storage");
+    const summary: Record<string, any> = { srcUserId: src, dstUserId: dst, dryRun: !!dryRun, tables: {}, storage: {} };
+
+    // Verify both users exist
+    const usersCheck = await pool.query(`SELECT id, email FROM users WHERE id = ANY($1::int[])`, [[src, dst]]);
+    if (usersCheck.rows.length !== 2) return res.status(404).json({ error: "src or dst user not found", found: usersCheck.rows });
+    summary.users = usersCheck.rows;
+
+    // Tables to remap user_id (excluding `users` itself and FK-cascaded children of rooms)
+    const remapTables = [
+      'agents', 'rooms', 'flows', 'memories', 'memory_links', 'logs',
+      'kioku_deliberation_sessions', 'kioku_agent_tokens', 'kioku_webhooks',
+      'scheduled_tasks', 'knowledge_domains', 'aesthetic_preferences',
+      'agent_emotional_state', 'agent_relationships', 'usage_tracking'
+    ];
+
+    const client = await pool.connect();
+    try {
+      if (!dryRun) await client.query('BEGIN');
+
+      // user_integrations is special: has UNIQUE(user_id, provider) — must dedupe
+      const intResult = await client.query(
+        `SELECT id, provider, email FROM user_integrations WHERE user_id = $1`, [src]
+      );
+      let intMoved = 0, intSkipped = 0;
+      for (const row of intResult.rows) {
+        // If dst already has this provider, skip (keep dst's existing)
+        const exists = await client.query(
+          `SELECT id FROM user_integrations WHERE user_id = $1 AND provider = $2`,
+          [dst, row.provider]
+        );
+        if (exists.rows.length > 0) {
+          intSkipped++;
+          continue;
+        }
+        if (!dryRun) {
+          await client.query(`UPDATE user_integrations SET user_id = $1 WHERE id = $2`, [dst, row.id]);
+        }
+        intMoved++;
+      }
+      summary.tables.user_integrations = { moved: intMoved, skipped_duplicates: intSkipped };
+
+      // Generic tables: just remap user_id
+      for (const table of remapTables) {
+        try {
+          if (dryRun) {
+            const cnt = await client.query(`SELECT COUNT(*)::int AS c FROM ${table} WHERE user_id = $1`, [src]);
+            summary.tables[table] = { would_move: cnt.rows[0].c };
+          } else {
+            const r = await client.query(`UPDATE ${table} SET user_id = $1 WHERE user_id = $2`, [dst, src]);
+            summary.tables[table] = { moved: r.rowCount };
+          }
+        } catch (e: any) {
+          // Table might not exist or column might differ — record and continue
+          summary.tables[table] = { error: e?.message };
+        }
+      }
+
+      if (!dryRun) await client.query('COMMIT');
+    } catch (e: any) {
+      if (!dryRun) await client.query('ROLLBACK');
+      client.release();
+      return res.status(500).json({ error: e?.message || "merge failed", partial: summary });
+    }
+    client.release();
+
+    // ── Supabase Storage: rewrite <src>/* prefixes → <dst>/* (raw HTTP) ──
+    try {
+      const sbUrl = process.env.SUPABASE_URL;
+      const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const bucket = 'luca-workspace';
+      if (sbUrl && sbKey) {
+        const sbHeaders = { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json' };
+        async function sbList(prefix: string): Promise<any[]> {
+          const r = await fetch(`${sbUrl}/storage/v1/object/list/${bucket}`, {
+            method: 'POST',
+            headers: sbHeaders,
+            body: JSON.stringify({ prefix, limit: 1000, sortBy: { column: 'name', order: 'asc' } }),
+          });
+          if (!r.ok) throw new Error(`list ${prefix} → ${r.status}: ${(await r.text()).slice(0, 200)}`);
+          return await r.json();
+        }
+        async function sbMove(from: string, to: string): Promise<{ ok: boolean; err?: string }> {
+          const r = await fetch(`${sbUrl}/storage/v1/object/move`, {
+            method: 'POST',
+            headers: sbHeaders,
+            body: JSON.stringify({ bucketId: bucket, sourceKey: from, destinationKey: to }),
+          });
+          if (!r.ok) return { ok: false, err: `${r.status}: ${(await r.text()).slice(0, 200)}` };
+          return { ok: true };
+        }
+        // Recursively gather all real file keys under <src>/
+        const allFiles: string[] = [];
+        async function walk(prefix: string) {
+          const items = await sbList(prefix);
+          for (const item of items) {
+            const path = prefix ? `${prefix}/${item.name}` : item.name;
+            if (item && item.id && item.metadata) {
+              allFiles.push(path);
+            } else if (item && typeof item.name === 'string' && item.name.length > 0) {
+              await walk(path);
+            }
+          }
+        }
+        await walk(String(src));
+        summary.storage.found = allFiles.length;
+        if (dryRun) {
+          summary.storage.would_move = allFiles.length;
+          summary.storage.sample = allFiles.slice(0, 5);
+        } else {
+          let moved = 0; const errors: string[] = [];
+          for (const path of allFiles) {
+            const newPath = `${dst}/${path.substring(String(src).length + 1)}`;
+            const r = await sbMove(path, newPath);
+            if (r.ok) moved++;
+            else errors.push(`${path}: ${r.err}`);
+          }
+          summary.storage.moved = moved;
+          if (errors.length) summary.storage.errors = errors.slice(0, 10);
+        }
+      } else {
+        summary.storage.skipped = 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set';
+      }
+    } catch (e: any) {
+      summary.storage.error = e?.message || String(e);
+    }
+
+    // Optionally block src user (set role='blocked', clear api_key)
+    if (!dryRun && blockSrc) {
+      try {
+        await pool.query(`UPDATE users SET role = 'blocked', api_key = NULL WHERE id = $1`, [src]);
+        summary.src_blocked = true;
+      } catch (e: any) {
+        summary.src_block_error = e?.message;
+      }
+    }
+
+    res.json({ ok: true, summary });
   }));
 
   // alias for frontend
