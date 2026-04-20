@@ -378,6 +378,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: probe Gmail for any user (master key only) — bypasses Luca to see real status ──
+  app.get("/api/admin/gmail-probe", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.query.userId || ""), 10);
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    try {
+      const { listGmailAccounts, searchGmailAll } = await import("./cloud-integrations");
+      const accounts = await listGmailAccounts(userId);
+      const result = await searchGmailAll(userId, "in:inbox newer_than:7d", 3);
+      res.json({
+        userId,
+        accounts,
+        accountStatuses: result.accountStatuses,
+        sampleMessages: result.messages.slice(0, 5).map(m => ({
+          account: m.account,
+          subject: m.subject,
+          from: m.from,
+          date: m.date,
+        })),
+        totalSampleMessages: result.messages.length,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "failed", stack: e?.stack });
+    }
+  }));
+
   // ── Admin: list all users (master key only) ──────────────────
   app.get("/api/admin/users", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";
