@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, serial, bigint, boolean, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, bigint, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -325,3 +325,100 @@ export const aestheticPreferences = pgTable("aesthetic_preferences", {
 export const insertAestheticPreferenceSchema = createInsertSchema(aestheticPreferences).omit({ id: true, createdAt: true });
 export type InsertAestheticPreference = z.infer<typeof insertAestheticPreferenceSchema>;
 export type AestheticPreference = typeof aestheticPreferences.$inferSelect;
+
+// ── Meeting Room — Track A (Week 1 schema) ───────────────────────────────────
+// NOTE: room_type column added to existing rooms table via migration SQL only
+
+// Meetings — top-level meeting entity linked to a room
+export const meetings = pgTable("meetings", {
+  id:            uuid("id").primaryKey().defaultRandom(),
+  roomId:        integer("room_id").notNull(),  // FK → rooms.id (INTEGER SERIAL in prod)
+  creatorUserId: integer("creator_user_id").notNull(),
+  state:         varchar("state", { length: 30 }).notNull().default("pending"),
+  createdAt:     timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  endedAt:       timestamp("ended_at", { withTimezone: true }),
+  metadata:      jsonb("metadata").default({}),
+}, (t) => [
+  index("idx_meetings_room_id").on(t.roomId),
+  index("idx_meetings_creator").on(t.creatorUserId),
+  index("idx_meetings_state").on(t.state),
+]);
+
+export const insertMeetingSchema = createInsertSchema(meetings).omit({ id: true, createdAt: true });
+export type InsertMeeting = z.infer<typeof insertMeetingSchema>;
+export type Meeting = typeof meetings.$inferSelect;
+
+// Meeting Participants — agents joining a meeting with a participation mode
+export const meetingParticipants = pgTable("meeting_participants", {
+  id:                uuid("id").primaryKey().defaultRandom(),
+  meetingId:         uuid("meeting_id").notNull(),
+  agentId:           integer("agent_id").notNull(),
+  ownerUserId:       integer("owner_user_id").notNull(),
+  participationMode: varchar("participation_mode", { length: 20 }).notNull().default("approve"),
+  joinedAt:          timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+  leftAt:            timestamp("left_at", { withTimezone: true }),
+}, (t) => [
+  index("idx_mp_meeting_id").on(t.meetingId),
+  index("idx_mp_agent_owner").on(t.agentId, t.ownerUserId),
+]);
+
+export const insertMeetingParticipantSchema = createInsertSchema(meetingParticipants).omit({ id: true, joinedAt: true });
+export type InsertMeetingParticipant = z.infer<typeof insertMeetingParticipantSchema>;
+export type MeetingParticipant = typeof meetingParticipants.$inferSelect;
+
+// Meeting Participant Profiles — per-agent privacy/autonomy settings within a meeting
+export const meetingParticipantProfiles = pgTable("meeting_participant_profiles", {
+  id:              uuid("id").primaryKey().defaultRandom(),
+  meetingId:       uuid("meeting_id").notNull(),
+  agentId:         integer("agent_id").notNull(),
+  allowedTopics:   jsonb("allowed_topics").notNull().default([]),
+  blockedTopics:   jsonb("blocked_topics").notNull().default([]),
+  autonomyLevel:   varchar("autonomy_level", { length: 20 }).notNull().default("propose"),
+  memoryScope:     jsonb("memory_scope").notNull().default({}),
+  carryOverMemory: boolean("carry_over_memory").notNull().default(false),
+  createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("idx_mpp_meeting_agent").on(t.meetingId, t.agentId),
+]);
+
+export const insertMeetingParticipantProfileSchema = createInsertSchema(meetingParticipantProfiles).omit({ id: true, createdAt: true });
+export type InsertMeetingParticipantProfile = z.infer<typeof insertMeetingParticipantProfileSchema>;
+export type MeetingParticipantProfile = typeof meetingParticipantProfiles.$inferSelect;
+
+// Meeting Context — ordered shared/private facts within a meeting (Lamport-like via sequence_number)
+export const meetingContext = pgTable("meeting_context", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  meetingId:      uuid("meeting_id").notNull(),
+  sequenceNumber: bigint("sequence_number", { mode: "number" }).notNull(),
+  content:        text("content").notNull(),
+  authorAgentId:  integer("author_agent_id"),
+  visibility:     varchar("visibility", { length: 20 }).notNull().default("all"),
+  scopeAgentIds:  text("scope_agent_ids"),  // JSON integer[] for scoped visibility
+  createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("uniq_mc_sequence").on(t.meetingId, t.sequenceNumber),
+  index("idx_mc_meeting").on(t.meetingId, t.sequenceNumber),
+]);
+
+export const insertMeetingContextSchema = createInsertSchema(meetingContext).omit({ id: true, createdAt: true });
+export type InsertMeetingContext = z.infer<typeof insertMeetingContextSchema>;
+export type MeetingContext = typeof meetingContext.$inferSelect;
+
+// Meeting Artifacts — versioned documents/decisions produced during a meeting
+export const meetingArtifacts = pgTable("meeting_artifacts", {
+  id:               uuid("id").primaryKey().defaultRandom(),
+  meetingId:        uuid("meeting_id").notNull(),
+  type:             varchar("type", { length: 30 }).notNull(),
+  content:          jsonb("content").notNull(),
+  version:          integer("version").notNull().default(1),
+  createdByAgentId: integer("created_by_agent_id"),
+  createdAt:        timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:        timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("idx_ma_meeting").on(t.meetingId),
+  index("idx_ma_type").on(t.meetingId, t.type),
+]);
+
+export const insertMeetingArtifactSchema = createInsertSchema(meetingArtifacts).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertMeetingArtifact = z.infer<typeof insertMeetingArtifactSchema>;
+export type MeetingArtifact = typeof meetingArtifacts.$inferSelect;
