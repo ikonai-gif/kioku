@@ -648,16 +648,42 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
   {
     name: "generate_speech",
-    description: "Generate natural speech audio from text using OpenAI TTS. Use for: character voiceovers, narration, dialogue recordings, audiobook segments. Supports multiple voices and emotional direction via instructions. ALWAYS use when the user asks to voice, narrate, read aloud, or create voiceover.",
+    description: "Generate natural speech audio from text. Primary engine: ElevenLabs multilingual v2 (supports Russian, English, 29 languages, highest quality, works with cloned voices). Fallback: OpenAI TTS. Use for character voiceovers, narration, dialogue. ALWAYS use when the user asks to voice, narrate, read aloud, or create voiceover. For cloned voices, pass the voice_id returned by clone_voice.",
     input_schema: {
       type: "object" as const,
       properties: {
-        text: { type: "string", description: "The text to speak. Up to 4096 characters." },
-        voice: { type: "string", enum: ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"], description: "Voice character. coral=warm female, onyx=deep male, nova=bright female, echo=calm male, alloy=neutral, ballad=storytelling. Default: coral" },
-        instructions: { type: "string", description: "Emotional/style direction: accent, tone, speed, mood. E.g. 'Speak slowly with a dramatic whisper' or 'Cheerful and energetic, like a news anchor'" },
-        speed: { type: "number", description: "Speech speed 0.25-4.0. Default: 1.0" },
+        text: { type: "string", description: "The text to speak. Up to 5000 characters." },
+        voice: { type: "string", description: "Either an ElevenLabs voice preset (george=warm storyteller, sarah=mature confident, charlie=deep energetic, laura=enthusiastic, roger=laid-back) OR a 20-char ElevenLabs voice_id from clone_voice. For OpenAI fallback: alloy/ash/ballad/coral/echo/fable/nova/onyx/sage/shimmer/verse. Default: george" },
+        instructions: { type: "string", description: "OpenAI-only: emotional/style direction. Ignored by ElevenLabs." },
+        speed: { type: "number", description: "Speech speed 0.25-4.0 (OpenAI only). Default: 1.0" },
+        model: { type: "string", enum: ["auto", "elevenlabs", "openai"], description: "Force specific engine. auto=ElevenLabs with OpenAI fallback. Default: auto" },
       },
       required: ["text"],
+    },
+  },
+  {
+    name: "clone_voice",
+    description: "Clone a voice from a 30-second to 3-minute audio sample using ElevenLabs. Returns a voice_id that can be used in generate_speech to produce unlimited audio in that voice. Use for: maintaining consistent character voices across episodes, creating signature voices for series, preserving narrator identity. ALWAYS use when the user wants to clone, copy, or recreate a specific voice.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        audio_url: { type: "string", description: "Direct URL to a clean audio sample (30 seconds to 3 minutes, MP3/WAV). Should be one speaker, minimal background noise." },
+        name: { type: "string", description: "Name to identify this voice later (e.g., 'Alpha Narrator', 'Character Boris'). Max 100 chars." },
+        description: { type: "string", description: "Optional description of the voice for later reference. Max 500 chars." },
+      },
+      required: ["audio_url", "name"],
+    },
+  },
+  {
+    name: "generate_sfx",
+    description: "Generate sound effects from text descriptions using ElevenLabs. Creates footsteps, doors, ambience, explosions, nature sounds, mechanical noises \u2014 anything describable. Use for: atmospheric audio layers in series episodes, sound design, foley replacement, environmental sounds. ALWAYS use when the user asks to create sound effects, SFX, ambience, or foley.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "Describe the sound in plain English. Be specific: 'heavy wooden door slams shut in a stone corridor with reverb', 'crackling fireplace with distant wind', 'footsteps on wet pavement at night'." },
+        duration: { type: "number", description: "Length in seconds, 0.5 to 22. Default: 5" },
+      },
+      required: ["prompt"],
     },
   },
   {
@@ -2581,15 +2607,83 @@ print("Converted MD to DOCX")
         if (!prompt || typeof prompt !== "string") return "Missing required field: prompt.";
         const aspectRatio = toolInput.aspect_ratio || "16:9";
         const duration = toolInput.duration || 8;
+        const quality = toolInput.quality === "high" ? "quality" : "fast"; // default: fast (cheaper)
 
+        const kieKey = process.env.KIE_API_KEY;
         const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY;
-        if (!geminiKey) return "Video generation requires GEMINI_API_KEY. Please ask the admin to configure it.";
+
+        if (!kieKey && !geminiKey) {
+          return "Video generation requires KIE_API_KEY or GEMINI_API_KEY. Please ask the admin to configure one.";
+        }
+
+        // ===== PATH 1: kie.ai (primary — works today, cheapest, no tier limits) =====
+        if (kieKey) {
+          try {
+            const model = quality === "quality" ? "veo3" : "veo3_fast";
+            const startResp = await fetch("https://api.kie.ai/api/v1/veo/generate", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${kieKey}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                prompt: prompt.slice(0, 2000),
+                model,
+                aspect_ratio: aspectRatio,
+                generationType: "TEXT_2_VIDEO",
+                enableFallback: true,
+              }),
+              signal: AbortSignal.timeout(30000),
+            });
+
+            if (!startResp.ok) {
+              const errText = (await startResp.text()).slice(0, 200);
+              console.warn(`[generate_video] kie.ai start failed: ${errText}`);
+              // Fall through to Google path
+            } else {
+              const startData = await startResp.json() as any;
+              if (startData.code !== 200 || !startData.data?.taskId) {
+                console.warn(`[generate_video] kie.ai returned no taskId: ${JSON.stringify(startData).slice(0, 200)}`);
+              } else {
+                const taskId = startData.data.taskId;
+                // Poll for completion (max 3 min, 5s intervals)
+                for (let attempt = 0; attempt < 36; attempt++) {
+                  await new Promise(r => setTimeout(r, 5000));
+                  const pollResp = await fetch(
+                    `https://api.kie.ai/api/v1/veo/record-info?taskId=${encodeURIComponent(taskId)}`,
+                    { headers: { "Authorization": `Bearer ${kieKey}` }, signal: AbortSignal.timeout(10000) }
+                  );
+                  if (!pollResp.ok) continue;
+                  const pollData = await pollResp.json() as any;
+                  const d = pollData.data;
+                  if (!d) continue;
+                  if (d.successFlag === 1) {
+                    const url = d.response?.resultUrls?.[0] || d.response?.fullResultUrls?.[0];
+                    if (url) {
+                      const label = quality === "quality" ? "Veo 3 Quality" : "Veo 3 Fast";
+                      return `[Video generated via ${label} — kie.ai] ${url}`;
+                    }
+                  }
+                  if (d.successFlag === 2 || d.errorCode) {
+                    console.warn(`[generate_video] kie.ai task failed: ${d.errorMessage || d.errorCode}`);
+                    break; // fall through to Google
+                  }
+                }
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[generate_video] kie.ai exception: ${err?.message}`);
+            // Fall through to Google path
+          }
+        }
+
+        // ===== PATH 2: Google AI Studio direct (fallback when kie.ai unavailable or fails) =====
+        if (!geminiKey) {
+          return "Video generation failed on kie.ai and no Google fallback configured.";
+        }
 
         try {
-          // Model cascade: try Veo 3.1 preview → Veo 3.0 fast → Veo 3.0 stable → Veo 2.0
-          // All via predictLongRunning. generateAudio is NOT a valid parameter —
-          // Veo 3 includes audio automatically, Veo 2 is silent. durationSeconds
-          // must be 4-8 for Veo 3; we clamp to [4, 8].
+          // Model cascade: Veo 3.1 preview → Veo 3.0 fast → Veo 3.0 stable → Veo 2.0
           const modelCascade = [
             { id: "veo-3.1-generate-preview", label: "Veo 3.1" },
             { id: "veo-3.0-fast-generate-001", label: "Veo 3.0 Fast" },
@@ -2601,6 +2695,7 @@ print("Converted MD to DOCX")
           let startResp: Response | null = null;
           let modelUsed = "";
           let lastErr = "";
+          let billingBlocked = false;
           for (const model of modelCascade) {
             const veoUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model.id}:predictLongRunning?key=${geminiKey}`;
             const veoPayload: any = {
@@ -2608,7 +2703,6 @@ print("Converted MD to DOCX")
               parameters: {
                 aspectRatio,
                 durationSeconds: clampedDuration,
-                personGeneration: "allow_adult",
               },
             };
             const resp = await fetch(veoUrl, {
@@ -2624,44 +2718,41 @@ print("Converted MD to DOCX")
             }
             const errText = (await resp.text()).slice(0, 200);
             lastErr = `${model.id}: ${errText}`;
-            // If quota exhausted or billing required, stop cascading — all models will fail the same way
             if (errText.includes("RESOURCE_EXHAUSTED") || errText.includes("billing")) {
-              return `Video generation unavailable: Google AI Studio billing is not enabled on this API key. Enable billing at https://aistudio.google.com/apikey to use Veo 3. Error: ${errText.slice(0, 150)}`;
+              billingBlocked = true;
+              break;
             }
           }
 
           if (!startResp) {
-            return `Video generation failed across all Veo models. Last error: ${lastErr.slice(0, 300)}. The API key may lack video generation access — check Google AI Studio billing.`;
+            if (billingBlocked) {
+              return `Video generation unavailable: Google Veo 3 requires Paid Tier 2 ($100 spent + 3 days since first payment). kie.ai path also failed or not configured. Last error: ${lastErr.slice(0, 150)}`;
+            }
+            return `Video generation failed across all paths. Last error: ${lastErr.slice(0, 300)}`;
           }
 
           const opData = await startResp.json() as any;
           const operationName = opData.name;
 
           if (!operationName) {
-            // Direct response (not long-running)
             const videoData = opData?.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
-            if (videoData?.uri) {
-              return `[Video generated via ${modelUsed}] ${videoData.uri}`;
-            }
-            return "Video generation started but no operation ID returned. Check API configuration.";
+            if (videoData?.uri) return `[Video generated via ${modelUsed}] ${videoData.uri}`;
+            return "Video generation started but no operation ID returned.";
           }
 
-          // Poll for completion (max 2 minutes)
           const pollUrl = `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${geminiKey}`;
           for (let attempt = 0; attempt < 24; attempt++) {
-            await new Promise(r => setTimeout(r, 5000)); // 5s intervals
+            await new Promise(r => setTimeout(r, 5000));
             const pollResp = await fetch(pollUrl, { signal: AbortSignal.timeout(10000) });
             if (!pollResp.ok) continue;
             const pollData = await pollResp.json() as any;
             if (pollData.done) {
               const video = pollData.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
-              if (video?.uri) {
-                return `[Video generated] ${video.uri}`;
-              }
+              if (video?.uri) return `[Video generated via ${modelUsed}] ${video.uri}`;
               return "Video generation completed but no video URL returned.";
             }
           }
-          return "Video generation timed out after 2 minutes. The video may still be processing — try again later.";
+          return "Video generation timed out after 2 minutes.";
         } catch (err: any) {
           return `Video generation failed: ${err?.message || String(err)}`;
         }
@@ -2670,31 +2761,173 @@ print("Converted MD to DOCX")
       case "generate_speech": {
         const text = toolInput.text;
         if (!text || typeof text !== "string") return "Missing required field: text.";
-        const voice = toolInput.voice || "coral";
+        const voice = toolInput.voice || "";
         const instructions = toolInput.instructions || "";
         const speed = Math.max(0.25, Math.min(4.0, toolInput.speed || 1.0));
+        const model = toolInput.model || "auto"; // auto | elevenlabs | openai
 
+        const elKey = process.env.ELEVENLABS_API_KEY;
         const oaiKey = process.env.OPENAI_API_KEY;
-        if (!oaiKey) return "Speech generation requires OPENAI_API_KEY.";
+
+        // ElevenLabs voice IDs (defaults — can be overridden by passing voice_id)
+        // These are pre-made voices available on all plans. Users can pass cloned voice IDs.
+        const elDefaultVoices: Record<string, string> = {
+          george: "JBFqnCBsd6RMkjVDRZzb",   // warm storyteller
+          sarah: "EXAVITQu4vr4xnSDxMaL",    // mature, confident
+          charlie: "IKne3meq5aSn9XLyUdCD",  // deep, energetic
+          laura: "FGY2WhTYpPnrIDTdsKH5",    // enthusiastic
+          roger: "CwhRBWXzGAHq8TQ4Fs17",   // laid-back
+        };
+
+        // Resolve voice — if it's a 20-char ElevenLabs ID, use as-is; if it's a name, map it
+        const isElevenLabsId = typeof voice === "string" && /^[a-zA-Z0-9]{18,24}$/.test(voice);
+        const elVoiceId = isElevenLabsId
+          ? voice
+          : elDefaultVoices[voice?.toLowerCase?.()] || elDefaultVoices.george;
+
+        // ===== PATH 1: ElevenLabs (primary — higher quality, supports cloned voices) =====
+        if (elKey && model !== "openai") {
+          try {
+            const resp = await fetch(
+              `https://api.elevenlabs.io/v1/text-to-speech/${elVoiceId}`,
+              {
+                method: "POST",
+                headers: {
+                  "xi-api-key": elKey,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  text: text.slice(0, 5000),
+                  model_id: "eleven_multilingual_v2", // supports Russian, English, 29 langs
+                  voice_settings: {
+                    stability: 0.5,
+                    similarity_boost: 0.75,
+                    style: 0.0,
+                    use_speaker_boost: true,
+                  },
+                }),
+                signal: AbortSignal.timeout(60000),
+              }
+            );
+
+            if (resp.ok) {
+              const buffer = Buffer.from(await resp.arrayBuffer());
+              const b64 = buffer.toString("base64");
+              return `[Audio generated via ElevenLabs] data:audio/mp3;base64,${b64}`;
+            }
+            const errText = (await resp.text()).slice(0, 200);
+            console.warn(`[generate_speech] ElevenLabs failed: ${errText}, falling back to OpenAI`);
+            if (model === "elevenlabs") {
+              return `ElevenLabs TTS failed: ${errText}`;
+            }
+          } catch (err: any) {
+            console.warn(`[generate_speech] ElevenLabs exception: ${err?.message}`);
+            if (model === "elevenlabs") {
+              return `ElevenLabs TTS error: ${err?.message}`;
+            }
+          }
+        }
+
+        // ===== PATH 2: OpenAI TTS (fallback) =====
+        if (!oaiKey) {
+          return "Speech generation requires ELEVENLABS_API_KEY or OPENAI_API_KEY.";
+        }
 
         try {
+          const openaiVoice = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"].includes(voice)
+            ? voice
+            : "coral";
           const OAI = (await import("openai")).default;
           const oaiClient = new OAI({ apiKey: oaiKey });
           const response = await oaiClient.audio.speech.create({
             model: "gpt-4o-mini-tts",
-            voice: voice as any,
+            voice: openaiVoice as any,
             input: text.slice(0, 4096),
             instructions: instructions || undefined,
             speed,
             response_format: "mp3",
           } as any);
 
-          // Convert response to base64
           const buffer = Buffer.from(await response.arrayBuffer());
           const b64 = buffer.toString("base64");
-          return `[Audio generated] data:audio/mp3;base64,${b64}`;
+          return `[Audio generated via OpenAI TTS] data:audio/mp3;base64,${b64}`;
         } catch (err: any) {
           return `Speech generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "clone_voice": {
+        // Clone a voice from a reference audio URL. Returns a voice_id to use in generate_speech.
+        const audioUrl = toolInput.audio_url;
+        const name = toolInput.name;
+        const description = toolInput.description || "";
+        if (!audioUrl || typeof audioUrl !== "string") return "Missing required field: audio_url (URL to a 30s-3min sample).";
+        if (!name || typeof name !== "string") return "Missing required field: name (how to identify the voice later).";
+
+        const elKey = process.env.ELEVENLABS_API_KEY;
+        if (!elKey) return "Voice cloning requires ELEVENLABS_API_KEY.";
+
+        try {
+          // Download the reference audio
+          const audioResp = await fetch(audioUrl, { signal: AbortSignal.timeout(60000) });
+          if (!audioResp.ok) return `Failed to download reference audio from ${audioUrl}: ${audioResp.status}`;
+          const audioBuffer = Buffer.from(await audioResp.arrayBuffer());
+
+          // Upload to ElevenLabs
+          const form = new FormData();
+          form.append("name", name.slice(0, 100));
+          form.append("description", description.slice(0, 500));
+          const blob = new Blob([new Uint8Array(audioBuffer)], { type: "audio/mpeg" });
+          form.append("files", blob, `${name}.mp3`);
+
+          const resp = await fetch("https://api.elevenlabs.io/v1/voices/add", {
+            method: "POST",
+            headers: { "xi-api-key": elKey },
+            body: form,
+            signal: AbortSignal.timeout(120000),
+          });
+          if (!resp.ok) {
+            return `Voice cloning failed: ${(await resp.text()).slice(0, 300)}`;
+          }
+          const data = await resp.json() as any;
+          return `[Voice cloned] name="${name}" voice_id=${data.voice_id}. Use this voice_id in generate_speech to produce audio in this voice.`;
+        } catch (err: any) {
+          return `Voice cloning failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "generate_sfx": {
+        // Generate sound effects (footsteps, doors, ambience, etc.) using ElevenLabs
+        const prompt = toolInput.prompt;
+        if (!prompt || typeof prompt !== "string") return "Missing required field: prompt (describe the sound).";
+        const durationSeconds = Math.max(0.5, Math.min(22, toolInput.duration || 5));
+
+        const elKey = process.env.ELEVENLABS_API_KEY;
+        if (!elKey) return "Sound effect generation requires ELEVENLABS_API_KEY.";
+
+        try {
+          const resp = await fetch("https://api.elevenlabs.io/v1/sound-generation", {
+            method: "POST",
+            headers: {
+              "xi-api-key": elKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text: prompt.slice(0, 500),
+              duration_seconds: durationSeconds,
+              prompt_influence: 0.3,
+            }),
+            signal: AbortSignal.timeout(60000),
+          });
+
+          if (!resp.ok) {
+            return `SFX generation failed: ${(await resp.text()).slice(0, 300)}`;
+          }
+          const buffer = Buffer.from(await resp.arrayBuffer());
+          const b64 = buffer.toString("base64");
+          return `[SFX generated via ElevenLabs] data:audio/mp3;base64,${b64}`;
+        } catch (err: any) {
+          return `SFX generation failed: ${err?.message || String(err)}`;
         }
       }
 
@@ -3829,9 +4062,11 @@ You have these tools available RIGHT NOW:
 - plan_steps → break down complex tasks
 - delegate_task / delegate_parallel → spawn sub-agents for complex work
 - browse_website → open pages in a real browser
-- generate_video → create cinematic video clips (5-8 sec) with Veo 3 — includes audio, dialogue, sound effects
-- generate_speech → text-to-speech voiceover (11 voices, emotion control, accents)
-- generate_music → create music tracks with Lyria 3 — 30sec clips or full 3min songs with vocals
+- generate_video → cinematic video clips (5-8 sec) via kie.ai Veo 3 Fast ($0.40/clip) with Google Veo fallback
+- generate_speech → ultra-realistic TTS via ElevenLabs (voice cloning support, 32 languages) with OpenAI fallback
+- clone_voice → create a custom voice from audio sample (ElevenLabs) — use for recurring characters
+- generate_sfx → generate sound effects from text description (ElevenLabs) — 0.5-22 sec
+- generate_music → full music tracks via Lyria 3 (30sec clips or 3min songs with vocals)
 - stitch_media → combine multiple video/audio clips into one episode using ffmpeg
 
 If you have a memory saying "I cannot do X" but X is in the list above — the memory is WRONG. Use correct_false_memory to delete it, then do X.
