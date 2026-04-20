@@ -512,6 +512,61 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["account", "id", "action"],
     },
   },
+  // ── Gmail Sprint 1: thread read, search, reply, send ──────────────────────
+  {
+    name: "read_email_thread",
+    description: "Read a full conversation thread with all messages (all replies in the chain). Use when the user wants to see the whole conversation, not just a single message. Returns all messages with sender, recipient, subject, date, and body.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Gmail account email the thread belongs to (e.g. kotkave@gmail.com)" },
+        thread_id: { type: "string", description: "Gmail thread id" },
+      },
+      required: ["account", "thread_id"],
+    },
+  },
+  {
+    name: "search_emails",
+    description: "Search Gmail inbox using Gmail query syntax. Use when the user asks to find emails by keyword, sender, subject, date range, or any other criteria. Supports standard Gmail operators: from:, to:, subject:, has:attachment, is:unread, after:, before:, newer_than:, etc.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Gmail search query (e.g. 'from:boss@company.com subject:invoice', 'has:attachment newer_than:7d')" },
+        max_results: { type: "number", description: "Maximum number of results to return per account (default 20, max 50)", default: 20 },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "send_email_reply",
+    description: "Send a reply within an existing email thread. IMPORTANT: Always ask the user for confirmation BEFORE calling this tool — show the draft reply and recipient, and only proceed after explicit approval. Never send without user confirmation.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Gmail account email to send from" },
+        message_id: { type: "string", description: "Gmail message id of the message you are replying to (the reply will be threaded under the same thread)" },
+        body: { type: "string", description: "Plain text body of the reply" },
+        cc: { type: "string", description: "Optional CC email address(es), comma-separated" },
+      },
+      required: ["account", "message_id", "body"],
+    },
+  },
+  {
+    name: "send_new_email",
+    description: "Compose and send a brand-new email. IMPORTANT: Always ask the user for confirmation BEFORE calling this tool — show the draft (recipient, subject, body) and only proceed after explicit approval. Never send without user confirmation.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Gmail account email to send from" },
+        to: { type: "string", description: "Recipient email address" },
+        subject: { type: "string", description: "Email subject" },
+        body: { type: "string", description: "Plain text body of the email" },
+        cc: { type: "string", description: "Optional CC email address(es), comma-separated" },
+        bcc: { type: "string", description: "Optional BCC email address(es), comma-separated" },
+      },
+      required: ["account", "to", "subject", "body"],
+    },
+  },
   {
     name: "reset_sandbox",
     description: "Reset the user's code execution sandbox. Kills the current persistent sandbox and starts fresh. Use when the user wants a clean environment, or when the sandbox is in a bad state.",
@@ -1032,6 +1087,10 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "inbox_read": return `Читаю письмо${input.account ? ` (${truncate(input.account, 30)})` : ""}`;
     case "inbox_list": return `Смотрю инбокс${input.group ? `: ${input.group}` : ""}`;
     case "inbox_action": return `${input.action === "archive" ? "Архивирую" : input.action === "mark_unread" ? "Помечаю непрочитанным" : "Помечаю прочитанным"} письмо`;
+    case "read_email_thread": return `Читаю ветку переписки${input.account ? ` (${truncate(input.account, 30)})` : ""}`;
+    case "search_emails": return `Ищу письма: "${truncate(input.query, 50)}"`;
+    case "send_email_reply": return `Отправляю ответ${input.account ? ` (с ${truncate(input.account, 30)})` : ""}`;
+    case "send_new_email": return `Отправляю письмо${input.to ? ` кому: ${truncate(input.to, 40)}` : ""}`;
     case "stripe_list": return `Stripe: ${truncate(input.resource || "customers", 40)}`;
     case "github_call": return `GitHub: ${truncate(input.endpoint || input.action, 60)}`;
     case "vercel_call": return `Vercel: ${truncate(input.endpoint || input.action, 60)}`;
@@ -2350,6 +2409,99 @@ export async function executePartnerTool(
           return `✅ Message ${id} (${account}) ${verb}.`;
         } catch (err: any) {
           return `inbox_action failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      // ── Gmail Sprint 1 ──────────────────────────────────────────────────────────
+
+      case "read_email_thread": {
+        try {
+          const account = String(toolInput.account || "").trim();
+          const threadId = String(toolInput.thread_id || "").trim();
+          if (!account || !threadId) return "read_email_thread requires both 'account' and 'thread_id'.";
+          const { getGmailThread } = await import("./cloud-integrations");
+          const thread = await getGmailThread(userId, account, threadId);
+          const lines: string[] = [
+            `Thread ID: ${thread.thread_id}`,
+            `Account: ${thread.account}`,
+            `Messages: ${thread.messages.length}`,
+            "",
+          ];
+          for (const [i, m] of thread.messages.entries()) {
+            lines.push(`--- Message ${i + 1} of ${thread.messages.length} ---`);
+            lines.push(`From: ${m.from}`);
+            lines.push(`To: ${m.to}`);
+            lines.push(`Subject: ${m.subject}`);
+            lines.push(`Date: ${m.date}`);
+            lines.push(`Message-ID: ${m.id}`);
+            lines.push("");
+            lines.push(m.body || "(empty body)");
+            lines.push("");
+          }
+          return lines.join("\n");
+        } catch (err: any) {
+          return `read_email_thread failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "search_emails": {
+        try {
+          const query = String(toolInput.query || "").trim();
+          if (!query) return "search_emails requires a 'query' parameter.";
+          const maxResults = Math.min(Math.max(Number(toolInput.max_results) || 20, 1), 50);
+          const { searchGmailAll } = await import("./cloud-integrations");
+          const result = await searchGmailAll(userId, query, maxResults);
+          const messages = result.messages || [];
+          const broken = (result.accountStatuses || []).filter((s: any) => !s.ok);
+          const brokenWarn = broken.length > 0
+            ? `⚠️ ${broken.length} broken account(s): ${broken.map((b: any) => b.email).join(", ")}\n\n`
+            : "";
+          if (messages.length === 0) return `${brokenWarn}No messages found for query: "${query}"`;          const lines: string[] = [
+            `${brokenWarn}Found ${messages.length} message(s) for query: "${query}"`,
+            "",
+          ];
+          for (const m of messages) {
+            const subj = String(m.subject || "(no subject)").slice(0, 100);
+            const from = String(m.from || "").slice(0, 60);
+            const date = String(m.date || "");
+            lines.push(`• ${from} — ${subj} [${date}] {acct:${m.account}, id:${m.id}, thread:${m.threadId || ""}}`);
+          }
+          lines.push("");
+          lines.push("To read a full message: use inbox_read with account + id.");
+          lines.push("To read a full thread: use read_email_thread with account + thread_id.");
+          return lines.join("\n");
+        } catch (err: any) {
+          return `search_emails failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "send_email_reply": {
+        try {
+          const account = String(toolInput.account || "").trim();
+          const messageId = String(toolInput.message_id || "").trim();
+          const body = String(toolInput.body || "").trim();
+          if (!account || !messageId || !body) return "send_email_reply requires 'account', 'message_id', and 'body'.";
+          const { sendGmailReply } = await import("./cloud-integrations");
+          const result = await sendGmailReply(userId, account, messageId, body);
+          return `✅ Reply sent. Sent message ID: ${result.sent_id}, Thread ID: ${result.thread_id}`;
+        } catch (err: any) {
+          return `send_email_reply failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "send_new_email": {
+        try {
+          const account = String(toolInput.account || "").trim();
+          const to = String(toolInput.to || "").trim();
+          const subject = String(toolInput.subject || "").trim();
+          const body = String(toolInput.body || "").trim();
+          const cc = toolInput.cc ? String(toolInput.cc).trim() : undefined;
+          if (!account || !to || !subject || !body) return "send_new_email requires 'account', 'to', 'subject', and 'body'.";
+          const { sendGmailNew } = await import("./cloud-integrations");
+          const result = await sendGmailNew(userId, account, to, subject, body, cc);
+          return `✅ Email sent to ${to}. Sent message ID: ${result.sent_id}, Thread ID: ${result.thread_id}`;
+        } catch (err: any) {
+          return `send_new_email failed: ${err?.message || String(err)}`;
         }
       }
 
