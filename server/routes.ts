@@ -2690,11 +2690,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // this to surface files from old agents after a model switch creates a
   // new primary agent (files on the old agent's path would otherwise be
   // invisible).
+  //
+  // Includes both:
+  //   - current rows in the agents table (typical path)
+  //   - historical agent IDs still referenced by files in Supabase Storage
+  //     under `<userId>/<agentId>/...` (path for files that survived the
+  //     agent row being deleted, e.g. after a model switch). This is the
+  //     reason a user can have e.g. `10/16/...` files in Storage even though
+  //     agent 16 is no longer in the DB.
   async function getUserAgentIds(userId: number): Promise<number[]> {
+    const ids = new Set<number>();
     try {
       const agents = await storage.getAgents(userId);
-      return agents.map((a: any) => a.id).filter((id: any) => typeof id === "number");
-    } catch { return []; }
+      for (const a of agents as any[]) {
+        if (typeof a?.id === "number") ids.add(a.id);
+      }
+    } catch { /* fall through to Storage-only */ }
+    try {
+      const ws = await import("./workspace-storage");
+      if (ws.workspaceEnabled) {
+        const storageIds = await ws.listAgentIdsWithStorage(userId);
+        for (const id of storageIds) ids.add(id);
+      }
+    } catch { /* best-effort */ }
+    return Array.from(ids).sort((a, b) => a - b);
   }
 
   // GET /api/workspace/list?prefix=auto — list files in user's persistent

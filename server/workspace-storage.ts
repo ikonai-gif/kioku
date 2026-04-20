@@ -168,7 +168,42 @@ export async function persistAssetSource(
   });
 }
 
-/** List entries in a workspace folder. Returns simplified name+size records. */
+/**
+ * Raw Supabase Storage list call — returns items at exactly one level under
+ * `prefix`. Folders come back as `{ name: "folder", id: null, metadata: null }`
+ * (id/metadata null signals a synthetic folder entry).
+ */
+async function rawList(prefix: string): Promise<Array<any>> {
+  const res = await fetch(
+    `${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`,
+    {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ prefix, limit: 1000, sortBy: { column: "updated_at", order: "desc" } }),
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`List failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  return (await res.json()) as Array<any>;
+}
+
+/** An entry is a real file when Supabase returns an `id` and `metadata`. */
+function isFileEntry(entry: any): boolean {
+  return !!(entry && entry.id && entry.metadata);
+}
+
+/**
+ * List entries in a workspace folder. Returns simplified name+size records.
+ *
+ * IMPORTANT: Supabase Storage `list` returns folder placeholders when the
+ * prefix has sub-folders and returns files only when the prefix points at a
+ * leaf folder. To give callers a useful flat view (especially when prefix is
+ * empty), we auto-descend one level into any sub-folders so real file entries
+ * are surfaced. Names of files under sub-folders get the sub-folder prepended
+ * (e.g. `auto/1234_foo.mp4`).
+ */
 export async function listWorkspace(
   userId: number,
   agentId: number,
@@ -176,24 +211,74 @@ export async function listWorkspace(
 ): Promise<Array<{ name: string; size: number; updated_at: string }>> {
   if (!workspaceEnabled) throw new Error("Workspace storage not configured");
   const keyPrefix = buildKey(userId, agentId, prefix);
-  const res = await fetch(
-    `${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`,
-    {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ prefix: keyPrefix, limit: 200, sortBy: { column: "updated_at", order: "desc" } }),
+  const top = await rawList(keyPrefix);
+
+  const files: Array<{ name: string; size: number; updated_at: string }> = [];
+  const folderNames: string[] = [];
+  for (const entry of top) {
+    if (isFileEntry(entry)) {
+      files.push({
+        name: entry.name,
+        size: entry.metadata?.size ?? 0,
+        updated_at: entry.updated_at || entry.created_at || "",
+      });
+    } else if (entry && typeof entry.name === "string" && entry.name.length > 0) {
+      folderNames.push(entry.name);
     }
-  );
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`List failed (${res.status}): ${text.slice(0, 200)}`);
   }
-  const items = (await res.json()) as Array<any>;
-  return items.map((i) => ({
-    name: i.name,
-    size: i.metadata?.size ?? 0,
-    updated_at: i.updated_at || i.created_at || "",
-  }));
+
+  // If caller wanted a flat overview (empty prefix or at a sub-root) and got
+  // folder placeholders, descend one level so the UI sees actual assets.
+  if (folderNames.length > 0) {
+    const MAX_FOLDERS = 20;
+    const picked = folderNames.slice(0, MAX_FOLDERS);
+    const childResults = await Promise.all(picked.map(async (folder) => {
+      const childPrefix = keyPrefix.endsWith("/") ? `${keyPrefix}${folder}` : `${keyPrefix}/${folder}`;
+      try {
+        const entries = await rawList(childPrefix);
+        return entries
+          .filter(isFileEntry)
+          .map((e) => ({
+            name: `${folder}/${e.name}`,
+            size: e.metadata?.size ?? 0,
+            updated_at: e.updated_at || e.created_at || "",
+          }));
+      } catch (e) {
+        logger.warn({ source: "workspace-storage", prefix: childPrefix, err: String(e) }, "child list failed");
+        return [];
+      }
+    }));
+    for (const arr of childResults) files.push(...arr);
+  }
+
+  // Stable descending sort by updated_at.
+  files.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  return files;
+}
+
+/**
+ * Discover every agentId that has at least one file under the given user's
+ * prefix in Storage. This is the fallback used by the Workspace tab so files
+ * produced by a previous agent (before a model switch deleted that agent
+ * row) remain visible. Returns a sorted unique list.
+ */
+export async function listAgentIdsWithStorage(userId: number): Promise<number[]> {
+  if (!workspaceEnabled) return [];
+  const topPrefix = `${userId}`;
+  try {
+    const entries = await rawList(topPrefix);
+    const ids = new Set<number>();
+    for (const e of entries) {
+      if (!e || typeof e.name !== "string") continue;
+      // Folder entries look like { name: "16", id: null, metadata: null }.
+      const n = Number(e.name);
+      if (Number.isFinite(n) && Number.isInteger(n) && n > 0) ids.add(n);
+    }
+    return Array.from(ids).sort((a, b) => a - b);
+  } catch (err) {
+    logger.warn({ source: "workspace-storage", userId, err: String(err) }, "listAgentIdsWithStorage failed");
+    return [];
+  }
 }
 
 /** Delete a single asset. */
