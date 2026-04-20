@@ -793,7 +793,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
-async function executePartnerTool(
+export async function executePartnerTool(
   toolName: string,
   toolInput: Record<string, any>,
   userId: number,

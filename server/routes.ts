@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
-import { triggerAgentResponses, generateProactiveMessage } from "./deliberation";
+import { triggerAgentResponses, generateProactiveMessage, executePartnerTool } from "./deliberation";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
@@ -2525,8 +2525,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       quality: "standard",
     });
 
-    const imageUrl = response.data?.[0]?.url;
+    const rawUrl = response.data?.[0]?.url;
     const revisedPrompt = response.data?.[0]?.revised_prompt;
+
+    // CRITICAL: DALL-E Azure Blob URLs expire in ~1 hour. Download immediately to data URI
+    // so the image stays accessible forever via gallery/memory.
+    let persistentUrl = rawUrl;
+    if (rawUrl) {
+      try {
+        const imgResp = await fetch(rawUrl, { signal: AbortSignal.timeout(30000) });
+        if (imgResp.ok) {
+          const buf = Buffer.from(await imgResp.arrayBuffer());
+          const mime = imgResp.headers.get("content-type") || "image/png";
+          persistentUrl = `data:${mime};base64,${buf.toString("base64")}`;
+        }
+      } catch (err) {
+        console.error("[create/image] Failed to download DALL-E image:", err);
+      }
+    }
 
     // Find primary agent for memory storage
     const userAgents = await storage.getAgents(userId);
@@ -2544,13 +2560,54 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         importance: 0.7,
         namespace: '_creations',
       });
+      // Also save to gallery with PERSISTENT url
+      if (persistentUrl && persistentUrl.startsWith("data:")) {
+        (storage as any).addGalleryItem?.({
+          userId,
+          agentId: primaryAgent.id,
+          type: "image",
+          title: prompt.slice(0, 200),
+          contentUrl: persistentUrl,
+          prompt,
+          metadata: { style: style || "vivid", revisedPrompt },
+        }).catch(() => {});
+      }
     }
 
     res.json({
-      imageUrl,
+      imageUrl: persistentUrl,
       revisedPrompt,
       createdAt: Date.now(),
     });
+  }));
+
+  // ── Studio Diagnostic (owner-only) ───────────────────────────────
+  // POST /api/studio/test — directly invoke a single studio tool without going through Luca.
+  // Lets owner verify which tools actually work end-to-end on the deployed container.
+  app.post("/api/studio/test", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const ownerUser = await isOwner(userId);
+    if (!ownerUser) return res.status(403).json({ error: "Owner only" });
+    const { tool, input } = req.body || {};
+    if (!tool || typeof tool !== "string") return res.status(400).json({ error: "tool required" });
+    const safeInput = (input && typeof input === "object") ? input : {};
+    // Find primary agent for memory-writing tools
+    const userAgents = await storage.getAgents(userId);
+    const primary = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
+    const started = Date.now();
+    try {
+      const result = await executePartnerTool(tool, safeInput, userId, primary?.id || 0);
+      const elapsedMs = Date.now() - started;
+      // Truncate huge base64 payloads so response stays readable
+      const resultStr = typeof result === "string" ? result : JSON.stringify(result);
+      const preview = resultStr.length > 4000
+        ? resultStr.slice(0, 2000) + `\n...[truncated ${resultStr.length - 2000} chars]`
+        : resultStr;
+      res.json({ ok: true, tool, elapsedMs, resultLength: resultStr.length, preview });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, tool, error: err?.message || String(err), elapsedMs: Date.now() - started });
+    }
   }));
 
   // GET /api/partner/creations — Fetch user's creations from memory
