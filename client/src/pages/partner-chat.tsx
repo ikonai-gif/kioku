@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -2813,6 +2813,15 @@ export default function PartnerChat() {
                     >
                       <Search className="w-4 h-4 text-[#C9A340]" />
                       <span className="text-sm text-foreground">Knowledge</span>
+                    </a>
+                  </Link>
+                  <Link href="/connectors">
+                    <a
+                      onClick={() => setHeaderMenuOpen(false)}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    >
+                      <Plug className="w-4 h-4 text-[#C9A340]" />
+                      <span className="text-sm text-foreground">Почта и интеграции</span>
                     </a>
                   </Link>
                   <button
