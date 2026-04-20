@@ -156,6 +156,17 @@ export function registerHealthRoutes(app: Express): void {
       ffmpegStatus = "available";
     } catch { /* missing */ }
 
+    // Persistent workspace storage (Supabase Storage). Best-effort: if
+    // the module fails to reach Supabase we just report "unreachable"
+    // and the rest of /health still responds normally.
+    let workspaceStatus: "ok" | "not_configured" | "unreachable" = "not_configured";
+    try {
+      const { workspaceHealth } = await import("./workspace-storage");
+      const wh = await workspaceHealth();
+      if (!wh.configured) workspaceStatus = "not_configured";
+      else workspaceStatus = wh.ok ? "ok" : "unreachable";
+    } catch { /* best-effort */ }
+
     const status = dbStatus === "connected" ? "ok" : "degraded";
     const httpStatus = status === "ok" ? 200 : 503;
 
@@ -174,6 +185,7 @@ export function registerHealthRoutes(app: Express): void {
         gemini: geminiStatus,
         anthropic: anthropicStatus,
         ffmpeg: ffmpegStatus,
+        workspace: workspaceStatus,
       },
       timestamp: new Date().toISOString(),
     });

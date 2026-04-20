@@ -2582,6 +2582,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // ── Studio Diagnostic (owner-only) ───────────────────────────────
+  // POST /api/workspace/test — owner-only diagnostic for persistent storage.
+  // Accepts { action: "upload" | "list" | "sign" | "health", ... }
+  // Used to verify Supabase Storage wiring without touching any studio tool.
+  app.post("/api/workspace/test", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Owner only" });
+    const { action, path: relPath, content, prefix, key, expiresSec } = req.body || {};
+    const ws = await import("./workspace-storage");
+    try {
+      if (action === "health") {
+        const h = await ws.workspaceHealth();
+        return res.json(h);
+      }
+      if (action === "upload") {
+        if (!relPath) return res.status(400).json({ error: "path required" });
+        const body = Buffer.from(String(content ?? ""), "utf8");
+        const result = await ws.saveAssetAndSign(userId, 16, relPath, body, { expiresSec });
+        return res.json({ ok: true, ...result });
+      }
+      if (action === "list") {
+        const items = await ws.listWorkspace(userId, 16, prefix || "");
+        return res.json({ ok: true, items });
+      }
+      if (action === "sign") {
+        if (!key) return res.status(400).json({ error: "key required" });
+        const url = await ws.getSignedUrl(key, expiresSec);
+        return res.json({ ok: true, url });
+      }
+      return res.status(400).json({ error: "unknown action (use: health|upload|list|sign)" });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+  }));
+
   // POST /api/studio/test — directly invoke a single studio tool without going through Luca.
   // Lets owner verify which tools actually work end-to-end on the deployed container.
   app.post("/api/studio/test", asyncHandler(async (req, res) => {
