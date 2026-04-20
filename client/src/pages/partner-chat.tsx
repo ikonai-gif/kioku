@@ -971,8 +971,134 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
             {new Date(Number(message.createdAt) || message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
         </div>
+        {!isUser && message.id && (
+          <ToolActivityTrail messageId={message.id} />
+        )}
       </div>
     </motion.div>
+  );
+}
+
+// ── Tool activity trail — история шагов Луки под сообщением ──────────────
+function ToolActivityTrail({ messageId }: { messageId: number }) {
+  const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [rows, setRows] = useState<Array<{
+    id: number;
+    tool: string;
+    status: string;
+    description: string | null;
+    preview: string | null;
+    elapsedMs: number | null;
+    startedAt: number;
+  }>>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    setLoading(true);
+    const token = getSessionToken();
+    fetch(`${API_BASE}/api/messages/${messageId}/tool-activity`, {
+      headers: { ...(token ? { "x-session-token": token } : {}) },
+      credentials: "include",
+    })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => {
+        if (Array.isArray(data)) setRows(data);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true))
+      .finally(() => setLoading(false));
+  }, [open, loaded, messageId]);
+
+  // Compact tool-name → russian label (subset of TaskProgress.TOOL_MAP)
+  const labelFor = (t: string): string => {
+    const map: Record<string, string> = {
+      sandbox_shell: "Терминал",
+      sandbox_write_file: "Запись файла",
+      sandbox_read_file: "Чтение файла",
+      sandbox_list_files: "Список файлов",
+      sandbox_download: "Скачивание",
+      web_search: "Поиск в интернете",
+      browse_website: "Открытие страницы",
+      generate_image: "Генерация кадра",
+      generate_video: "Генерация сцены",
+      generate_music: "Музыка",
+      generate_speech: "Озвучка",
+      stitch_media: "Склейка",
+      workspace_save: "workspace ← сохранить",
+      workspace_list: "workspace ← список",
+      workspace_read: "workspace ← читать",
+    };
+    if (map[t]) return map[t];
+    for (const k of Object.keys(map)) if (t.startsWith(k)) return map[k];
+    return t.replace(/_/g, " ");
+  };
+
+  return (
+    <div className="mt-2 pt-2" style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="text-[10px] text-[#C9A340]/60 hover:text-[#C9A340]/90 transition-colors"
+      >
+        {open ? "▾" : "▸"} шаги луки{loaded && rows.length > 0 ? " · " + rows.length : ""}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1">
+          {loading && <div className="text-[10px] text-muted-foreground/50">загрузка…</div>}
+          {!loading && loaded && rows.length === 0 && (
+            <div className="text-[10px] text-muted-foreground/40">нет записей</div>
+          )}
+          {rows.map((r) => (
+            <div
+              key={r.id}
+              className="text-[10px] leading-relaxed rounded-md px-2 py-1"
+              style={{
+                background: "rgba(0,0,0,0.2)",
+                border: "1px solid rgba(201,163,64,0.08)",
+              }}
+            >
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{
+                    background:
+                      r.status === "error" ? "#ef4444"
+                      : r.status === "done" ? "#4ade80"
+                      : "#C9A340",
+                  }}
+                />
+                <span className="text-[#C9A340]/80 font-medium">{labelFor(r.tool)}</span>
+                {r.elapsedMs != null && (
+                  <span className="text-muted-foreground/40 tabular-nums ml-auto">
+                    {r.elapsedMs < 1000 ? `${r.elapsedMs}ms` : `${(r.elapsedMs / 1000).toFixed(1)}s`}
+                  </span>
+                )}
+              </div>
+              {r.description && (
+                <div className="text-muted-foreground/60 truncate mt-0.5" title={r.description}>
+                  {r.description}
+                </div>
+              )}
+              {r.preview && (
+                <div
+                  className="text-muted-foreground/40 font-mono mt-0.5"
+                  style={{
+                    maxHeight: 60,
+                    overflow: "hidden",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {r.preview.slice(0, 200)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

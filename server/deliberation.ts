@@ -8,7 +8,7 @@
 
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { storage, pool } from "./storage";
+import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage } from "./storage";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
 import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
@@ -900,18 +900,29 @@ export async function executePartnerTool(
   // (e.g. sandbox_shell stdout lines) attach to the correct step in the
   // UI even if the same tool runs concurrently more than once.
   const __stepId = `srv-${__activityStarted}-${Math.random().toString(36).slice(2, 8)}`;
+  const __startDescription = describeToolCall(toolName, toolInput);
   if (roomId) {
     try {
       broadcastToolActivity(roomId, {
         agentId,
         tool: toolName,
         status: "running",
-        description: describeToolCall(toolName, toolInput),
+        description: __startDescription,
         stepId: __stepId,
         timestamp: __activityStarted,
       });
     } catch { /* best-effort — never let streaming break the tool call */ }
   }
+  // Persist start (best-effort, fire and forget). Feature #2.
+  recordToolActivityStart({
+    stepId: __stepId,
+    roomId: roomId ?? null,
+    userId,
+    agentId,
+    tool: toolName,
+    description: __startDescription,
+    startedAt: __activityStarted,
+  }).catch(() => { /* already logged inside */ });
   try {
     const __result = await (async (): Promise<string> => {
     switch (toolName) {
@@ -3865,33 +3876,40 @@ Start with step 1 now.`;
       }
     }
 
+    // Build a richer preview so the user can actually see what the tool
+    // returned, not just the first 160 chars. For terminal output the
+    // tail is far more useful than the head; for everything else, head is fine.
+    const __raw = typeof __finalResult === "string" ? __finalResult : String(__finalResult ?? "");
+    const __previewLimit = 500;
+    let __preview: string;
+    if (__raw.length <= __previewLimit) {
+      __preview = __raw;
+    } else if (toolName === "sandbox_shell") {
+      __preview = `…${__raw.slice(-__previewLimit)}`;
+    } else {
+      __preview = __raw.slice(0, __previewLimit) + "…";
+    }
     if (roomId) {
       try {
-        // Build a richer preview so the user can actually see what the tool
-        // returned, not just the first 160 chars. For terminal output the
-        // tail is far more useful than the head; for everything else, head
-        // is fine.
-        const raw = typeof __finalResult === "string" ? __finalResult : String(__finalResult ?? "");
-        const previewLimit = 500;
-        let preview: string;
-        if (raw.length <= previewLimit) {
-          preview = raw;
-        } else if (toolName === "sandbox_shell") {
-          preview = `…${raw.slice(-previewLimit)}`;
-        } else {
-          preview = raw.slice(0, previewLimit) + "…";
-        }
         broadcastToolActivity(roomId, {
           agentId,
           tool: toolName,
           status: "done",
           elapsedMs: Date.now() - __activityStarted,
-          preview,
+          preview: __preview,
           stepId: __stepId,
           timestamp: Date.now(),
         });
       } catch { /* best-effort */ }
     }
+    // Persist end (best-effort). Feature #2.
+    recordToolActivityEnd({
+      stepId: __stepId,
+      status: "done",
+      preview: __preview,
+      elapsedMs: Date.now() - __activityStarted,
+      finishedAt: Date.now(),
+    }).catch(() => {});
     return __finalResult;
   } catch (err: any) {
     const message = err?.message || String(err);
@@ -3908,6 +3926,14 @@ Start with step 1 now.`;
         });
       } catch { /* best-effort */ }
     }
+    // Persist end (best-effort). Feature #2.
+    recordToolActivityEnd({
+      stepId: __stepId,
+      status: "error",
+      preview: message.slice(0, 500),
+      elapsedMs: Date.now() - __activityStarted,
+      finishedAt: Date.now(),
+    }).catch(() => {});
     return `Tool "${toolName}" failed: ${message}`;
   }
 }
@@ -3967,6 +3993,7 @@ export async function triggerAgentResponses(
   roomName?: string
 ): Promise<void> {
   const isPartnerChat = roomName === "Partner";
+  const __turnStartedAt = Date.now();
   if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) return; // no shared provider
   // Check room lock with auto-expiry
   const lockTime = roomLocks.get(roomId);
@@ -4483,6 +4510,16 @@ export async function triggerAgentResponses(
           content: reply,
           isDecision: false,
         });
+
+        // Feature #2: attach all tool activity from this turn to the message
+        if (msg && isPartnerChat) {
+          attachToolActivityToMessage({
+            roomId,
+            agentId: agent.id,
+            messageId: msg.id,
+            sinceMs: __turnStartedAt,
+          }).catch(() => {});
+        }
 
         // Log
         await storage.addLog({

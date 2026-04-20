@@ -446,6 +446,25 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_gallery_user ON gallery(user_id, type);
     CREATE INDEX IF NOT EXISTS idx_gallery_created ON gallery(user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS tool_activity_log (
+      id           SERIAL PRIMARY KEY,
+      step_id      TEXT NOT NULL,
+      room_id      INTEGER,
+      message_id   INTEGER,
+      user_id      INTEGER,
+      agent_id     INTEGER,
+      tool         TEXT NOT NULL,
+      status       TEXT NOT NULL,              -- running | done | error
+      description  TEXT,
+      preview      TEXT,
+      started_at   BIGINT NOT NULL,
+      finished_at  BIGINT,
+      elapsed_ms   INTEGER,
+      created_at   BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_activity_room ON tool_activity_log(room_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tool_activity_message ON tool_activity_log(message_id) WHERE message_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_tool_activity_step ON tool_activity_log(step_id);
   `);
 
   // Phase 10: Cross-session Decision Provenance Chain
@@ -470,6 +489,142 @@ export async function initDb() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS age_verified BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT DEFAULT 'us';
   `);
+}
+
+// ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────
+// Records every partner-tool invocation so users can audit what Luca did.
+// Best-effort — failures here must never break the actual tool call.
+export interface ToolActivityRecord {
+  id: number;
+  stepId: string;
+  roomId: number | null;
+  messageId: number | null;
+  userId: number | null;
+  agentId: number | null;
+  tool: string;
+  status: string;
+  description: string | null;
+  preview: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+  elapsedMs: number | null;
+  createdAt: number;
+}
+
+export async function recordToolActivityStart(params: {
+  stepId: string;
+  roomId?: number | null;
+  userId?: number | null;
+  agentId?: number | null;
+  tool: string;
+  description?: string | null;
+  startedAt: number;
+}): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO tool_activity_log
+         (step_id, room_id, user_id, agent_id, tool, status, description, started_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, 'running', $6, $7, $7)
+       ON CONFLICT DO NOTHING`,
+      [
+        params.stepId,
+        params.roomId ?? null,
+        params.userId ?? null,
+        params.agentId ?? null,
+        params.tool,
+        params.description ?? null,
+        params.startedAt,
+      ]
+    );
+  } catch (e: any) {
+    console.warn("[tool-activity] start insert failed:", e?.message);
+  }
+}
+
+export async function recordToolActivityEnd(params: {
+  stepId: string;
+  status: "done" | "error";
+  preview?: string | null;
+  description?: string | null;
+  elapsedMs?: number | null;
+  finishedAt: number;
+}): Promise<void> {
+  try {
+    await pool.query(
+      `UPDATE tool_activity_log
+          SET status = $1,
+              preview = COALESCE($2, preview),
+              description = COALESCE($3, description),
+              elapsed_ms = $4,
+              finished_at = $5
+        WHERE step_id = $6`,
+      [
+        params.status,
+        params.preview ?? null,
+        params.description ?? null,
+        params.elapsedMs ?? null,
+        params.finishedAt,
+        params.stepId,
+      ]
+    );
+  } catch (e: any) {
+    console.warn("[tool-activity] end update failed:", e?.message);
+  }
+}
+
+// Attach the most-recent unattached activity rows (within window) to a
+// freshly-persisted Luca message. Called right after we save the message.
+export async function attachToolActivityToMessage(params: {
+  roomId: number;
+  agentId: number;
+  messageId: number;
+  sinceMs: number;
+}): Promise<void> {
+  try {
+    await pool.query(
+      `UPDATE tool_activity_log
+          SET message_id = $1
+        WHERE room_id = $2
+          AND agent_id = $3
+          AND message_id IS NULL
+          AND created_at >= $4`,
+      [params.messageId, params.roomId, params.agentId, params.sinceMs]
+    );
+  } catch (e: any) {
+    console.warn("[tool-activity] attach to message failed:", e?.message);
+  }
+}
+
+export async function getToolActivityForMessage(messageId: number): Promise<ToolActivityRecord[]> {
+  try {
+    const res = await pool.query(
+      `SELECT id, step_id, room_id, message_id, user_id, agent_id, tool, status,
+              description, preview, started_at, finished_at, elapsed_ms, created_at
+         FROM tool_activity_log
+        WHERE message_id = $1
+        ORDER BY started_at ASC, id ASC`,
+      [messageId]
+    );
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      stepId: r.step_id,
+      roomId: r.room_id,
+      messageId: r.message_id,
+      userId: r.user_id,
+      agentId: r.agent_id,
+      tool: r.tool,
+      status: r.status,
+      description: r.description,
+      preview: r.preview,
+      startedAt: Number(r.started_at),
+      finishedAt: r.finished_at != null ? Number(r.finished_at) : null,
+      elapsedMs: r.elapsed_ms,
+      createdAt: Number(r.created_at),
+    }));
+  } catch (e: any) {
+    console.warn("[tool-activity] fetch failed:", e?.message);
+    return [];
+  }
 }
 
 function generateApiKey(): string {

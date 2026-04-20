@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage, pool } from "./storage";
+import { storage, pool, getToolActivityForMessage } from "./storage";
 import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
@@ -1127,6 +1127,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const messages = await storage.getRoomMessages(Number(req.params.id), userId);
     if (messages === null) return res.status(404).json({ error: "Not found" });
     res.json(messages);
+  }));
+
+  // Feature #2: get tool activity history for a specific Luca message.
+  // The UI renders these as a collapsible "показать шаги" panel
+  // so the user can audit what Luca did on that turn.
+  app.get("/api/messages/:id/tool-activity", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const messageId = Number(req.params.id);
+    if (!Number.isFinite(messageId)) return res.status(400).json({ error: "Bad message id" });
+    // Lightweight ownership check: look up the room_message and verify the room belongs to this user
+    try {
+      const row = await pool.query(
+        `SELECT m.room_id FROM room_messages m JOIN rooms r ON r.id = m.room_id WHERE m.id = $1 AND r.user_id = $2`,
+        [messageId, userId]
+      );
+      if (row.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    } catch { return res.status(500).json({ error: "Server error" }); }
+    const activity = await getToolActivityForMessage(messageId);
+    res.json(activity);
   }));
 
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
