@@ -9,7 +9,7 @@ import FilePreview from "@/components/FilePreview";
 type FilterType = "all" | "image" | "document" | "code" | "workspace";
 type ViewMode = "grid" | "list";
 
-type WorkspaceItem = { name: string; size: number; updated_at: string };
+type WorkspaceItem = { name: string; size: number; updated_at: string; agentId?: number };
 
 function formatSize(bytes: number): string {
   if (!bytes) return "0 B";
@@ -18,9 +18,17 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// Split a `__agent<id>__/rest/of/path` entry. Returns { agentId, display }
+// where display has the prefix stripped. If no prefix, both are undefined.
+function splitAgentPrefix(name: string): { agentId?: number; display: string } {
+  const m = name.match(/^__agent(\d+)__\/(.*)$/);
+  if (!m) return { display: name };
+  return { agentId: Number(m[1]), display: m[2] };
+}
+
 function WorkspaceBrowser() {
   const [prefix, setPrefix] = useState<string>("");
-  const { data, isLoading, refetch, isFetching } = useQuery<{ ok: boolean; items: WorkspaceItem[]; error?: string }>({
+  const { data, isLoading, refetch, isFetching } = useQuery<{ ok: boolean; items: WorkspaceItem[]; error?: string; primaryAgentId?: number | null }>({
     queryKey: ["/api/workspace/list", prefix],
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/workspace/list?prefix=${encodeURIComponent(prefix)}`);
@@ -30,9 +38,11 @@ function WorkspaceBrowser() {
 
   const items = data?.items || [];
 
-  async function openFile(path: string) {
+  async function openFile(path: string, agentId?: number) {
     try {
-      const res = await apiRequest("GET", `/api/workspace/sign?path=${encodeURIComponent(path)}&days=7`);
+      const qs = new URLSearchParams({ path, days: "7" });
+      if (typeof agentId === "number") qs.set("agentId", String(agentId));
+      const res = await apiRequest("GET", `/api/workspace/sign?${qs.toString()}`);
       const json = await res.json();
       if (json?.url) window.open(json.url, "_blank", "noopener");
     } catch (e) {
@@ -112,16 +122,28 @@ function WorkspaceBrowser() {
       {!isLoading && items.length > 0 && (
         <div className="space-y-1">
           {items.map((it) => {
-            const fullPath = prefix ? `${prefix}/${it.name}` : it.name;
+            const { agentId: prefixAgentId, display } = splitAgentPrefix(it.name);
+            // When the item had a __agent<id>__/ prefix, pass the raw name to
+            // /sign so the server strips it and uses that agent. Otherwise
+            // build the full path as usual.
+            const signPath = prefixAgentId !== undefined ? it.name : (prefix ? `${prefix}/${it.name}` : it.name);
+            const agentIdForSign = prefixAgentId ?? it.agentId;
             return (
               <button
-                key={fullPath}
-                onClick={() => openFile(fullPath)}
+                key={`${agentIdForSign ?? "p"}:${signPath}`}
+                onClick={() => openFile(signPath, agentIdForSign)}
                 className="w-full flex items-center gap-3 px-3 py-2 rounded-md border border-white/[0.06] hover:border-[#C9A340]/30 hover:bg-white/[0.02] transition-colors text-left"
               >
                 <FileText className="w-4 h-4 text-[#C9A340]/70 shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-xs text-foreground truncate">{it.name}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs text-foreground truncate">{display}</div>
+                    {prefixAgentId !== undefined && (
+                      <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded border border-[#C9A340]/30 text-[#C9A340]/80 bg-[#C9A340]/5">
+                        agent #{prefixAgentId}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-[10px] text-muted-foreground/50">
                     {formatSize(it.size)} · {it.updated_at?.slice(0, 19).replace("T", " ")}
                   </div>

@@ -2686,42 +2686,87 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch { return null; }
   }
 
+  // Return every agent ID that belongs to the user. The Workspace tab uses
+  // this to surface files from old agents after a model switch creates a
+  // new primary agent (files on the old agent's path would otherwise be
+  // invisible).
+  async function getUserAgentIds(userId: number): Promise<number[]> {
+    try {
+      const agents = await storage.getAgents(userId);
+      return agents.map((a: any) => a.id).filter((id: any) => typeof id === "number");
+    } catch { return []; }
+  }
+
   // GET /api/workspace/list?prefix=auto — list files in user's persistent
-  // workspace. Returns items scoped to the user's primary agent (same space
-  // the agent's own tools see).
+  // workspace. Aggregates files across ALL the user's agents so files
+  // produced under old agent IDs (from before a model switch) stay visible.
+  // Item names coming from a non-primary agent are prefixed with
+  // `__agent<id>__/` so the UI can show which agent owns them and pass the
+  // explicit agentId back to /api/workspace/sign.
   app.get("/api/workspace/list", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const agentId = await primaryAgentIdFor(userId);
-    if (!agentId) return res.json({ ok: true, items: [], agentId: null });
+    const primaryAgentId = await primaryAgentIdFor(userId);
+    const agentIds = await getUserAgentIds(userId);
+    if (agentIds.length === 0) return res.json({ ok: true, items: [], agentIds: [], primaryAgentId: null });
     const prefix = typeof req.query.prefix === "string" ? req.query.prefix : "";
     const ws = await import("./workspace-storage");
-    try {
-      if (!ws.workspaceEnabled) return res.json({ ok: false, error: "workspace_not_configured", items: [] });
-      const items = await ws.listWorkspace(userId, agentId, prefix);
-      res.json({ ok: true, agentId, prefix, items });
-    } catch (err: any) {
-      res.status(500).json({ ok: false, error: err?.message || String(err), items: [] });
+    if (!ws.workspaceEnabled) return res.json({ ok: false, error: "workspace_not_configured", items: [] });
+    const merged: Array<{ name: string; size: number; updated_at: string; agentId: number }> = [];
+    for (const aid of agentIds) {
+      try {
+        const items = await ws.listWorkspace(userId, aid, prefix);
+        for (const it of items) {
+          const displayName = aid === primaryAgentId ? it.name : `__agent${aid}__/${it.name}`;
+          merged.push({ name: displayName, size: it.size, updated_at: it.updated_at, agentId: aid });
+        }
+      } catch (err: any) {
+        logger.warn({ source: "workspace-list", userId, agentId: aid, err: err?.message || String(err) }, "per-agent list failed");
+      }
     }
+    merged.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+    res.json({ ok: true, primaryAgentId, agentIds, prefix, items: merged });
   }));
 
-  // GET /api/workspace/sign?path=auto/xxx.png&days=7 — short-lived signed
-  // URL for a workspace file. Path is relative (agent-scoped).
+  // GET /api/workspace/sign?path=auto/xxx.png&days=7[&agentId=N] — signed URL
+  // for a workspace file. Accepts:
+  //   - explicit ?agentId=N (validated against the user's agents)
+  //   - path beginning with `__agent<id>__/` (strips prefix, uses that id)
+  //   - otherwise falls back to the user's primary agent.
   app.get("/api/workspace/sign", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const agentId = await primaryAgentIdFor(userId);
-    if (!agentId) return res.status(400).json({ error: "no_primary_agent" });
+    const userAgentIds = await getUserAgentIds(userId);
+    if (userAgentIds.length === 0) return res.status(400).json({ error: "no_primary_agent" });
     const rawPath = typeof req.query.path === "string" ? req.query.path : "";
-    const path = rawPath.replace(/^\/+/, "");
+    let path = rawPath.replace(/^\/+/, "");
     if (!path) return res.status(400).json({ error: "path required" });
+
+    // Path prefix `__agent<id>__/` overrides everything else.
+    let agentId: number | null = null;
+    const prefixMatch = path.match(/^__agent(\d+)__\/(.*)$/);
+    if (prefixMatch) {
+      agentId = Number(prefixMatch[1]);
+      path = prefixMatch[2];
+    } else if (typeof req.query.agentId === "string" || typeof req.query.agentId === "number") {
+      const qid = Number(req.query.agentId);
+      if (Number.isFinite(qid)) agentId = qid;
+    }
+    if (agentId !== null && !userAgentIds.includes(agentId)) {
+      return res.status(403).json({ error: "agent_not_owned" });
+    }
+    if (agentId === null) {
+      agentId = await primaryAgentIdFor(userId);
+    }
+    if (!agentId) return res.status(400).json({ error: "no_primary_agent" });
+
     const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
     const ws = await import("./workspace-storage");
     try {
       if (!ws.workspaceEnabled) return res.status(503).json({ error: "workspace_not_configured" });
       const key = `${userId}/${agentId}/${path}`;
       const url = await ws.getSignedUrl(key, days * 24 * 60 * 60);
-      res.json({ ok: true, url, expiresDays: days });
+      res.json({ ok: true, url, expiresDays: days, agentId });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || String(err) });
     }
