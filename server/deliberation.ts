@@ -3035,8 +3035,66 @@ print("Converted MD to DOCX")
         if (!prompt || typeof prompt !== "string") return "Missing required field: prompt.";
         const duration = toolInput.duration || "short";
 
+        const kieKey = process.env.KIE_API_KEY;
         const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY;
-        if (!geminiKey) return "Music generation requires GEMINI_API_KEY.";
+
+        // ===== PATH 1: kie.ai Suno V3.5 (primary — works today, poll-based) =====
+        if (kieKey) {
+          try {
+            const startResp = await fetch("https://api.kie.ai/api/v1/generate", {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${kieKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: prompt.slice(0, 2000),
+                customMode: false,
+                instrumental: true,
+                model: "V3_5",
+                // callBackUrl required field but we poll — point at our own /health as a no-op
+                callBackUrl: "https://kioku-production.up.railway.app/health",
+              }),
+              signal: AbortSignal.timeout(30000),
+            });
+            if (startResp.ok) {
+              const startData = await startResp.json() as any;
+              if (startData.code === 200 && startData.data?.taskId) {
+                const taskId = startData.data.taskId;
+                // Poll up to 3 min for music (Suno typically 30-90 sec)
+                for (let attempt = 0; attempt < 36; attempt++) {
+                  await new Promise(r => setTimeout(r, 5000));
+                  const pollResp = await fetch(
+                    `https://api.kie.ai/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`,
+                    { headers: { "Authorization": `Bearer ${kieKey}` }, signal: AbortSignal.timeout(10000) }
+                  );
+                  if (!pollResp.ok) continue;
+                  const pollData = await pollResp.json() as any;
+                  const d = pollData.data;
+                  if (!d) continue;
+                  if (d.status === "SUCCESS" || d.status === "FIRST_SUCCESS") {
+                    const track = d.response?.sunoData?.[0];
+                    const audioUrl = track?.audioUrl || track?.streamAudioUrl;
+                    if (audioUrl) {
+                      const title = track?.title || "Generated Track";
+                      const dur = track?.duration ? ` (${Math.round(track.duration)}s)` : "";
+                      return `[Music generated via Suno V3.5 — kie.ai]${dur} ${audioUrl}\nTitle: ${title}`;
+                    }
+                  }
+                  if (/FAILED|ERROR/i.test(d.status || "")) {
+                    console.warn(`[generate_music] kie.ai Suno failed: ${d.status}`);
+                    break; // fall through to Lyria
+                  }
+                }
+              }
+            } else {
+              const errText = (await startResp.text()).slice(0, 200);
+              console.warn(`[generate_music] kie.ai Suno start failed: ${errText}`);
+            }
+          } catch (err: any) {
+            console.warn(`[generate_music] kie.ai Suno exception: ${err?.message}`);
+          }
+        }
+
+        // ===== PATH 2: Google Lyria (fallback) =====
+        if (!geminiKey) return "Music generation requires KIE_API_KEY or GEMINI_API_KEY.";
 
         try {
           // Use Lyria 3: clip (30s) or pro (up to 3min)
@@ -3378,15 +3436,34 @@ print("Converted MD to DOCX")
           const [width, height] = probeOut.split(",").map(n => parseInt(n) || 1080);
 
           // Generate title card (colored background with centered text)
-          const escapedText = text.replace(/'/g, "\\'").replace(/:/g, "\\:");
+          // Escape drawtext special chars: backslash, single quote, colon, percent
+          const escapedText = text
+            .replace(/\\/g, "\\\\")
+            .replace(/'/g, "\\'")
+            .replace(/:/g, "\\:")
+            .replace(/%/g, "\\%");
           const fontSize = Math.floor(height / 15);
-          execSync(
-            `ffmpeg -y -f lavfi -i "color=c=0x${bg}:s=${width}x${height}:d=${duration}:r=30" ` +
-            `-vf "drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2" ` +
-            `-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" -t ${duration} ` +
-            `-c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${cardPath}" 2>&1`,
-            { timeout: 60000 }
-          );
+          // Find a usable font (DejaVu is installed via apk in Dockerfile)
+          const fontCandidates = [
+            "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+          ];
+          const fontFile = fontCandidates.find(p => fs.existsSync(p));
+          const fontArg = fontFile ? `:fontfile=${fontFile}` : "";
+          try {
+            execSync(
+              `ffmpeg -y -f lavfi -i "color=c=0x${bg}:s=${width}x${height}:d=${duration}:r=30" ` +
+              `-vf "drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2${fontArg}" ` +
+              `-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" -t ${duration} ` +
+              `-c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${cardPath}"`,
+              { timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }
+            );
+          } catch (ffmpegErr: any) {
+            const stderr = (ffmpegErr?.stderr?.toString() || ffmpegErr?.message || "").slice(-800);
+            return `Title card ffmpeg failed. fontFile=${fontFile || "none"}. stderr: ${stderr}`;
+          }
 
           // Concat card + video (or video + card)
           const order = position === "intro" ? [cardPath, videoPath] : [videoPath, cardPath];

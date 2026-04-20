@@ -11,7 +11,8 @@ RUN npm run build
 
 FROM node:20-alpine
 WORKDIR /app
-RUN apk add --no-cache ffmpeg
+# ffmpeg + ttf-dejavu (required for drawtext in title cards/subtitles) + fontconfig
+RUN apk add --no-cache ffmpeg ttf-dejavu fontconfig
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
