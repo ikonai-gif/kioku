@@ -2617,6 +2617,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // Resolve the primary agent ID for a user — used by the workspace UI so
+  // the list matches exactly what the agent (Luca/Agent O) sees.
+  async function primaryAgentIdFor(userId: number): Promise<number | null> {
+    try {
+      const agents = await storage.getAgents(userId);
+      const primary = agents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || agents[0];
+      return primary ? primary.id : null;
+    } catch { return null; }
+  }
+
+  // GET /api/workspace/list?prefix=auto — list files in user's persistent
+  // workspace. Returns items scoped to the user's primary agent (same space
+  // the agent's own tools see).
+  app.get("/api/workspace/list", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = await primaryAgentIdFor(userId);
+    if (!agentId) return res.json({ ok: true, items: [], agentId: null });
+    const prefix = typeof req.query.prefix === "string" ? req.query.prefix : "";
+    const ws = await import("./workspace-storage");
+    try {
+      if (!ws.workspaceEnabled) return res.json({ ok: false, error: "workspace_not_configured", items: [] });
+      const items = await ws.listWorkspace(userId, agentId, prefix);
+      res.json({ ok: true, agentId, prefix, items });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || String(err), items: [] });
+    }
+  }));
+
+  // GET /api/workspace/sign?path=auto/xxx.png&days=7 — short-lived signed
+  // URL for a workspace file. Path is relative (agent-scoped).
+  app.get("/api/workspace/sign", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const agentId = await primaryAgentIdFor(userId);
+    if (!agentId) return res.status(400).json({ error: "no_primary_agent" });
+    const rawPath = typeof req.query.path === "string" ? req.query.path : "";
+    const path = rawPath.replace(/^\/+/, "");
+    if (!path) return res.status(400).json({ error: "path required" });
+    const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 30);
+    const ws = await import("./workspace-storage");
+    try {
+      if (!ws.workspaceEnabled) return res.status(503).json({ error: "workspace_not_configured" });
+      const key = `${userId}/${agentId}/${path}`;
+      const url = await ws.getSignedUrl(key, days * 24 * 60 * 60);
+      res.json({ ok: true, url, expiresDays: days });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+  }));
+
   // POST /api/studio/test — directly invoke a single studio tool without going through Luca.
   // Lets owner verify which tools actually work end-to-end on the deployed container.
   app.post("/api/studio/test", asyncHandler(async (req, res) => {

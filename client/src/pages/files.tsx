@@ -1,13 +1,140 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { FolderOpen, Grid3X3, List, Filter, Image as ImageIcon, FileText, Code, Files } from "lucide-react";
+import { FolderOpen, Grid3X3, List, Filter, Image as ImageIcon, FileText, Code, Files, HardDrive, ExternalLink, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import FileCard, { type FileItem, getFileCategoryForFilter } from "@/components/FileCard";
 import FilePreview from "@/components/FilePreview";
 
-type FilterType = "all" | "image" | "document" | "code";
+type FilterType = "all" | "image" | "document" | "code" | "workspace";
 type ViewMode = "grid" | "list";
+
+type WorkspaceItem = { name: string; size: number; updated_at: string };
+
+function formatSize(bytes: number): string {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function WorkspaceBrowser() {
+  const [prefix, setPrefix] = useState<string>("");
+  const { data, isLoading, refetch, isFetching } = useQuery<{ ok: boolean; items: WorkspaceItem[]; error?: string }>({
+    queryKey: ["/api/workspace/list", prefix],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/workspace/list?prefix=${encodeURIComponent(prefix)}`);
+      return await res.json();
+    },
+  });
+
+  const items = data?.items || [];
+
+  async function openFile(path: string) {
+    try {
+      const res = await apiRequest("GET", `/api/workspace/sign?path=${encodeURIComponent(path)}&days=7`);
+      const json = await res.json();
+      if (json?.url) window.open(json.url, "_blank", "noopener");
+    } catch (e) {
+      // silent — user can retry
+    }
+  }
+
+  // Common prefixes — auto (mirrored media), scripts/notes, series folders
+  const shortcuts = [
+    { key: "", label: "/" },
+    { key: "auto", label: "auto" },
+    { key: "tests", label: "tests" },
+    { key: "IKONBAI", label: "IKONBAI" },
+  ];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1 flex-wrap">
+          {shortcuts.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setPrefix(s.key)}
+              className={cn(
+                "px-2.5 py-1 rounded-md text-[11px] border transition-colors",
+                prefix === s.key
+                  ? "bg-[#C9A340]/15 text-[#C9A340] border-[#C9A340]/30"
+                  : "text-muted-foreground/60 hover:text-foreground border-white/[0.08] hover:bg-white/5"
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <input
+          type="text"
+          value={prefix}
+          onChange={(e) => setPrefix(e.target.value)}
+          placeholder="subfolder (e.g. IKONBAI/ep1)"
+          className="flex-1 min-w-[160px] bg-transparent border border-white/[0.08] rounded-md px-2.5 py-1 text-[11px] placeholder:text-muted-foreground/30 focus:outline-none focus:border-[#C9A340]/40"
+        />
+        <button
+          onClick={() => refetch()}
+          className="p-1.5 rounded-md border border-white/[0.08] text-muted-foreground/60 hover:text-foreground hover:bg-white/5"
+          title="Refresh"
+        >
+          <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
+        </button>
+      </div>
+
+      {isLoading && (
+        <div className="flex items-center justify-center py-12">
+          <div className="w-5 h-5 rounded-full border-2 border-[#C9A340]/30 border-t-[#C9A340] animate-spin" />
+        </div>
+      )}
+
+      {!isLoading && data && !data.ok && (
+        <div className="py-10 text-center text-xs text-red-400/70">
+          {data.error === "workspace_not_configured"
+            ? "Workspace storage is not configured on this server."
+            : data.error || "Workspace unavailable."}
+        </div>
+      )}
+
+      {!isLoading && data?.ok && items.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-14 gap-2">
+          <HardDrive className="w-8 h-8 text-muted-foreground/20" />
+          <p className="text-xs text-muted-foreground/40">
+            {prefix ? `Empty: ${prefix}` : "Workspace is empty"}
+          </p>
+          <p className="text-[10px] text-muted-foreground/30">
+            Generated media and saved scripts will appear here.
+          </p>
+        </div>
+      )}
+
+      {!isLoading && items.length > 0 && (
+        <div className="space-y-1">
+          {items.map((it) => {
+            const fullPath = prefix ? `${prefix}/${it.name}` : it.name;
+            return (
+              <button
+                key={fullPath}
+                onClick={() => openFile(fullPath)}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-md border border-white/[0.06] hover:border-[#C9A340]/30 hover:bg-white/[0.02] transition-colors text-left"
+              >
+                <FileText className="w-4 h-4 text-[#C9A340]/70 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-foreground truncate">{it.name}</div>
+                  <div className="text-[10px] text-muted-foreground/50">
+                    {formatSize(it.size)} · {it.updated_at?.slice(0, 19).replace("T", " ")}
+                  </div>
+                </div>
+                <ExternalLink className="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function FilesPage() {
   const [filter, setFilter] = useState<FilterType>("all");
@@ -79,6 +206,7 @@ export default function FilesPage() {
           { key: "image" as const, label: "Images", icon: ImageIcon, count: imageCount },
           { key: "document" as const, label: "Documents", icon: FileText, count: docCount },
           { key: "code" as const, label: "Code", icon: Code, count: codeCount },
+          { key: "workspace" as const, label: "Workspace", icon: HardDrive, count: 0 },
         ]).map(({ key, label, icon: Icon, count }) => (
           <button
             key={key}
@@ -97,15 +225,18 @@ export default function FilesPage() {
         ))}
       </div>
 
+      {/* Workspace tab renders its own browser (separate source: Supabase Storage) */}
+      {filter === "workspace" && <WorkspaceBrowser />}
+
       {/* Loading state */}
-      {isLoading && (
+      {filter !== "workspace" && isLoading && (
         <div className="flex items-center justify-center py-20">
           <div className="w-6 h-6 rounded-full border-2 border-[#C9A340]/30 border-t-[#C9A340] animate-spin" />
         </div>
       )}
 
       {/* Empty state */}
-      {!isLoading && filtered.length === 0 && (
+      {filter !== "workspace" && !isLoading && filtered.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 gap-3">
           <Files className="w-10 h-10 text-muted-foreground/20" />
           <p className="text-sm text-muted-foreground/40">
@@ -118,7 +249,7 @@ export default function FilesPage() {
       )}
 
       {/* File grid / list */}
-      {!isLoading && filtered.length > 0 && (
+      {filter !== "workspace" && !isLoading && filtered.length > 0 && (
         view === "grid" ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             {filtered.map((file) => (
