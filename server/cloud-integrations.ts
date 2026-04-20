@@ -412,12 +412,31 @@ export async function exchangeGmailCode(code: string, userId: number): Promise<{
 }
 
 // ── Gmail: list all connected accounts for a user ───────────────
-export async function listGmailAccounts(userId: number): Promise<Array<{ id: number; email: string; createdAt: number }>> {
+export async function listGmailAccounts(userId: number): Promise<Array<{
+  id: number;
+  email: string;
+  createdAt: number;
+  tokenExpiry: number | null;
+  hasRefreshToken: boolean;
+  expired: boolean;
+}>> {
   const { rows } = await pool.query(
-    `SELECT id, email, created_at FROM user_integrations WHERE user_id = $1 AND provider = 'gmail' ORDER BY created_at ASC`,
+    `SELECT id, email, created_at, token_expiry, (refresh_token IS NOT NULL) AS has_refresh
+       FROM user_integrations WHERE user_id = $1 AND provider = 'gmail' ORDER BY created_at ASC`,
     [userId]
   );
-  return rows.map((r: any) => ({ id: r.id, email: r.email, createdAt: Number(r.created_at) }));
+  const now = Date.now();
+  return rows.map((r: any) => {
+    const expiry = r.token_expiry ? Number(r.token_expiry) : null;
+    return {
+      id: r.id,
+      email: r.email,
+      createdAt: Number(r.created_at),
+      tokenExpiry: expiry,
+      hasRefreshToken: !!r.has_refresh,
+      expired: !!expiry && expiry < now,
+    };
+  });
 }
 
 async function refreshGmailToken(integration: Integration): Promise<string> {
@@ -460,30 +479,87 @@ async function getGmailTokenForAccount(integrationId: number): Promise<{ token: 
   return { token: i.access_token, email: i.email || "" };
 }
 
-// ── Gmail: search across all connected accounts ──────────────────
+/** Per-account diagnostic returned alongside search results. */
+export interface GmailAccountStatus {
+  email: string;
+  ok: boolean;
+  messages_found: number;
+  error?: string;
+  needs_reconnect?: boolean;
+}
+
+// ── Gmail: search across all connected accounts ─────────────────
 // Returns up to `perAccountLimit` messages per connected account.
-export async function searchGmailAll(userId: number, query: string, perAccountLimit = 10): Promise<Array<{
-  account: string;
-  id: string;
-  threadId: string;
-  subject: string;
-  from: string;
-  date: string;
-  snippet: string;
-}>> {
+export async function searchGmailAll(userId: number, query: string, perAccountLimit = 10): Promise<{
+  messages: Array<{
+    account: string;
+    id: string;
+    threadId: string;
+    subject: string;
+    from: string;
+    date: string;
+    snippet: string;
+  }>;
+  accountStatuses: GmailAccountStatus[];
+}> {
   const accounts = await listGmailAccounts(userId);
-  if (accounts.length === 0) return [];
+  if (accounts.length === 0) return { messages: [], accountStatuses: [] };
   const results: any[] = [];
+  const statuses: GmailAccountStatus[] = [];
 
   for (const acct of accounts) {
+    const accountEmail = acct.email;
     try {
-      const { token, email } = await getGmailTokenForAccount(acct.id);
+      // Try to get a valid token (may refresh). A refresh failure here
+      // means the OAuth was revoked or the refresh token is stale —
+      // user must reconnect.
+      let token: string;
+      let email: string;
+      try {
+        const t = await getGmailTokenForAccount(acct.id);
+        token = t.token;
+        email = t.email;
+      } catch (tokenErr: any) {
+        const msg = tokenErr?.message || String(tokenErr);
+        logger.warn({ source: "gmail-search", account: accountEmail, err: msg }, "Gmail token unavailable");
+        statuses.push({
+          email: accountEmail,
+          ok: false,
+          messages_found: 0,
+          error: `token refresh failed: ${msg.slice(0, 200)}`,
+          needs_reconnect: true,
+        });
+        continue;
+      }
+
       const q = encodeURIComponent(query);
       const listResp = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=${perAccountLimit}`,
         { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) }
       );
-      if (!listResp.ok) continue;
+
+      if (!listResp.ok) {
+        // CRITICAL: don't silently swallow. If auth failed, report it so the
+        // caller (Luca) can tell the user to reconnect instead of lying that
+        // "the inbox is empty".
+        const errBody = await listResp.text().catch(() => "");
+        const needsReconnect = listResp.status === 401 || listResp.status === 403;
+        logger.warn({
+          source: "gmail-search",
+          account: accountEmail,
+          status: listResp.status,
+          body: errBody.slice(0, 300),
+        }, "Gmail list API failed");
+        statuses.push({
+          email: accountEmail,
+          ok: false,
+          messages_found: 0,
+          error: `Gmail API ${listResp.status}: ${errBody.slice(0, 200)}`,
+          needs_reconnect: needsReconnect,
+        });
+        continue;
+      }
+
       const listData = await listResp.json() as any;
       const messages = listData.messages || [];
 
@@ -509,12 +585,16 @@ export async function searchGmailAll(userId: number, query: string, perAccountLi
           };
         } catch { return null; }
       }));
-      for (const m of metas) if (m) results.push(m);
+      let found = 0;
+      for (const m of metas) if (m) { results.push(m); found++; }
+      statuses.push({ email: accountEmail, ok: true, messages_found: found });
     } catch (e: any) {
-      logger.warn({ source: "gmail-search", account: acct.email, err: e?.message }, "Gmail search failed for account");
+      const msg = e?.message || String(e);
+      logger.warn({ source: "gmail-search", account: accountEmail, err: msg }, "Gmail search failed for account");
+      statuses.push({ email: accountEmail, ok: false, messages_found: 0, error: msg.slice(0, 200) });
     }
   }
-  return results;
+  return { messages: results, accountStatuses: statuses };
 }
 
 // ── Gmail: read full message body ────────────────────────────────

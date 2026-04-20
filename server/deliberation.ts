@@ -10,7 +10,7 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage } from "./storage";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
-import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl } from "./workspace-storage";
+import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl, listAgentIdsWithStorage } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
@@ -446,6 +446,14 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         message_id: { type: "string", description: "Gmail message id (from gmail_search result 'id' field)" },
       },
       required: ["account", "message_id"],
+    },
+  },
+  {
+    name: "gmail_accounts_status",
+    description: "Diagnostic: list all Gmail accounts connected by the user along with each one's token status (working / expired / needs-reconnect). ALWAYS call this FIRST when the user says email is broken, asks which accounts are connected, complains that inbox looks empty when it shouldn't, or when gmail_search returns 0 results. Never tell the user 'no emails found' without running this check — an expired token looks identical to an empty inbox otherwise.",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
     },
   },
   {
@@ -962,6 +970,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "search_cloud_files": return `Ищу файлы в облаке: "${truncate(input.query, 50)}"`;
     case "gmail_search": return `Ищу письма в Gmail: "${truncate(input.query, 50)}"`;
     case "gmail_read": return `Читаю письмо${input.account ? ` (${truncate(input.account, 30)})` : ""}`;
+    case "gmail_accounts_status": return `Проверяю статус подключённых Gmail-аккаунтов`;
     case "stripe_list": return `Stripe: ${truncate(input.resource || "customers", 40)}`;
     case "github_call": return `GitHub: ${truncate(input.endpoint || input.action, 60)}`;
     case "vercel_call": return `Vercel: ${truncate(input.endpoint || input.action, 60)}`;
@@ -1996,9 +2005,25 @@ export async function executePartnerTool(
           if (accounts.length === 0) {
             return "No Gmail inboxes connected. Ask the user to connect Gmail in Settings → Connectors.";
           }
-          const results = await searchGmailAll(userId, query, perAccountLimit);
+          const { messages: results, accountStatuses } = await searchGmailAll(userId, query, perAccountLimit);
+
+          // Build a per-account diagnostic section so Luca never silently
+          // claims "empty" when an OAuth token is broken.
+          const broken = accountStatuses.filter(s => !s.ok);
+          const healthy = accountStatuses.filter(s => s.ok);
+          const diagLines: string[] = [];
+          if (broken.length > 0) {
+            diagLines.push(`⚠️ ${broken.length} Gmail account(s) failed:`);
+            for (const b of broken) {
+              const hint = b.needs_reconnect ? " — user must reconnect this Gmail account in Settings → Connectors" : "";
+              diagLines.push(`  • ${b.email}: ${b.error}${hint}`);
+            }
+          }
+
           if (results.length === 0) {
-            return `No Gmail messages matching "${query}" across ${accounts.length} inbox(es): ${accounts.map(a => a.email).join(", ")}.`;
+            const healthyList = healthy.map(s => s.email).join(", ") || "(none working)";
+            const diag = diagLines.length ? `\n\n${diagLines.join("\n")}` : "";
+            return `No Gmail messages matching "${query}" in ${healthy.length}/${accounts.length} working inbox(es): ${healthyList}.${diag}`;
           }
           // Group by account for readability
           const byAccount = new Map<string, any[]>();
@@ -2014,7 +2039,8 @@ export async function executePartnerTool(
             ).join("\n");
             sections.push(`[${acct}] ${list.length} message(s):\n${lines}`);
           }
-          return `Found ${results.length} Gmail message(s) across ${byAccount.size} inbox(es) for "${query}":\n\n${sections.join("\n\n")}`;
+          const diag = diagLines.length ? `\n\n${diagLines.join("\n")}` : "";
+          return `Found ${results.length} Gmail message(s) across ${byAccount.size} inbox(es) for "${query}":\n\n${sections.join("\n\n")}${diag}`;
         } catch (err: any) {
           return `Gmail search failed: ${err?.message || String(err)}`;
         }
@@ -2031,6 +2057,38 @@ export async function executePartnerTool(
           return `Gmail [${m.account}]\nSubject: ${m.subject}\nFrom: ${m.from}\nTo: ${m.to}\nDate: ${m.date}${truncNote}\n\n${m.body}`;
         } catch (err: any) {
           return `Failed to read Gmail message: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "gmail_accounts_status": {
+        try {
+          const { listGmailAccounts, searchGmailAll } = await import("./cloud-integrations");
+          const accounts = await listGmailAccounts(userId);
+          if (accounts.length === 0) {
+            return "No Gmail inboxes connected. The user must connect at least one Gmail account in Settings → Connectors before I can search email.";
+          }
+          // Do a minimal probe per account to detect broken tokens.
+          const probe = await searchGmailAll(userId, "in:inbox", 1);
+          const statusByEmail = new Map(probe.accountStatuses.map(s => [s.email.toLowerCase(), s]));
+          const lines = accounts.map(a => {
+            const st = statusByEmail.get(a.email.toLowerCase());
+            const expiryInfo = a.tokenExpiry
+              ? ` (token expiry ${new Date(a.tokenExpiry).toISOString().slice(0,19)}${a.expired ? " — EXPIRED" : ""})`
+              : "";
+            const refreshInfo = a.hasRefreshToken ? "" : " [NO refresh_token — will break on expiry]";
+            if (!st) return `• ${a.email}${expiryInfo}${refreshInfo} — status: unknown`;
+            if (st.ok) return `• ${a.email}${expiryInfo}${refreshInfo} — ✅ working`;
+            const reconnectHint = st.needs_reconnect ? " [MUST RECONNECT]" : "";
+            return `• ${a.email}${expiryInfo}${refreshInfo} — ❌ ${st.error}${reconnectHint}`;
+          });
+          const header = `${accounts.length} Gmail account(s) connected:`;
+          const brokenCount = probe.accountStatuses.filter(s => !s.ok).length;
+          const footer = brokenCount > 0
+            ? `\n\n⚠️ ${brokenCount}/${accounts.length} account(s) are broken. Tell the user to reconnect them in Settings → Connectors → Gmail.`
+            : `\n\nAll ${accounts.length} account(s) are healthy.`;
+          return `${header}\n${lines.join("\n")}${footer}`;
+        } catch (err: any) {
+          return `Gmail status check failed: ${err?.message || String(err)}`;
         }
       }
 
@@ -4168,13 +4226,41 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         if (!workspaceEnabled) return "Workspace not configured on this server.";
         const prefix = typeof toolInput.prefix === "string" ? toolInput.prefix : "";
         try {
-          const items = await listWorkspace(userId, agentId, prefix);
-          if (items.length === 0) return `Workspace "${prefix || "/"}" is empty.`;
-          const lines = items.map((i) => {
+          // Aggregate across EVERY agent that the user ever owned — including
+          // historical agents whose rows were deleted during a model switch
+          // but whose files still live under `<userId>/<oldAgentId>/…`.
+          // Files belonging to a non-current agent get a `__agent<id>__/`
+          // prefix so the user (and Luca) can see where each asset came from.
+          const storageAgentIds = await listAgentIdsWithStorage(userId);
+          const allAgentIds = new Set<number>(storageAgentIds);
+          allAgentIds.add(agentId);
+          const ids = Array.from(allAgentIds).sort((a, b) => a - b);
+
+          type Item = { name: string; size: number; updated_at: string; agentId: number };
+          const merged: Item[] = [];
+          await Promise.all(ids.map(async (aid) => {
+            try {
+              const per = await listWorkspace(userId, aid, prefix);
+              for (const it of per) {
+                const displayName = aid === agentId ? it.name : `__agent${aid}__/${it.name}`;
+                merged.push({ name: displayName, size: it.size, updated_at: it.updated_at, agentId: aid });
+              }
+            } catch {
+              /* per-agent failure is non-fatal */
+            }
+          }));
+
+          if (merged.length === 0) {
+            return `Workspace "${prefix || "/"}" is empty (checked ${ids.length} agent folder(s): ${ids.join(", ")}).`;
+          }
+
+          merged.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+          const lines = merged.map((i) => {
             const kb = i.size ? (i.size / 1024).toFixed(1) + " KB" : "?";
-            return `- ${i.name} (${kb}, ${i.updated_at.slice(0, 19)})`;
+            return `- ${i.name} (${kb}, ${(i.updated_at || "").slice(0, 19)})`;
           });
-          return `Workspace "${prefix || "/"}" (${items.length} items):\n${lines.join("\n")}`;
+          const agentInfo = ids.length > 1 ? ` — across ${ids.length} agents (${ids.join(",")})` : "";
+          return `Workspace "${prefix || "/"}" (${merged.length} items${agentInfo}):\n${lines.join("\n")}`;
         } catch (e: any) {
           return `Workspace list failed: ${e?.message || String(e)}`;
         }
