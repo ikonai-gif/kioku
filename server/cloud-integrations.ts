@@ -16,6 +16,8 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ||
   (process.env.APP_URL ? `${process.env.APP_URL}/api/integrations/google/callback` : "");
+const GMAIL_REDIRECT_URI = process.env.GMAIL_REDIRECT_URI ||
+  (process.env.APP_URL ? `${process.env.APP_URL}/api/integrations/gmail/callback` : "");
 
 const DROPBOX_APP_KEY = process.env.DROPBOX_APP_KEY || "";
 const DROPBOX_APP_SECRET = process.env.DROPBOX_APP_SECRET || "";
@@ -321,13 +323,259 @@ export async function getIntegrationStatus(userId: number): Promise<{
   );
   const gd = rows.find((r: any) => r.provider === "google_drive");
   const db = rows.find((r: any) => r.provider === "dropbox");
+  const gmails = rows.filter((r: any) => r.provider === "gmail").map((r: any) => r.email).filter(Boolean);
   return {
     google_drive: { connected: !!gd, email: gd?.email || undefined },
     dropbox: { connected: !!db, email: db?.email || undefined },
-  };
+    gmail: { connected: gmails.length > 0, email: gmails[0], emails: gmails, count: gmails.length } as any,
+  } as any;
 }
 
 // ── OAuth URL builders ───────────────────────────────────────────
+
+export function buildGmailOAuthUrl(userId: number): string {
+  if (!GOOGLE_CLIENT_ID || !GMAIL_REDIRECT_URI) {
+    throw new Error("Gmail OAuth not configured (missing GOOGLE_CLIENT_ID or redirect URI)");
+  }
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GMAIL_REDIRECT_URI,
+    response_type: "code",
+    scope: [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/userinfo.email",
+    ].join(" "),
+    access_type: "offline",
+    prompt: "consent select_account",
+    include_granted_scopes: "true",
+    state: String(userId),
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+export async function exchangeGmailCode(code: string, userId: number): Promise<{ email: string }> {
+  const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: GMAIL_REDIRECT_URI,
+      grant_type: "authorization_code",
+    }),
+  });
+  if (!tokenResp.ok) {
+    const err = await tokenResp.text();
+    throw new Error(`Gmail token exchange failed: ${tokenResp.status} ${err}`);
+  }
+  const tokens = await tokenResp.json() as any;
+
+  const userResp = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  });
+  const userInfo = userResp.ok ? (await userResp.json() as any) : {};
+  const email = (userInfo.email || "").toLowerCase();
+  if (!email) throw new Error("Gmail OAuth: could not determine account email");
+  const expiry = Date.now() + (tokens.expires_in || 3600) * 1000;
+  const now = Date.now();
+
+  // Upsert keyed on (user_id, provider, email) — allows multiple Gmail accounts.
+  // We do a manual check-then-update/insert because the uniqueness is enforced by
+  // a partial index on COALESCE(email,''), not a classic constraint.
+  const existing = await pool.query(
+    `SELECT id FROM user_integrations WHERE user_id = $1 AND provider = 'gmail' AND email = $2`,
+    [userId, email]
+  );
+  if (existing.rows[0]) {
+    await pool.query(
+      `UPDATE user_integrations
+       SET access_token = $1,
+           refresh_token = COALESCE($2, refresh_token),
+           token_expiry = $3,
+           updated_at = $4
+       WHERE id = $5`,
+      [tokens.access_token, tokens.refresh_token || null, expiry, now, existing.rows[0].id]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO user_integrations (user_id, provider, access_token, refresh_token, token_expiry, email, created_at, updated_at)
+       VALUES ($1, 'gmail', $2, $3, $4, $5, $6, $6)`,
+      [userId, tokens.access_token, tokens.refresh_token || null, expiry, email, now]
+    );
+  }
+
+  logger.info({ source: "cloud-integrations", userId, provider: "gmail", email }, "Gmail connected");
+  return { email };
+}
+
+// ── Gmail: list all connected accounts for a user ───────────────
+export async function listGmailAccounts(userId: number): Promise<Array<{ id: number; email: string; createdAt: number }>> {
+  const { rows } = await pool.query(
+    `SELECT id, email, created_at FROM user_integrations WHERE user_id = $1 AND provider = 'gmail' ORDER BY created_at ASC`,
+    [userId]
+  );
+  return rows.map((r: any) => ({ id: r.id, email: r.email, createdAt: Number(r.created_at) }));
+}
+
+async function refreshGmailToken(integration: Integration): Promise<string> {
+  if (!integration.refresh_token) throw new Error("No Gmail refresh token available");
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      refresh_token: integration.refresh_token,
+      grant_type: "refresh_token",
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Gmail token refresh failed: ${resp.status} ${err}`);
+  }
+  const data = await resp.json() as any;
+  const newToken = data.access_token;
+  const expiry = Date.now() + (data.expires_in || 3600) * 1000;
+  await pool.query(
+    `UPDATE user_integrations SET access_token = $1, token_expiry = $2, updated_at = $3 WHERE id = $4`,
+    [newToken, expiry, Date.now(), integration.id]
+  );
+  return newToken;
+}
+
+async function getGmailTokenForAccount(integrationId: number): Promise<{ token: string; email: string }> {
+  const { rows } = await pool.query(
+    `SELECT id, access_token, refresh_token, token_expiry, email, provider FROM user_integrations WHERE id = $1`,
+    [integrationId]
+  );
+  const i = rows[0] as Integration | undefined;
+  if (!i) throw new Error("Gmail account not found");
+  if (i.token_expiry && i.token_expiry < Date.now() + 5 * 60 * 1000) {
+    const t = await refreshGmailToken(i);
+    return { token: t, email: i.email || "" };
+  }
+  return { token: i.access_token, email: i.email || "" };
+}
+
+// ── Gmail: search across all connected accounts ──────────────────
+// Returns up to `perAccountLimit` messages per connected account.
+export async function searchGmailAll(userId: number, query: string, perAccountLimit = 10): Promise<Array<{
+  account: string;
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+}>> {
+  const accounts = await listGmailAccounts(userId);
+  if (accounts.length === 0) return [];
+  const results: any[] = [];
+
+  for (const acct of accounts) {
+    try {
+      const { token, email } = await getGmailTokenForAccount(acct.id);
+      const q = encodeURIComponent(query);
+      const listResp = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=${perAccountLimit}`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) }
+      );
+      if (!listResp.ok) continue;
+      const listData = await listResp.json() as any;
+      const messages = listData.messages || [];
+
+      // Fetch metadata for each message in parallel (bounded)
+      const metas = await Promise.all(messages.slice(0, perAccountLimit).map(async (m: any) => {
+        try {
+          const r = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+            { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) }
+          );
+          if (!r.ok) return null;
+          const d = await r.json() as any;
+          const hdrs = (d.payload?.headers || []) as Array<{ name: string; value: string }>;
+          const getH = (n: string) => hdrs.find(h => h.name.toLowerCase() === n.toLowerCase())?.value || "";
+          return {
+            account: email,
+            id: d.id,
+            threadId: d.threadId,
+            subject: getH("Subject"),
+            from: getH("From"),
+            date: getH("Date"),
+            snippet: d.snippet || "",
+          };
+        } catch { return null; }
+      }));
+      for (const m of metas) if (m) results.push(m);
+    } catch (e: any) {
+      logger.warn({ source: "gmail-search", account: acct.email, err: e?.message }, "Gmail search failed for account");
+    }
+  }
+  return results;
+}
+
+// ── Gmail: read full message body ────────────────────────────────
+function decodeBase64Url(data: string): string {
+  const b = data.replace(/-/g, "+").replace(/_/g, "/");
+  try { return Buffer.from(b, "base64").toString("utf-8"); } catch { return ""; }
+}
+
+function extractBody(payload: any): string {
+  if (!payload) return "";
+  if (payload.body?.data) return decodeBase64Url(payload.body.data);
+  const parts = payload.parts || [];
+  // Prefer text/plain over text/html
+  const plain = parts.find((p: any) => p.mimeType === "text/plain");
+  if (plain?.body?.data) return decodeBase64Url(plain.body.data);
+  for (const p of parts) {
+    const nested = extractBody(p);
+    if (nested) return nested;
+  }
+  const html = parts.find((p: any) => p.mimeType === "text/html");
+  if (html?.body?.data) {
+    const raw = decodeBase64Url(html.body.data);
+    return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  return "";
+}
+
+export async function readGmailMessage(userId: number, accountEmail: string, messageId: string): Promise<{
+  account: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  body: string;
+  truncated: boolean;
+}> {
+  const accounts = await listGmailAccounts(userId);
+  const acct = accounts.find(a => a.email.toLowerCase() === accountEmail.toLowerCase());
+  if (!acct) throw new Error(`Gmail account ${accountEmail} not connected`);
+  const { token } = await getGmailTokenForAccount(acct.id);
+  const r = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20000) }
+  );
+  if (!r.ok) throw new Error(`Gmail message fetch failed: ${r.status}`);
+  const d = await r.json() as any;
+  const hdrs = (d.payload?.headers || []) as Array<{ name: string; value: string }>;
+  const getH = (n: string) => hdrs.find(h => h.name.toLowerCase() === n.toLowerCase())?.value || "";
+  let body = extractBody(d.payload);
+  const truncated = body.length > 12000;
+  body = body.slice(0, 12000);
+  return {
+    account: accountEmail,
+    subject: getH("Subject"),
+    from: getH("From"),
+    to: getH("To"),
+    date: getH("Date"),
+    body,
+    truncated,
+  };
+}
 
 export function buildGoogleOAuthUrl(userId: number): string {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {

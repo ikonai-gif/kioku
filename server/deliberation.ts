@@ -425,6 +425,30 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "gmail_search",
+    description: "Search the user's connected Gmail inboxes. Supports multiple accounts — by default searches across ALL connected Gmail accounts and returns results tagged with which inbox they came from. Use when the user asks to find, review, or read emails. Supports Gmail search operators (from:, subject:, has:attachment, newer_than:7d, is:unread, etc.).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Gmail search query. Supports operators like 'from:boss@acme.com', 'subject:invoice', 'newer_than:7d', 'is:unread'." },
+        per_account_limit: { type: "number", description: "Max messages per inbox (default 10)", default: 10 },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "gmail_read",
+    description: "Read the full body of a specific Gmail message. Use after gmail_search to open a message. Requires the account email (which inbox) and the message id from the search results.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Email address of the inbox (from gmail_search result 'account' field)" },
+        message_id: { type: "string", description: "Gmail message id (from gmail_search result 'id' field)" },
+      },
+      required: ["account", "message_id"],
+    },
+  },
+  {
     name: "reset_sandbox",
     description: "Reset the user's code execution sandbox. Kills the current persistent sandbox and starts fresh. Use when the user wants a clean environment, or when the sandbox is in a bad state.",
     input_schema: {
@@ -874,6 +898,8 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "create_file": return `Создаю файл`;
     case "set_reminder": return `Ставлю напоминание`;
     case "search_cloud_files": return `Ищу файлы в облаке: "${truncate(input.query, 50)}"`;
+    case "gmail_search": return `Ищу письма в Gmail: "${truncate(input.query, 50)}"`;
+    case "gmail_read": return `Читаю письмо${input.account ? ` (${truncate(input.account, 30)})` : ""}`;
     case "stripe_list": return `Stripe: ${truncate(input.resource || "customers", 40)}`;
     case "github_call": return `GitHub: ${truncate(input.endpoint || input.action, 60)}`;
     case "vercel_call": return `Vercel: ${truncate(input.endpoint || input.action, 60)}`;
@@ -1895,6 +1921,54 @@ export async function executePartnerTool(
           return `File: ${result.fileName}${truncNote}\n\n${result.text}`;
         } catch (err: any) {
           return `Failed to read file: ${err.message}`;
+        }
+      }
+
+      case "gmail_search": {
+        const query = toolInput.query;
+        if (!query) return "No Gmail query provided.";
+        const perAccountLimit = Math.min(Number(toolInput.per_account_limit) || 10, 25);
+        try {
+          const { listGmailAccounts, searchGmailAll } = await import("./cloud-integrations");
+          const accounts = await listGmailAccounts(userId);
+          if (accounts.length === 0) {
+            return "No Gmail inboxes connected. Ask the user to connect Gmail in Settings → Connectors.";
+          }
+          const results = await searchGmailAll(userId, query, perAccountLimit);
+          if (results.length === 0) {
+            return `No Gmail messages matching "${query}" across ${accounts.length} inbox(es): ${accounts.map(a => a.email).join(", ")}.`;
+          }
+          // Group by account for readability
+          const byAccount = new Map<string, any[]>();
+          for (const r of results) {
+            const list = byAccount.get(r.account) || [];
+            list.push(r);
+            byAccount.set(r.account, list);
+          }
+          const sections: string[] = [];
+          for (const [acct, list] of byAccount) {
+            const lines = list.map(m =>
+              `  • [${m.id}] ${m.subject || "(no subject)"} — from: ${m.from} — ${m.date}\n    ${m.snippet}`
+            ).join("\n");
+            sections.push(`[${acct}] ${list.length} message(s):\n${lines}`);
+          }
+          return `Found ${results.length} Gmail message(s) across ${byAccount.size} inbox(es) for "${query}":\n\n${sections.join("\n\n")}`;
+        } catch (err: any) {
+          return `Gmail search failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "gmail_read": {
+        const account = toolInput.account;
+        const messageId = toolInput.message_id;
+        if (!account || !messageId) return "Missing account or message_id.";
+        try {
+          const { readGmailMessage } = await import("./cloud-integrations");
+          const m = await readGmailMessage(userId, account, messageId);
+          const truncNote = m.truncated ? " (truncated to 12000 chars)" : "";
+          return `Gmail [${m.account}]\nSubject: ${m.subject}\nFrom: ${m.from}\nTo: ${m.to}\nDate: ${m.date}${truncNote}\n\n${m.body}`;
+        } catch (err: any) {
+          return `Failed to read Gmail message: ${err?.message || String(err)}`;
         }
       }
 

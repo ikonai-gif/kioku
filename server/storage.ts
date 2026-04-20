@@ -489,6 +489,26 @@ export async function initDb() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS age_verified BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT DEFAULT 'us';
   `);
+
+  // Phase 12: Allow multiple accounts per provider (e.g. several Gmail inboxes)
+  // Replace the (user_id, provider) unique with (user_id, provider, email).
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'user_integrations_user_id_provider_key'
+      ) THEN
+        ALTER TABLE user_integrations DROP CONSTRAINT user_integrations_user_id_provider_key;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'user_integrations_user_provider_email_key'
+      ) THEN
+        -- NULL emails are allowed (treated distinct); use coalesce to make NULLs de-dup as empty string
+        CREATE UNIQUE INDEX IF NOT EXISTS user_integrations_user_provider_email_key
+          ON user_integrations (user_id, provider, COALESCE(email, ''));
+      END IF;
+    END$$;
+  `);
 }
 
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────

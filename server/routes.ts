@@ -3506,6 +3506,68 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // Gmail OAuth connect (supports multiple accounts per user)
+  app.get("/api/integrations/gmail/connect", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    try {
+      const { buildGmailOAuthUrl } = await import("./cloud-integrations");
+      const url = buildGmailOAuthUrl(userId);
+      res.json({ url });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // Gmail OAuth callback
+  app.get("/api/integrations/gmail/callback", asyncHandler(async (req, res) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) return res.status(400).json({ error: "Missing code or state" });
+    let userId: number;
+    try {
+      const payload = jwt.verify(state, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number; purpose: string };
+      if (payload.purpose !== 'oauth_gmail') throw new Error('Invalid state purpose');
+      userId = payload.userId;
+    } catch {
+      userId = Number(state);
+      if (!userId || isNaN(userId)) return res.status(400).json({ error: "Invalid state" });
+    }
+    try {
+      const { exchangeGmailCode } = await import("./cloud-integrations");
+      const { email } = await exchangeGmailCode(code, userId);
+      const redirectBase = process.env.APP_URL || "";
+      res.redirect(`${redirectBase}/partner?integration=gmail&status=connected&email=${encodeURIComponent(email)}`);
+    } catch (err: any) {
+      logger.error({ source: "gmail-callback", error: err.message }, "Gmail OAuth callback failed");
+      const redirectBase = process.env.APP_URL || "";
+      res.redirect(`${redirectBase}/partner?integration=gmail&status=error&msg=${encodeURIComponent(err.message || 'unknown')}`);
+    }
+  }));
+
+  // List connected Gmail accounts (for UI display)
+  app.get("/api/integrations/gmail/accounts", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { listGmailAccounts } = await import("./cloud-integrations");
+    const accounts = await listGmailAccounts(userId);
+    res.json({ accounts });
+  }));
+
+  // Disconnect a specific Gmail account by email
+  app.delete("/api/integrations/gmail", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const emailParam = (req.query.email as string || "").toLowerCase();
+    if (!emailParam) return res.status(400).json({ error: "email query param required" });
+    const { pool } = await import("./storage");
+    const r = await pool.query(
+      `DELETE FROM user_integrations WHERE user_id = $1 AND provider = 'gmail' AND LOWER(email) = $2`,
+      [userId, emailParam]
+    );
+    res.json({ ok: true, deleted: r.rowCount || 0 });
+  }));
+
   // Integration status
   app.get("/api/integrations/status", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
