@@ -10,6 +10,7 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool } from "./storage";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
+import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
@@ -790,6 +791,42 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["series_name", "episode_number", "script"],
     },
   },
+  {
+    name: "workspace_list",
+    description: "List files in persistent workspace (private Supabase Storage). Returns name, size and updated_at for each file under an optional subpath. Files here persist forever and survive beyond the 7-day signed URL expiry of generated media. Auto-mirrored media lives under 'auto/'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prefix: { type: "string", description: "Optional subfolder to list (e.g. 'auto', 'scripts', 'IKONBAI/ep1'). Empty or omitted = workspace root." },
+      },
+    },
+  },
+  {
+    name: "workspace_save",
+    description: "Save a file (script, notes, JSON, anything) into persistent workspace. Use for scripts, series bibles, notes, plans — anything you want to keep across sessions. For media, tools like generate_image auto-mirror already.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "Relative path (e.g. 'IKONBAI/ep1/script.md'). Slashes create folders. Must not start with '/'." },
+        content: { type: "string", description: "File contents. Plain text by default. If encoding='base64', this is decoded as binary before writing." },
+        encoding: { type: "string", enum: ["utf8", "base64"], description: "How to interpret content. Default utf8." },
+        content_type: { type: "string", description: "Optional MIME type. If omitted, guessed from extension." },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "workspace_read",
+    description: "Get a 7-day signed URL to read a file from persistent workspace. Returns the URL — fetch it with read_url or share it with the user. Use workspace_list first to discover exact paths.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: { type: "string", description: "Relative path exactly as shown by workspace_list (e.g. 'auto/1729...png' or 'IKONBAI/ep1/script.md')." },
+        expires_days: { type: "number", description: "Link validity in days. Default 7, max 30." },
+      },
+      required: ["path"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -833,6 +870,9 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "create_file": return `Создаю файл`;
     case "set_reminder": return `Ставлю напоминание`;
     case "search_cloud_files": return `Ищу файлы в облаке: "${truncate(input.query, 50)}"`;
+    case "workspace_list": return `Смотрю файлы в workspace${input.prefix ? `: ${truncate(input.prefix, 40)}` : ""}`;
+    case "workspace_save": return `Сохраняю в workspace: ${truncate(input.path, 60)}`;
+    case "workspace_read": return `Читаю из workspace: ${truncate(input.path, 60)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
 }
@@ -3642,15 +3682,125 @@ Start with step 1 now.`;
         return `False memory #${memoryId} deleted. Reason: "${reason}". Correction logged.`;
       }
 
+      case "workspace_list": {
+        if (!workspaceEnabled) return "Workspace not configured on this server.";
+        const prefix = typeof toolInput.prefix === "string" ? toolInput.prefix : "";
+        try {
+          const items = await listWorkspace(userId, agentId, prefix);
+          if (items.length === 0) return `Workspace "${prefix || "/"}" is empty.`;
+          const lines = items.map((i) => {
+            const kb = i.size ? (i.size / 1024).toFixed(1) + " KB" : "?";
+            return `- ${i.name} (${kb}, ${i.updated_at.slice(0, 19)})`;
+          });
+          return `Workspace "${prefix || "/"}" (${items.length} items):\n${lines.join("\n")}`;
+        } catch (e: any) {
+          return `Workspace list failed: ${e?.message || String(e)}`;
+        }
+      }
+
+      case "workspace_save": {
+        if (!workspaceEnabled) return "Workspace not configured on this server.";
+        const path = typeof toolInput.path === "string" ? toolInput.path.replace(/^\/+/, "") : "";
+        const content = typeof toolInput.content === "string" ? toolInput.content : "";
+        const encoding = toolInput.encoding === "base64" ? "base64" : "utf8";
+        const contentType = typeof toolInput.content_type === "string" ? toolInput.content_type : undefined;
+        if (!path) return "workspace_save: 'path' is required and cannot be empty or absolute.";
+        try {
+          const buf = encoding === "base64" ? Buffer.from(content, "base64") : Buffer.from(content, "utf8");
+          const { url } = await saveAssetAndSign(userId, agentId, path, buf, { contentType });
+          return `Saved ${buf.length} bytes to workspace: ${path}\n[Signed URL 7d: ${url}]`;
+        } catch (e: any) {
+          return `Workspace save failed: ${e?.message || String(e)}`;
+        }
+      }
+
+      case "workspace_read": {
+        if (!workspaceEnabled) return "Workspace not configured on this server.";
+        const path = typeof toolInput.path === "string" ? toolInput.path.replace(/^\/+/, "") : "";
+        if (!path) return "workspace_read: 'path' is required.";
+        const days = typeof toolInput.expires_days === "number" ? Math.min(Math.max(toolInput.expires_days, 1), 30) : 7;
+        try {
+          const key = `${userId}/${agentId}/${path}`;
+          const url = await getSignedUrl(key, days * 24 * 60 * 60);
+          return `Signed URL (${days}d) for ${path}:\n${url}`;
+        } catch (e: any) {
+          return `Workspace read failed: ${e?.message || String(e)}`;
+        }
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
     })();
+
+    // ---- Auto-mirror generated media into persistent workspace ----
+    // For a small set of media-producing tools, extract the primary
+    // asset (data: URI or https URL) from the result and upload it to
+    // Supabase Storage. Append a line with a 7-day signed URL so Luca
+    // and the user always have a stable link.
+    //
+    // This is purely additive — the original result string is never
+    // modified or truncated. If workspace is unreachable, this block
+    // is a no-op and the tool behaves exactly as before.
+    let __finalResult: string = typeof __result === "string" ? __result : String(__result ?? "");
+    const MEDIA_TOOLS = new Set([
+      "generate_image",
+      "generate_video",
+      "generate_image_to_video",
+      "generate_speech",
+      "generate_sfx",
+      "generate_music",
+      "stitch_media",
+      "add_subtitles",
+      "add_title_cards",
+    ]);
+    if (workspaceEnabled && MEDIA_TOOLS.has(toolName) && typeof __finalResult === "string") {
+      try {
+        // Prefer a data URI (always present for images/audio) — it's local,
+        // ~instant to persist. Otherwise fall back to an https URL.
+        const dataUriMatch = __finalResult.match(/data:([\w.+-]+\/[\w.+-]+);base64,([A-Za-z0-9+/=]+)/);
+        const httpsMatch = __finalResult.match(/https:\/\/[^\s\]\n"'<>)]+/);
+        const source = dataUriMatch ? dataUriMatch[0] : (httpsMatch ? httpsMatch[0] : "");
+        if (source) {
+          // Derive a sensible path + extension
+          const extMap: Record<string, string> = {
+            generate_image: "png",
+            generate_video: "mp4",
+            generate_image_to_video: "mp4",
+            generate_speech: "mp3",
+            generate_sfx: "mp3",
+            generate_music: "mp3",
+            stitch_media: "mp4",
+            add_subtitles: "mp4",
+            add_title_cards: "mp4",
+          };
+          // If result looks like an audio data URI, prefer that extension
+          let ext = extMap[toolName] || "bin";
+          if (dataUriMatch) {
+            const mime = dataUriMatch[1];
+            if (mime.startsWith("audio/")) ext = mime.includes("wav") ? "wav" : "mp3";
+            else if (mime.startsWith("video/")) ext = "mp4";
+            else if (mime.startsWith("image/")) ext = mime.includes("jpeg") ? "jpg" : mime.split("/")[1] || "png";
+          }
+          const ts = Date.now();
+          const relPath = `auto/${ts}_${toolName}.${ext}`;
+          const { url } = await persistAssetSource(userId, agentId, source, relPath, { expiresSec: 7 * 24 * 60 * 60 });
+          __finalResult = `${__finalResult}\n[Saved to workspace 7d: ${url}]`;
+        }
+      } catch (e: any) {
+        // Never let mirroring failure break the tool. Log quietly.
+        try {
+          const msg = e?.message || String(e);
+          __finalResult = `${__finalResult}\n[Workspace mirror skipped: ${msg.slice(0, 120)}]`;
+        } catch { /* ignore */ }
+      }
+    }
+
     if (roomId) {
       try {
-        const preview = typeof __result === "string" && __result.length > 160
-          ? __result.slice(0, 160) + "…"
-          : (typeof __result === "string" ? __result : "");
+        const preview = typeof __finalResult === "string" && __finalResult.length > 160
+          ? __finalResult.slice(0, 160) + "…"
+          : (typeof __finalResult === "string" ? __finalResult : "");
         broadcastToolActivity(roomId, {
           agentId,
           tool: toolName,
@@ -3661,7 +3811,7 @@ Start with step 1 now.`;
         });
       } catch { /* best-effort */ }
     }
-    return __result;
+    return __finalResult;
   } catch (err: any) {
     const message = err?.message || String(err);
     if (roomId) {
