@@ -1862,7 +1862,7 @@ export default function PartnerChat() {
               // If no match found, mark the last running step
               if (toolName && !updated.some((s) => s.status === "done" && s.toolName === toolName)) {
                 for (let i = updated.length - 1; i >= 0; i--) {
-                  if (updated[i].status === "running") {
+                  if (updated[i].status === "running" ) {
                     updated[i] = { ...updated[i], status: "done" };
                     break;
                   }
@@ -1870,6 +1870,40 @@ export default function PartnerChat() {
               }
               return updated;
             });
+          } else if (data.type === "tool_activity") {
+            // New unified tool activity event from deliberation.ts — includes
+            // status (running/done/error), elapsed time, and a live description.
+            const toolName = data.tool || "unknown";
+            if (data.status === "running") {
+              const stepId = `ts-${++toolStepIdRef.current}`;
+              setToolSteps((prev) => [
+                ...prev,
+                {
+                  id: stepId,
+                  toolName,
+                  status: "running",
+                  startedAt: data.timestamp || Date.now(),
+                },
+              ]);
+            } else if (data.status === "done" || data.status === "error") {
+              const nextStatus: "done" | "error" = data.status === "error" ? "error" : "done";
+              setToolSteps((prev) => {
+                const updated = [...prev];
+                for (let i = updated.length - 1; i >= 0; i--) {
+                  if (updated[i].status === "running" && updated[i].toolName === toolName) {
+                    updated[i] = { ...updated[i], status: nextStatus };
+                    return updated;
+                  }
+                }
+                for (let i = updated.length - 1; i >= 0; i--) {
+                  if (updated[i].status === "running") {
+                    updated[i] = { ...updated[i], status: nextStatus };
+                    return updated;
+                  }
+                }
+                return updated;
+              });
+            }
           }
         } catch {}
       };
