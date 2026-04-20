@@ -65,11 +65,12 @@ CREATE TABLE IF NOT EXISTS meeting_context (
   author_agent_id  INTEGER REFERENCES agents(id),
   visibility       VARCHAR(20) NOT NULL DEFAULT 'all'
     CHECK (visibility IN ('all','owner','scoped')),
-  scope_agent_ids  TEXT,   -- JSON integer[] for scoped visibility (e.g. '[1,5,9]')
+  scope_agent_ids  JSONB NOT NULL DEFAULT '[]'::jsonb,  -- integer[] for scoped visibility (e.g. '[1,5,9]'). JSONB for GIN index + efficient @> containment query.
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_mc_sequence ON meeting_context(meeting_id, sequence_number);
 CREATE INDEX IF NOT EXISTS idx_mc_meeting ON meeting_context(meeting_id, sequence_number);
+CREATE INDEX IF NOT EXISTS idx_mc_scope_gin ON meeting_context USING GIN (scope_agent_ids);  -- O(1) "is agent X in scope?" lookup
 CREATE SEQUENCE IF NOT EXISTS meeting_context_seq_global;  -- fallback global seq; per-meeting sequence handled in app layer
 
 -- ── 6. meeting_artifacts ─────────────────────────────────────────────────────

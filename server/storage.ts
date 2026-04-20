@@ -572,11 +572,12 @@ export async function initDb() {
       author_agent_id  INTEGER REFERENCES agents(id),
       visibility       VARCHAR(20) NOT NULL DEFAULT 'all'
         CHECK (visibility IN ('all','owner','scoped')),
-      scope_agent_ids  TEXT,
+      scope_agent_ids  JSONB NOT NULL DEFAULT '[]'::jsonb,
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE UNIQUE INDEX IF NOT EXISTS uniq_mc_sequence ON meeting_context(meeting_id, sequence_number);
     CREATE INDEX IF NOT EXISTS idx_mc_meeting ON meeting_context(meeting_id, sequence_number);
+    CREATE INDEX IF NOT EXISTS idx_mc_scope_gin ON meeting_context USING GIN (scope_agent_ids);
     CREATE SEQUENCE IF NOT EXISTS meeting_context_seq_global;
   `);
   await pool.query(`

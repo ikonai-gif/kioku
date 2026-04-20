@@ -393,11 +393,12 @@ export const meetingContext = pgTable("meeting_context", {
   content:        text("content").notNull(),
   authorAgentId:  integer("author_agent_id"),
   visibility:     varchar("visibility", { length: 20 }).notNull().default("all"),
-  scopeAgentIds:  text("scope_agent_ids"),  // JSON integer[] for scoped visibility
+  scopeAgentIds:  jsonb("scope_agent_ids").notNull().default([]),  // integer[] for scoped visibility — JSONB for GIN index + efficient @> containment
   createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("uniq_mc_sequence").on(t.meetingId, t.sequenceNumber),
   index("idx_mc_meeting").on(t.meetingId, t.sequenceNumber),
+  // GIN index on scope_agent_ids is created via raw SQL in initDb — Drizzle does not support USING GIN syntax in schema defs yet
 ]);
 
 export const insertMeetingContextSchema = createInsertSchema(meetingContext).omit({ id: true, createdAt: true });
