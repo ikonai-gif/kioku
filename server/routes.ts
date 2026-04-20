@@ -396,7 +396,60 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
-  // ── Admin: merge users (master key only) ─────────────────────
+  // ── Admin: storage rewrite prefix ─────────────────────────
+  // Move all Supabase Storage files from one prefix to another. Useful for
+  // undoing a partial merge or rebalancing user folders.
+  app.post("/api/admin/storage-rewrite", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const { fromPrefix, toPrefix, dryRun } = req.body || {};
+    if (!fromPrefix || !toPrefix) return res.status(400).json({ error: "fromPrefix and toPrefix required" });
+    if (fromPrefix === toPrefix) return res.status(400).json({ error: "prefixes must differ" });
+    const sbUrl = process.env.SUPABASE_URL;
+    const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!sbUrl || !sbKey) return res.status(500).json({ error: "Supabase not configured" });
+    const bucket = 'luca-workspace';
+    const sbHeaders = { apikey: sbKey, Authorization: `Bearer ${sbKey}`, 'Content-Type': 'application/json' };
+    async function sbList(prefix: string): Promise<any[]> {
+      const r = await fetch(`${sbUrl}/storage/v1/object/list/${bucket}`, {
+        method: 'POST', headers: sbHeaders,
+        body: JSON.stringify({ prefix, limit: 1000, sortBy: { column: 'name', order: 'asc' } }),
+      });
+      if (!r.ok) throw new Error(`list ${prefix} → ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return await r.json();
+    }
+    const allFiles: string[] = [];
+    async function walk(prefix: string) {
+      const items = await sbList(prefix);
+      for (const item of items) {
+        const path = prefix ? `${prefix}/${item.name}` : item.name;
+        if (item && item.id && item.metadata) allFiles.push(path);
+        else if (item && typeof item.name === 'string' && item.name.length > 0) await walk(path);
+      }
+    }
+    try {
+      await walk(String(fromPrefix));
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || String(e) });
+    }
+    if (dryRun) {
+      return res.json({ ok: true, dryRun: true, found: allFiles.length, sample: allFiles.slice(0, 10) });
+    }
+    let moved = 0; const errors: string[] = [];
+    for (const path of allFiles) {
+      const newPath = String(toPrefix) + path.substring(String(fromPrefix).length);
+      const r = await fetch(`${sbUrl}/storage/v1/object/move`, {
+        method: 'POST', headers: sbHeaders,
+        body: JSON.stringify({ bucketId: bucket, sourceKey: path, destinationKey: newPath }),
+      });
+      if (r.ok) moved++;
+      else errors.push(`${path}: ${r.status} ${(await r.text()).slice(0, 100)}`);
+    }
+    res.json({ ok: true, found: allFiles.length, moved, errors: errors.slice(0, 10) });
+  }));
+
+  // ── Admin: merge users (master key only) ───────────────────
   // Moves ALL data from srcUserId → dstUserId, then optionally blocks src.
   // Includes Postgres rows AND Supabase Storage files (rewrites <srcId>/* → <dstId>/*).
   // Use ?dryRun=true to preview counts without modifying.
@@ -469,19 +522,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       summary.tables.user_integrations = { moved: intMoved, replaced_dst: intReplaced, skipped_older: intSkipped };
 
-      // Generic tables: just remap user_id
+      // Generic tables: just remap user_id. Each table in its own SAVEPOINT
+      // so a UNIQUE collision in one table doesn't abort the whole merge.
       for (const table of remapTables) {
-        try {
-          if (dryRun) {
+        if (dryRun) {
+          try {
             const cnt = await client.query(`SELECT COUNT(*)::int AS c FROM ${table} WHERE user_id = $1`, [src]);
             summary.tables[table] = { would_move: cnt.rows[0].c };
-          } else {
-            const r = await client.query(`UPDATE ${table} SET user_id = $1 WHERE user_id = $2`, [dst, src]);
-            summary.tables[table] = { moved: r.rowCount };
+          } catch (e: any) {
+            summary.tables[table] = { error: e?.message };
           }
+          continue;
+        }
+        const sp = `sp_${table.replace(/[^a-z0-9_]/gi, '')}`;
+        try {
+          await client.query(`SAVEPOINT ${sp}`);
+          const r = await client.query(`UPDATE ${table} SET user_id = $1 WHERE user_id = $2`, [dst, src]);
+          summary.tables[table] = { moved: r.rowCount };
+          await client.query(`RELEASE SAVEPOINT ${sp}`);
         } catch (e: any) {
-          // Table might not exist or column might differ — record and continue
-          summary.tables[table] = { error: e?.message };
+          await client.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+          // UNIQUE collision (e.g. same slug exists on dst) — retry per-row, deleting src dups
+          if (String(e?.message || '').includes('duplicate key') || String(e?.message || '').includes('unique constraint')) {
+            try {
+              const srcRows = await client.query(`SELECT * FROM ${table} WHERE user_id = $1`, [src]);
+              let moved = 0, deleted = 0;
+              for (const row of srcRows.rows) {
+                try {
+                  await client.query(`SAVEPOINT ${sp}_row`);
+                  await client.query(`UPDATE ${table} SET user_id = $1 WHERE "id" = $2`, [dst, row.id]);
+                  await client.query(`RELEASE SAVEPOINT ${sp}_row`);
+                  moved++;
+                } catch {
+                  await client.query(`ROLLBACK TO SAVEPOINT ${sp}_row`);
+                  // Conflict — dst already has this. Drop src row.
+                  await client.query(`DELETE FROM ${table} WHERE "id" = $1`, [row.id]);
+                  deleted++;
+                }
+              }
+              summary.tables[table] = { moved, deleted_duplicates: deleted };
+            } catch (e2: any) {
+              summary.tables[table] = { error: 'retry failed: ' + (e2?.message || e2) };
+            }
+          } else {
+            summary.tables[table] = { error: e?.message };
+          }
         }
       }
 
@@ -554,10 +639,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       summary.storage.error = e?.message || String(e);
     }
 
-    // Optionally block src user (set role='blocked', clear api_key)
+    // Optionally block src user (set role='blocked'). api_key is NOT NULL, so set to a placeholder.
     if (!dryRun && blockSrc) {
       try {
-        await pool.query(`UPDATE users SET role = 'blocked', api_key = NULL WHERE id = $1`, [src]);
+        await pool.query(
+          `UPDATE users SET role = 'blocked', api_key = $1 WHERE id = $2`,
+          [`blocked_${src}_${Date.now()}`, src]
+        );
         summary.src_blocked = true;
       } catch (e: any) {
         summary.src_block_error = e?.message;
