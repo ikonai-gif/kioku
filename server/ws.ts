@@ -179,6 +179,35 @@ export function broadcastStreamChunk(roomId: number, payload: {
 }
 
 /**
+ * Broadcast a tool activity event (start / done / error) to all clients in a room.
+ * Used to give the user a live "what is the agent doing right now" timeline,
+ * similar to how larger agent UIs stream their tool calls in real time.
+ *
+ * This is best-effort — if the broadcast fails or no one is subscribed, the
+ * agent's actual work is unaffected.
+ */
+export function broadcastToolActivity(roomId: number, payload: {
+  agentId: number;
+  agentName?: string;
+  tool: string;
+  status: "running" | "done" | "error";
+  description?: string;
+  elapsedMs?: number;
+  preview?: string;
+  error?: string;
+  timestamp: number;
+}) {
+  const clients = roomClients.get(roomId);
+  if (!clients) return;
+  const data = JSON.stringify({ type: "tool_activity", ...payload });
+  Array.from(clients).forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.send(data); } catch { /* best-effort */ }
+    }
+  });
+}
+
+/**
  * Broadcast a human_turn event to all clients subscribed to a room.
  * Signals that it's the human participant's turn to respond in a deliberation.
  */

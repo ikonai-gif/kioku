@@ -9,7 +9,7 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool } from "./storage";
-import { broadcastToRoom, broadcastStreamChunk } from "./ws";
+import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
@@ -793,13 +793,71 @@ const partnerTools: Anthropic.Messages.Tool[] = [
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
+/**
+ * Produce a short human-readable description of a tool call for the activity timeline.
+ * Intentionally plain — the user sees this live while the agent works.
+ */
+function describeToolCall(toolName: string, input: Record<string, any>): string {
+  const truncate = (s: any, n = 80) => {
+    const v = typeof s === "string" ? s : JSON.stringify(s ?? "");
+    return v.length > n ? v.slice(0, n) + "…" : v;
+  };
+  switch (toolName) {
+    case "generate_image": return `Генерирую картинку: "${truncate(input.prompt)}"`;
+    case "generate_video": return `Генерирую видео: "${truncate(input.prompt)}"`;
+    case "generate_image_to_video": return `Оживляю картинку: "${truncate(input.motion_prompt || input.prompt)}"`;
+    case "generate_speech": return `Озвучиваю: "${truncate(input.text, 60)}"`;
+    case "clone_voice": return `Клонирую голос: ${truncate(input.name, 40)}`;
+    case "generate_sfx": return `Звуковой эффект: "${truncate(input.prompt)}"`;
+    case "generate_music": return `Пишу музыку: "${truncate(input.prompt)}"`;
+    case "stitch_media": return `Склеиваю ${Array.isArray(input.urls) ? input.urls.length : "?"} файла(ов)`;
+    case "add_subtitles": return `Накладываю субтитры`;
+    case "add_title_cards": return `Добавляю титры: "${truncate(input.text, 40)}"`;
+    case "series_bible": return `Series Bible: ${input.action || "get"} "${truncate(input.series_name, 40)}"`;
+    case "produce_episode": return `Собираю эпизод ${input.episode_number} "${truncate(input.series_name, 30)}"`;
+    case "generate_document": return `Создаю документ: "${truncate(input.title, 50)}" (${input.format})`;
+    case "web_search": return `Ищу: "${truncate(input.query)}"`;
+    case "read_url": return `Читаю: ${truncate(input.url, 80)}`;
+    case "creative_writing": return `Пишу текст: "${truncate(input.prompt)}"`;
+    case "watch_video": return `Смотрю видео`;
+    case "listen_audio": return `Слушаю аудио`;
+    case "analyze_image": return `Анализирую изображение`;
+    case "browse_website": return `Захожу на сайт: ${truncate(input.url, 60)}`;
+    case "run_code": return `Выполняю код`;
+    case "read_file": return `Читаю файл`;
+    case "plan_steps": return `Планирую шаги`;
+    case "sandbox_shell": return `Запускаю команду: ${truncate(input.command, 60)}`;
+    case "sandbox_list": return `Смотрю файлы в песочнице`;
+    case "sandbox_read": return `Читаю файл: ${truncate(input.path, 60)}`;
+    case "sandbox_write": return `Пишу файл: ${truncate(input.path, 60)}`;
+    case "create_file": return `Создаю файл`;
+    case "set_reminder": return `Ставлю напоминание`;
+    case "search_cloud_files": return `Ищу файлы в облаке: "${truncate(input.query, 50)}"`;
+    default: return `Использую инструмент: ${toolName}`;
+  }
+}
+
 export async function executePartnerTool(
   toolName: string,
   toolInput: Record<string, any>,
   userId: number,
-  agentId: number
+  agentId: number,
+  roomId?: number
 ): Promise<string> {
+  const __activityStarted = Date.now();
+  if (roomId) {
+    try {
+      broadcastToolActivity(roomId, {
+        agentId,
+        tool: toolName,
+        status: "running",
+        description: describeToolCall(toolName, toolInput),
+        timestamp: __activityStarted,
+      });
+    } catch { /* best-effort — never let streaming break the tool call */ }
+  }
   try {
+    const __result = await (async (): Promise<string> => {
     switch (toolName) {
       case "generate_image": {
         const OAI = (await import("openai")).default;
@@ -3587,8 +3645,38 @@ Start with step 1 now.`;
       default:
         return `Unknown tool: ${toolName}`;
     }
+    })();
+    if (roomId) {
+      try {
+        const preview = typeof __result === "string" && __result.length > 160
+          ? __result.slice(0, 160) + "…"
+          : (typeof __result === "string" ? __result : "");
+        broadcastToolActivity(roomId, {
+          agentId,
+          tool: toolName,
+          status: "done",
+          elapsedMs: Date.now() - __activityStarted,
+          preview,
+          timestamp: Date.now(),
+        });
+      } catch { /* best-effort */ }
+    }
+    return __result;
   } catch (err: any) {
-    return `Tool "${toolName}" failed: ${err?.message || String(err)}`;
+    const message = err?.message || String(err);
+    if (roomId) {
+      try {
+        broadcastToolActivity(roomId, {
+          agentId,
+          tool: toolName,
+          status: "error",
+          elapsedMs: Date.now() - __activityStarted,
+          error: message,
+          timestamp: Date.now(),
+        });
+      } catch { /* best-effort */ }
+    }
+    return `Tool "${toolName}" failed: ${message}`;
   }
 }
 
@@ -3984,7 +4072,8 @@ export async function triggerAgentResponses(
                   block.name,
                   block.input as Record<string, any>,
                   userId,
-                  agent.id
+                  agent.id,
+                  roomId
                 );
                 // Collect generated image URLs to guarantee they reach the user
                 if (block.name === "generate_image" && result.includes("URL: ")) {
@@ -4079,7 +4168,7 @@ export async function triggerAgentResponses(
                 toolArgs = JSON.parse(tcAny.function.arguments || "{}");
               } catch { toolArgs = {}; }
 
-              const result = await executePartnerTool(toolName, toolArgs, userId, agent.id);
+              const result = await executePartnerTool(toolName, toolArgs, userId, agent.id, roomId);
 
               // Track generated assets (images)
               if (toolName === "generate_image" && result.includes("URL: ")) {
