@@ -350,6 +350,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: build OAuth re-connect URL for any user (master key only) ──
+  app.get("/api/admin/oauth-link", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.query.userId || ""), 10);
+    const provider = String(req.query.provider || "gmail").toLowerCase();
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    try {
+      let url: string;
+      if (provider === "gmail") {
+        const { buildGmailOAuthUrl } = await import("./cloud-integrations");
+        url = buildGmailOAuthUrl(userId);
+      } else if (provider === "google_drive" || provider === "drive" || provider === "google") {
+        const { buildGoogleOAuthUrl } = await import("./cloud-integrations");
+        url = buildGoogleOAuthUrl(userId);
+      } else if (provider === "dropbox") {
+        const { buildDropboxOAuthUrl } = await import("./cloud-integrations");
+        url = buildDropboxOAuthUrl(userId);
+      } else {
+        return res.status(400).json({ error: `Unknown provider: ${provider}` });
+      }
+      res.json({ userId, provider, url });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "failed" });
+    }
+  }));
+
   // ── Admin: list all users (master key only) ──────────────────
   app.get("/api/admin/users", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";
