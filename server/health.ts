@@ -142,6 +142,19 @@ export function registerHealthRoutes(app: Express): void {
     const redisStatus: "connected" | "not_configured" = redisUrl ? "connected" : "not_configured";
     const openaiStatus = process.env.OPENAI_API_KEY ? "configured" : "not_configured";
     const stripeStatus = process.env.STRIPE_SECRET_KEY ? "configured" : "not_configured";
+    // Studio API keys (exposed status only, never values)
+    const kieStatus = process.env.KIE_API_KEY ? "configured" : "not_configured";
+    const elevenStatus = process.env.ELEVENLABS_API_KEY ? "configured" : "not_configured";
+    const geminiStatus = process.env.GEMINI_API_KEY ? "configured" : "not_configured";
+    const anthropicStatus = process.env.ANTHROPIC_API_KEY ? "configured" : "not_configured";
+
+    // Check ffmpeg binary is actually available in container
+    let ffmpegStatus: "available" | "missing" = "missing";
+    try {
+      const { execSync } = await import("child_process");
+      execSync("ffmpeg -version", { stdio: "pipe", timeout: 2000 });
+      ffmpegStatus = "available";
+    } catch { /* missing */ }
 
     const status = dbStatus === "connected" ? "ok" : "degraded";
     const httpStatus = status === "ok" ? 200 : 503;
@@ -149,11 +162,19 @@ export function registerHealthRoutes(app: Express): void {
     res.status(httpStatus).json({
       status,
       version: VERSION,
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || process.env.GIT_COMMIT?.slice(0, 7) || "unknown",
       uptime: Math.floor((Date.now() - START_TIME) / 1000),
       database: dbStatus,
       redis: redisStatus,
       openai: openaiStatus,
       stripe: stripeStatus,
+      studio: {
+        kie: kieStatus,
+        elevenlabs: elevenStatus,
+        gemini: geminiStatus,
+        anthropic: anthropicStatus,
+        ffmpeg: ffmpegStatus,
+      },
       timestamp: new Date().toISOString(),
     });
   });
