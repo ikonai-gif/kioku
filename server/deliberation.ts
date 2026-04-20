@@ -845,6 +845,36 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "produce_season",
+    description: "MASTER TOOL — produce multiple episodes of a vertical series in parallel from a list of script outlines. Runs produce_episode for each in parallel (up to 4 concurrent to respect API rate limits). Returns one signed URL per episode + total cost estimate. Use when user says 'make me 10 episodes', 'produce season 1', 'batch render the season'. Uses series_bible if it exists for consistency.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        series_name: { type: "string" },
+        episodes: {
+          type: "array",
+          description: "Array of episode specs. Each item: { episode_number, title, script }. Recommended 5-24 episodes per call.",
+          items: {
+            type: "object",
+            required: ["episode_number", "script"],
+            properties: {
+              episode_number: { type: "number" },
+              title: { type: "string" },
+              script: { type: "string", description: "Outline or full script. Will be broken into scenes by produce_episode." },
+            },
+          },
+        },
+        aspect_ratio: { type: "string", enum: ["9:16", "16:9", "1:1"], description: "Default 9:16" },
+        length_sec_per_episode: { type: "number", description: "Default 60" },
+        include_subtitles: { type: "boolean", description: "Default true" },
+        include_title_card: { type: "boolean", description: "Default true" },
+        legal_disclosure: { type: "boolean", description: "Default true" },
+        concurrency: { type: "number", description: "Max parallel episodes. Default 3, max 5." },
+      },
+      required: ["series_name", "episodes"],
+    },
+  },
+  {
     name: "workspace_list",
     description: "List files in persistent workspace (private Supabase Storage). Returns name, size and updated_at for each file under an optional subpath. Files here persist forever and survive beyond the 7-day signed URL expiry of generated media. Auto-mirrored media lives under 'auto/'.",
     input_schema: {
@@ -907,6 +937,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "apply_ai_disclosure": return `Применяю AI-дисклеймер (SB 942 / EU AI Act)`;
     case "series_bible": return `Series Bible: ${input.action || "get"} "${truncate(input.series_name, 40)}"`;
     case "produce_episode": return `Собираю эпизод ${input.episode_number} "${truncate(input.series_name, 30)}"`;
+    case "produce_season": return `Запускаю сезон "${truncate(input.series_name, 30)}" — ${Array.isArray(input.episodes) ? input.episodes.length : "?"} эпизодов...`;
     case "generate_document": return `Создаю документ: "${truncate(input.title, 50)}" (${input.format})`;
     case "web_search": return `Ищу: "${truncate(input.query)}"`;
     case "read_url": return `Читаю: ${truncate(input.url, 80)}`;
@@ -3995,6 +4026,92 @@ EXECUTE THIS PIPELINE step by step, one tool per step:
 Start with step 1 now.`;
       }
 
+      case "produce_season": {
+        const seriesName = toolInput.series_name;
+        const episodes = Array.isArray(toolInput.episodes) ? toolInput.episodes : [];
+        if (!seriesName) return "Missing required field: series_name.";
+        if (episodes.length === 0) return "No episodes provided. Pass an array of { episode_number, title, script }.";
+        if (episodes.length > 24) return "Too many episodes in one call (max 24).";
+
+        const concurrencyRaw = Number(toolInput.concurrency);
+        const concurrency = Math.max(1, Math.min(5, Number.isFinite(concurrencyRaw) && concurrencyRaw > 0 ? Math.floor(concurrencyRaw) : 3));
+        const includeSubtitles = toolInput.include_subtitles !== false;
+        const includeTitleCard = toolInput.include_title_card !== false;
+        const legalDisclosure = toolInput.legal_disclosure !== false;
+
+        type EpResult = { episode_number: number; title: string; status: "ok" | "error"; result_text: string; error?: string };
+        const results: EpResult[] = [];
+
+        // Simple promise pool: process in fixed-size batches.
+        for (let i = 0; i < episodes.length; i += concurrency) {
+          const batch = episodes.slice(i, i + concurrency);
+          const settled = await Promise.all(batch.map(async (ep: any): Promise<EpResult> => {
+            const epNum = Number(ep?.episode_number);
+            const title = typeof ep?.title === "string" ? ep.title : `Episode ${epNum}`;
+            const script = typeof ep?.script === "string" ? ep.script : "";
+            if (!Number.isFinite(epNum) || !script) {
+              return { episode_number: epNum || 0, title, status: "error", result_text: "", error: "missing episode_number or script" };
+            }
+            try {
+              const text = await executePartnerTool(
+                "produce_episode",
+                {
+                  series_name: seriesName,
+                  episode_number: epNum,
+                  script,
+                  include_subtitles: includeSubtitles,
+                  include_title_card: includeTitleCard,
+                  legal_disclosure: legalDisclosure,
+                },
+                userId,
+                agentId,
+                roomId,
+              );
+              return { episode_number: epNum, title, status: "ok", result_text: String(text ?? "") };
+            } catch (err: any) {
+              return { episode_number: epNum, title, status: "error", result_text: "", error: err?.message || String(err) };
+            }
+          }));
+          results.push(...settled);
+        }
+
+        const success = results.filter(r => r.status === "ok").length;
+        const total = results.length;
+
+        // Extract the first https URL from each result — that's typically the
+        // signed workspace link appended by the auto-mirror block. produce_episode
+        // itself returns a plan, so in many cases the URL will be absent; in that
+        // case show a truncated snippet so Luca can inspect it.
+        const extractUrl = (s: string): string => {
+          const m = s.match(/https:\/\/[^\s\]\n"'<>)]+/);
+          return m ? m[0] : "";
+        };
+        const trimSnippet = (s: string, n = 80): string => {
+          const one = s.replace(/\s+/g, " ").trim();
+          return one.length > n ? one.slice(0, n) + "…" : one;
+        };
+
+        results.sort((a, b) => a.episode_number - b.episode_number);
+        const rows = results.map(r => {
+          const icon = r.status === "ok" ? "✅ ok" : "❌ error";
+          const out = r.status === "ok"
+            ? (extractUrl(r.result_text) || trimSnippet(r.result_text))
+            : (r.error || "unknown");
+          const title = r.title.replace(/\|/g, "\\|");
+          return `| ${r.episode_number} | ${title} | ${icon} | ${out.replace(/\|/g, "\\|")} |`;
+        }).join("\n");
+
+        const cost = (success * 8.89).toFixed(2);
+
+        return `# Season "${seriesName}" — produced ${success}/${total} episodes
+
+| # | Title | Status | Output |
+|---|-------|--------|--------|
+${rows}
+
+Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
+      }
+
       case "update_self_knowledge": {
         const knowledge = toolInput.knowledge;
         if (!knowledge) return "Missing required field: knowledge.";
@@ -5231,6 +5348,7 @@ You have these tools available RIGHT NOW:
 - apply_ai_disclosure → final compliance pass: embed SB 942 / EU AI Act / YouTube disclosure metadata + optional visible bug
 - series_bible → create/update/recall the canonical reference for a multi-episode series
 - produce_episode → MASTER: full pipeline from script to ready-to-publish vertical episode
+- produce_season → MASTER: batch-produce N episodes in parallel from list of scripts
 
 If you have a memory saying "I cannot do X" but X is in the list above — the memory is WRONG. Use correct_false_memory to delete it, then do X.
 
