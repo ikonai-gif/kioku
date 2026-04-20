@@ -896,6 +896,10 @@ export async function executePartnerTool(
   roomId?: number
 ): Promise<string> {
   const __activityStarted = Date.now();
+  // Stable identifier for this specific tool call. Lets live chunks
+  // (e.g. sandbox_shell stdout lines) attach to the correct step in the
+  // UI even if the same tool runs concurrently more than once.
+  const __stepId = `srv-${__activityStarted}-${Math.random().toString(36).slice(2, 8)}`;
   if (roomId) {
     try {
       broadcastToolActivity(roomId, {
@@ -903,6 +907,7 @@ export async function executePartnerTool(
         tool: toolName,
         status: "running",
         description: describeToolCall(toolName, toolInput),
+        stepId: __stepId,
         timestamp: __activityStarted,
       });
     } catch { /* best-effort — never let streaming break the tool call */ }
@@ -1930,19 +1935,36 @@ export async function executePartnerTool(
 
           // Live-stream stdout/stderr to the partner chat so the user sees
           // terminal output as it happens, not only after the command finishes.
-          // Throttle to at most one broadcast per 400ms to avoid flooding the
-          // WebSocket on chatty commands (npm install, docker pull, etc).
+          //  - Every raw fragment is forwarded immediately as a 'chunk' event
+          //    so the UI can append it to a live console buffer.
+          //  - The single-line 'running' description (with the latest line)
+          //    is throttled to 1 per 400ms to avoid flooding the timeline.
           let lastLine = "";
-          let lastEmit = 0;
-          const emitLive = (chunk: string, stream: "stdout" | "stderr") => {
+          let lastDescEmit = 0;
+          const emitLive = (chunkRaw: string, stream: "stdout" | "stderr") => {
             if (!roomId) return;
-            // Track only the most recent non-empty line so the UI shows
-            // "terminal: <cmd> → <last output line>".
-            const lines = String(chunk).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-            if (lines.length) lastLine = lines[lines.length - 1];
+            const chunk = String(chunkRaw);
             const now = Date.now();
-            if (now - lastEmit < 400) return;
-            lastEmit = now;
+
+            // 1. Forward the raw chunk verbatim (trimmed to 4KB per event).
+            try {
+              const capped = chunk.length > 4096 ? chunk.slice(-4096) : chunk;
+              broadcastToolActivity(roomId, {
+                agentId,
+                tool: "sandbox_shell",
+                status: "chunk",
+                chunk: capped,
+                stream,
+                stepId: __stepId,
+                timestamp: now,
+              });
+            } catch { /* best-effort */ }
+
+            // 2. Keep the single-line 'running' description up to date.
+            const lines = chunk.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            if (lines.length) lastLine = lines[lines.length - 1];
+            if (now - lastDescEmit < 400) return;
+            lastDescEmit = now;
             try {
               const cmdShort = command.length > 60 ? command.slice(0, 60) + "…" : command;
               const lineShort = lastLine.length > 140 ? lastLine.slice(0, 140) + "…" : lastLine;
@@ -1953,6 +1975,7 @@ export async function executePartnerTool(
                 description: stream === "stderr"
                   ? `Терминал (err): ${cmdShort} → ${lineShort}`
                   : `Терминал: ${cmdShort} → ${lineShort}`,
+                stepId: __stepId,
                 timestamp: now,
               });
             } catch { /* best-effort */ }
@@ -3864,6 +3887,7 @@ Start with step 1 now.`;
           status: "done",
           elapsedMs: Date.now() - __activityStarted,
           preview,
+          stepId: __stepId,
           timestamp: Date.now(),
         });
       } catch { /* best-effort */ }
@@ -3879,6 +3903,7 @@ Start with step 1 now.`;
           status: "error",
           elapsedMs: Date.now() - __activityStarted,
           error: message,
+          stepId: __stepId,
           timestamp: Date.now(),
         });
       } catch { /* best-effort */ }

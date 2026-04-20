@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 // ── Tool name → friendly Russian label + icon ───────────────────
 const TOOL_MAP: Record<string, { icon: string; label: string }> = {
@@ -51,6 +52,10 @@ export interface ToolStep {
   description?: string;
   /** Short preview of the tool result (shown when status=done). */
   preview?: string;
+  /** Server-side step identity — matches tool_activity.stepId on chunk events. */
+  serverStepId?: string;
+  /** Live console log buffer (sandbox_shell chunk events). Each entry is one stream fragment. */
+  logLines?: Array<{ stream: "stdout" | "stderr"; text: string }>;
 }
 
 interface TaskProgressProps {
@@ -202,6 +207,22 @@ function ElapsedTime({ startedAt, running }: { startedAt: number; running: boole
 }
 
 export function TaskProgress({ steps, emotion, startTime }: TaskProgressProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Auto-expand a running sandbox_shell step so live logs appear without
+  // requiring a click. Collapses automatically when the command finishes.
+  useEffect(() => {
+    const runningShell = steps.find(
+      (s) => s.toolName === "sandbox_shell" && s.status === "running"
+    );
+    if (runningShell) {
+      setExpandedId(runningShell.id);
+    } else if (expandedId) {
+      const still = steps.find((s) => s.id === expandedId);
+      // keep expanded after done if user explicitly opened it
+      if (!still) setExpandedId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps.map((s) => `${s.id}:${s.status}`).join("|")]);
   if (steps.length === 0) return null;
   const runningCount = steps.filter(s => s.status === "running").length;
   const doneCount = steps.filter(s => s.status === "done").length;
@@ -265,16 +286,27 @@ export function TaskProgress({ steps, emotion, startTime }: TaskProgressProps) {
             const isError = step.status === "error";
             const isLast = idx === steps.length - 1;
 
+            const isShell = step.toolName === "sandbox_shell";
+            const hasLogs = (step.logLines?.length || 0) > 0;
+            const isExpanded = expandedId === step.id;
+            const canExpand = isShell && (hasLogs || !!step.preview);
             return (
               <motion.div
                 key={step.id}
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 transition={{ duration: 0.25, ease: "easeOut" }}
-                className="flex items-center gap-2.5 px-3 py-2"
+                className="flex flex-col"
                 style={{
                   borderBottom: isLast ? "none" : "1px solid rgba(255,255,255,0.04)",
                 }}
+              >
+              <div
+                className={cn(
+                  "flex items-center gap-2.5 px-3 py-2",
+                  canExpand && "cursor-pointer hover:bg-white/[0.02]"
+                )}
+                onClick={() => canExpand && setExpandedId(isExpanded ? null : step.id)}
               >
                 <span className="text-sm flex-shrink-0 select-none">{tool.icon}</span>
 
@@ -312,6 +344,12 @@ export function TaskProgress({ steps, emotion, startTime }: TaskProgressProps) {
 
                 <ElapsedTime startedAt={step.startedAt} running={isRunning} />
 
+                {canExpand && (
+                  <span className="text-[10px] text-muted-foreground/40 select-none">
+                    {isExpanded ? "▾" : "▸"}
+                  </span>
+                )}
+
                 <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center">
                   {isRunning && (
                     <Loader2
@@ -332,11 +370,69 @@ export function TaskProgress({ steps, emotion, startTime }: TaskProgressProps) {
                     <span className="text-xs text-red-400">!</span>
                   )}
                 </div>
+              </div>
+
+              {canExpand && isExpanded && (
+                <ConsolePanel step={step} />
+              )}
               </motion.div>
             );
           })}
         </AnimatePresence>
       </div>
     </motion.div>
+  );
+}
+
+// ── Console panel: black bg, mono, streaming stdout/stderr ──────────────
+function ConsolePanel({ step }: { step: ToolStep }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const lines = step.logLines || [];
+  // Auto-scroll to bottom whenever new lines arrive
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.scrollTop = ref.current.scrollHeight;
+    }
+  }, [lines.length, step.preview]);
+
+  const hasLines = lines.length > 0;
+  const preview = step.preview || "";
+
+  return (
+    <div
+      className="px-3 pb-2"
+      style={{ background: "rgba(0,0,0,0.25)" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div
+        ref={ref}
+        className="text-[11px] font-mono leading-[1.45] rounded-md p-2 overflow-auto"
+        style={{
+          background: "#0a0f1e",
+          border: "1px solid rgba(201,163,64,0.15)",
+          maxHeight: 240,
+          minHeight: 60,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {hasLines ? (
+          lines.map((l, i) => (
+            <span
+              key={i}
+              style={{
+                color: l.stream === "stderr" ? "#ff8a8a" : "rgba(230,230,230,0.92)",
+              }}
+            >
+              {l.text}
+            </span>
+          ))
+        ) : preview ? (
+          <span style={{ color: "rgba(230,230,230,0.85)" }}>{preview}</span>
+        ) : (
+          <span style={{ color: "rgba(255,255,255,0.35)" }}>нет вывода</span>
+        )}
+      </div>
+    </div>
   );
 }

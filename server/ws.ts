@@ -190,11 +190,22 @@ export function broadcastToolActivity(roomId: number, payload: {
   agentId: number;
   agentName?: string;
   tool: string;
-  status: "running" | "done" | "error";
+  /**
+   * 'running' | 'done' | 'error' are lifecycle events.
+   * 'chunk' carries a raw stdout/stderr slice from a still-running tool
+   * so the UI can render a live console log under the step.
+   */
+  status: "running" | "done" | "error" | "chunk";
   description?: string;
   elapsedMs?: number;
   preview?: string;
   error?: string;
+  /** For status=chunk only: a raw fragment of output. */
+  chunk?: string;
+  /** For status=chunk only: which stream the fragment came from. */
+  stream?: "stdout" | "stderr";
+  /** Step identity — lets the UI attach chunks to the correct step even if several of the same tool run concurrently. */
+  stepId?: string;
   timestamp: number;
 }) {
   const clients = roomClients.get(roomId);

@@ -1872,22 +1872,75 @@ export default function PartnerChat() {
             });
           } else if (data.type === "tool_activity") {
             // Unified tool activity event from deliberation.ts — includes
-            // status (running/done/error), elapsed time, live description,
+            // status (running/done/error/chunk), elapsed time, live description,
             // and a short preview of the result.
             const toolName = data.tool || "unknown";
             const description: string | undefined = data.description;
             const preview: string | undefined = data.preview;
+            const serverStepId: string | undefined = data.stepId;
+
+            // ── chunk: raw stdout/stderr fragment from sandbox_shell ──
+            if (data.status === "chunk") {
+              const stream: "stdout" | "stderr" = data.stream === "stderr" ? "stderr" : "stdout";
+              const text: string = typeof data.chunk === "string" ? data.chunk : "";
+              if (!text) return;
+              setToolSteps((prev) => {
+                // locate step: prefer serverStepId match, fallback to last running same tool
+                let idx = -1;
+                if (serverStepId) {
+                  for (let i = prev.length - 1; i >= 0; i--) {
+                    if (prev[i].serverStepId === serverStepId) { idx = i; break; }
+                  }
+                }
+                if (idx === -1) {
+                  for (let i = prev.length - 1; i >= 0; i--) {
+                    if (prev[i].status === "running" && prev[i].toolName === toolName) { idx = i; break; }
+                  }
+                }
+                if (idx === -1) return prev;
+                const step = prev[idx];
+                const existing = step.logLines || [];
+                // cap buffer to last ~500 fragments to avoid unbounded growth
+                const nextLines = existing.length >= 500
+                  ? [...existing.slice(existing.length - 499), { stream, text }]
+                  : [...existing, { stream, text }];
+                const updated = [...prev];
+                updated[idx] = {
+                  ...step,
+                  logLines: nextLines,
+                  // adopt serverStepId if we didn't have it yet
+                  serverStepId: step.serverStepId || serverStepId,
+                };
+                return updated;
+              });
+              return;
+            }
+
             if (data.status === "running") {
               // If there is already a running step for the same tool (same
               // call still in progress), update its description in place
               // instead of appending a new row. This is how live terminal
               // output from sandbox_shell refreshes the current step.
               setToolSteps((prev) => {
+                // Prefer matching by serverStepId when present
+                if (serverStepId) {
+                  for (let i = prev.length - 1; i >= 0; i--) {
+                    if (prev[i].serverStepId === serverStepId) {
+                      if (!description || description === prev[i].description) return prev;
+                      const updated = [...prev];
+                      updated[i] = { ...updated[i], description };
+                      return updated;
+                    }
+                  }
+                }
                 for (let i = prev.length - 1; i >= 0; i--) {
-                  if (prev[i].status === "running" && prev[i].toolName === toolName) {
-                    if (!description || description === prev[i].description) return prev;
+                  if (prev[i].status === "running" && prev[i].toolName === toolName && !prev[i].serverStepId) {
                     const updated = [...prev];
-                    updated[i] = { ...updated[i], description };
+                    updated[i] = {
+                      ...updated[i],
+                      description: description || updated[i].description,
+                      serverStepId: serverStepId || updated[i].serverStepId,
+                    };
                     return updated;
                   }
                 }
@@ -1899,6 +1952,7 @@ export default function PartnerChat() {
                     status: "running",
                     startedAt: data.timestamp || Date.now(),
                     description,
+                    serverStepId,
                   },
                 ];
               });
@@ -1906,6 +1960,15 @@ export default function PartnerChat() {
               const nextStatus: "done" | "error" = data.status === "error" ? "error" : "done";
               setToolSteps((prev) => {
                 const updated = [...prev];
+                // Prefer serverStepId match
+                if (serverStepId) {
+                  for (let i = updated.length - 1; i >= 0; i--) {
+                    if (updated[i].serverStepId === serverStepId) {
+                      updated[i] = { ...updated[i], status: nextStatus, preview: preview || updated[i].preview, description: description || updated[i].description };
+                      return updated;
+                    }
+                  }
+                }
                 for (let i = updated.length - 1; i >= 0; i--) {
                   if (updated[i].status === "running" && updated[i].toolName === toolName) {
                     updated[i] = { ...updated[i], status: nextStatus, preview: preview || updated[i].preview, description: description || updated[i].description };
