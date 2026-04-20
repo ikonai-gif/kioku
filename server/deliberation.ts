@@ -710,6 +710,86 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["urls"],
     },
   },
+  {
+    name: "series_bible",
+    description: "Create or update the 'bible' for a vertical series — the authoritative reference for characters, setting, visual style, tone, and season arcs. ALWAYS use at the start of any multi-episode project. Stored in memory so every subsequent episode stays consistent. Use action='create' for new series, 'update' to extend, 'get' to recall.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["create", "update", "get"], description: "create = new series, update = extend existing, get = recall stored bible" },
+        series_name: { type: "string", description: "Unique name of the series (e.g. 'Midnight in Moscow', 'Salon Confidential'). Required for all actions." },
+        logline: { type: "string", description: "One sentence describing the show. Required for create." },
+        genre: { type: "string", description: "e.g. 'romantic drama', 'thriller', 'beauty docuseries'" },
+        tone: { type: "string", description: "e.g. 'dark, moody, noir' or 'bright, kinetic, Gen Z'" },
+        visual_style: { type: "string", description: "Cinematography notes: lighting, color palette, camera language, aspect ratio. Vertical 9:16 by default." },
+        characters: { type: "array", items: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, voice_id: { type: "string", description: "ElevenLabs voice ID for this character (use clone_voice if custom)" } } }, description: "Main characters with appearance and voice assignments" },
+        setting: { type: "string", description: "Where and when the story happens" },
+        season_arc: { type: "string", description: "10-episode arc outline: beginning, middle, cliffhangers, finale" },
+        episode_length_sec: { type: "number", description: "Target length per episode in seconds. Default 60 for vertical series." },
+      },
+      required: ["action", "series_name"],
+    },
+  },
+  {
+    name: "generate_image_to_video",
+    description: "Animate a still image into a short video clip (5-8 sec) using kie.ai Veo 3 image-to-video. Use for: bringing character portraits to life, animating product shots, creating cinematic motion from AI-generated stills. Preserves the image composition while adding natural motion.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        image_url: { type: "string", description: "URL of the source image (can be data: URI or https URL)" },
+        motion_prompt: { type: "string", description: "Describe the motion: camera movement, subject action, atmospheric effects" },
+        duration: { type: "number", description: "Clip duration in seconds (5-8). Default 5." },
+        aspect_ratio: { type: "string", enum: ["9:16", "16:9", "1:1"], description: "Default 9:16 vertical for mobile series" },
+      },
+      required: ["image_url", "motion_prompt"],
+    },
+  },
+  {
+    name: "add_subtitles",
+    description: "Burn auto-generated subtitles into a video using Whisper transcription + ffmpeg. ALWAYS use for social-media-ready episodes — 85% of mobile viewers watch muted. Supports custom styling.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        video_url: { type: "string", description: "URL of video file to add subtitles to" },
+        language: { type: "string", description: "Source language code (e.g. 'en', 'ru', 'es'). Default auto-detect." },
+        style: { type: "string", enum: ["tiktok", "reels", "classic", "bold"], description: "Visual style preset. Default 'tiktok' (large, bottom-center, white with black outline)." },
+        translate_to: { type: "string", description: "Optional target language code to translate subtitles (e.g. 'en' to translate Russian speech to English subs)." },
+      },
+      required: ["video_url"],
+    },
+  },
+  {
+    name: "add_title_cards",
+    description: "Prepend or append a title card (intro or outro) to a video with custom text. Use for: episode numbers ('Episode 3'), series branding ('IKONBAI Presents'), cliffhanger endings ('To be continued...').",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        video_url: { type: "string", description: "URL of the main video" },
+        text: { type: "string", description: "Text to display on the card" },
+        position: { type: "string", enum: ["intro", "outro"], description: "intro = before video, outro = after. Default intro." },
+        duration: { type: "number", description: "Card duration in seconds. Default 2." },
+        background: { type: "string", description: "Hex color for card background (e.g. '#000000'). Default black." },
+        text_color: { type: "string", description: "Hex color for text. Default white." },
+      },
+      required: ["video_url", "text"],
+    },
+  },
+  {
+    name: "produce_episode",
+    description: "MASTER TOOL — produce a complete vertical series episode end-to-end from a script outline. Runs the full pipeline: script → scene breakdown → video generation per scene → character voiceover → music → SFX → stitching → subtitles → title cards. Returns a ready-to-publish episode. Use when user says 'make episode', 'produce episode N', 'create the next episode'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        series_name: { type: "string", description: "Name of the series (must have a series_bible)" },
+        episode_number: { type: "number", description: "Episode number in the series" },
+        script: { type: "string", description: "Full episode script with scene headers and character dialogue. Format: 'SCENE 1 [location, mood]: Visual description. CHARACTER_NAME: dialogue...'" },
+        include_music: { type: "boolean", description: "Generate original soundtrack. Default true." },
+        include_subtitles: { type: "boolean", description: "Burn subtitles. Default true." },
+        include_title_card: { type: "boolean", description: "Add episode title card. Default true." },
+      },
+      required: ["series_name", "episode_number", "script"],
+    },
+  },
 ];
 
 /** Execute a partner tool by name — routes to the correct internal handler */
@@ -3055,6 +3135,296 @@ print("Converted MD to DOCX")
         }
       }
 
+      case "series_bible": {
+        const action = toolInput.action;
+        const seriesName = toolInput.series_name;
+        if (!action || !seriesName) return "Missing required fields: action, series_name.";
+        const ns = `_series_bible:${seriesName}`;
+
+        if (action === "get") {
+          const r = await pool.query(
+            `SELECT content, created_at FROM memories WHERE user_id = $1 AND namespace = $2 ORDER BY created_at DESC LIMIT 1`,
+            [userId, ns]
+          );
+          if (r.rows.length === 0) return `No series bible found for "${seriesName}". Use action=create first.`;
+          return `[SERIES BIBLE — ${seriesName}]\n${r.rows[0].content}`;
+        }
+
+        const bible = {
+          series_name: seriesName,
+          logline: toolInput.logline || "",
+          genre: toolInput.genre || "",
+          tone: toolInput.tone || "",
+          visual_style: toolInput.visual_style || "",
+          characters: toolInput.characters || [],
+          setting: toolInput.setting || "",
+          season_arc: toolInput.season_arc || "",
+          episode_length_sec: toolInput.episode_length_sec || 60,
+          updated_at: new Date().toISOString(),
+        };
+
+        if (action === "update") {
+          const existing = await pool.query(
+            `SELECT content FROM memories WHERE user_id = $1 AND namespace = $2 ORDER BY created_at DESC LIMIT 1`,
+            [userId, ns]
+          );
+          if (existing.rows.length > 0) {
+            try {
+              const prev = JSON.parse(existing.rows[0].content.replace(/^\[SERIES BIBLE\][^{]*/, ""));
+              Object.keys(bible).forEach(k => {
+                if (!bible[k as keyof typeof bible] || (Array.isArray(bible[k as keyof typeof bible]) && (bible[k as keyof typeof bible] as any[]).length === 0)) {
+                  (bible as any)[k] = prev[k];
+                }
+              });
+            } catch { /* ignore parse errors */ }
+          }
+          // Delete old version
+          await pool.query(`DELETE FROM memories WHERE user_id = $1 AND namespace = $2`, [userId, ns]);
+        }
+
+        await storage.createMemory({
+          userId,
+          agentId,
+          content: `[SERIES BIBLE] ${JSON.stringify(bible, null, 2)}`,
+          type: "fact",
+          importance: 0.95,
+          namespace: ns,
+          decayRate: 0,
+        });
+
+        return `Series bible ${action === "create" ? "created" : "updated"} for "${seriesName}". Characters: ${bible.characters.length}. Use series_bible(action=get, series_name="${seriesName}") to recall.`;
+      }
+
+      case "generate_image_to_video": {
+        const imageUrl = toolInput.image_url;
+        const motionPrompt = toolInput.motion_prompt;
+        if (!imageUrl || !motionPrompt) return "Missing required fields: image_url, motion_prompt.";
+        const duration = Math.max(5, Math.min(8, toolInput.duration || 5));
+        const aspectRatio = toolInput.aspect_ratio || "9:16";
+
+        const kieKey = process.env.KIE_API_KEY;
+        if (!kieKey) return "KIE_API_KEY not configured. Set it in Railway env vars.";
+
+        try {
+          // Submit image-to-video task
+          const submitResp = await fetch("https://api.kie.ai/api/v1/veo/generate", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${kieKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: motionPrompt,
+              model: "veo3_fast",
+              aspectRatio: aspectRatio,
+              imageUrls: [imageUrl],
+              duration: duration,
+            }),
+          });
+
+          if (!submitResp.ok) {
+            const errText = await submitResp.text();
+            return `kie.ai image-to-video submit failed: HTTP ${submitResp.status} ${errText.slice(0, 200)}`;
+          }
+
+          const submitData = await submitResp.json() as any;
+          const taskId = submitData?.data?.taskId;
+          if (!taskId) return `kie.ai did not return taskId: ${JSON.stringify(submitData).slice(0, 200)}`;
+
+          // Poll for completion (up to 5 minutes)
+          for (let attempt = 0; attempt < 60; attempt++) {
+            await new Promise(r => setTimeout(r, 5000));
+            const pollResp = await fetch(`https://api.kie.ai/api/v1/veo/record-info?taskId=${taskId}`, {
+              headers: { "Authorization": `Bearer ${kieKey}` },
+            });
+            if (!pollResp.ok) continue;
+            const pollData = await pollResp.json() as any;
+            const status = pollData?.data?.successFlag;
+            if (status === 1) {
+              const videoUrl = pollData?.data?.response?.resultUrls?.[0];
+              if (videoUrl) return `[Video generated from image] ${videoUrl}`;
+              return "Video generation completed but no URL returned.";
+            }
+            if (status === 2 || status === 3) {
+              return `Video generation failed: ${pollData?.data?.errorMessage || "unknown error"}`;
+            }
+          }
+          return `Video generation timed out after 5 minutes. Task ID: ${taskId}`;
+        } catch (err: any) {
+          return `Image-to-video failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "add_subtitles": {
+        const videoUrl = toolInput.video_url;
+        if (!videoUrl) return "Missing required field: video_url.";
+        const style = toolInput.style || "tiktok";
+        const translateTo = toolInput.translate_to;
+
+        try {
+          const { execSync } = await import("child_process");
+          const fs = await import("fs");
+          const path = await import("path");
+          const os = await import("os");
+
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "subs-"));
+          const videoPath = path.join(tmpDir, "input.mp4");
+          const audioPath = path.join(tmpDir, "audio.mp3");
+          const srtPath = path.join(tmpDir, "subs.srt");
+          const outPath = path.join(tmpDir, "output.mp4");
+
+          // Download video
+          const videoResp = await fetch(videoUrl, { signal: AbortSignal.timeout(60000) });
+          if (!videoResp.ok) return `Failed to download video: HTTP ${videoResp.status}`;
+          fs.writeFileSync(videoPath, Buffer.from(await videoResp.arrayBuffer()));
+
+          // Extract audio
+          execSync(`ffmpeg -y -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}" 2>&1`, { timeout: 60000 });
+
+          // Transcribe with Whisper API
+          const OAI = (await import("openai")).default;
+          const oaiClient = new OAI();
+          const audioStream = fs.createReadStream(audioPath);
+          const transcription = await oaiClient.audio.transcriptions.create({
+            file: audioStream as any,
+            model: "whisper-1",
+            response_format: "srt",
+            language: toolInput.language,
+          }) as any;
+
+          let srtContent = typeof transcription === "string" ? transcription : transcription.text || "";
+
+          // Optional translation
+          if (translateTo) {
+            const translation = await oaiClient.chat.completions.create({
+              model: "gpt-4o-mini",
+              messages: [
+                { role: "system", content: `Translate SRT subtitles to ${translateTo}. Preserve all timestamps and numbering exactly. Only translate the text lines.` },
+                { role: "user", content: srtContent },
+              ],
+            });
+            srtContent = translation.choices[0]?.message?.content || srtContent;
+          }
+
+          fs.writeFileSync(srtPath, srtContent);
+
+          // Style presets
+          const styleMap: Record<string, string> = {
+            tiktok: "FontName=Arial Black,FontSize=16,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=3,Shadow=1,Alignment=2,MarginV=80",
+            reels: "FontName=Helvetica,FontSize=14,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=60",
+            classic: "FontName=Arial,FontSize=12,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Alignment=2,MarginV=40",
+            bold: "FontName=Impact,FontSize=20,PrimaryColour=&H00FFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=4,Shadow=2,Alignment=2,MarginV=100",
+          };
+          const styleStr = styleMap[style] || styleMap.tiktok;
+
+          // Burn subtitles
+          execSync(`ffmpeg -y -i "${videoPath}" -vf "subtitles='${srtPath}':force_style='${styleStr}'" -c:a copy "${outPath}" 2>&1`, { timeout: 120000 });
+
+          if (!fs.existsSync(outPath)) return "Subtitles burn-in completed but output not found.";
+          const outBuf = fs.readFileSync(outPath);
+          const b64 = outBuf.toString("base64");
+          try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+
+          return `[Video with subtitles] data:video/mp4;base64,${b64}`;
+        } catch (err: any) {
+          return `Subtitle generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "add_title_cards": {
+        const videoUrl = toolInput.video_url;
+        const text = toolInput.text;
+        if (!videoUrl || !text) return "Missing required fields: video_url, text.";
+        const position = toolInput.position || "intro";
+        const duration = toolInput.duration || 2;
+        const bg = (toolInput.background || "#000000").replace("#", "");
+        const textColor = (toolInput.text_color || "#FFFFFF").replace("#", "");
+
+        try {
+          const { execSync } = await import("child_process");
+          const fs = await import("fs");
+          const path = await import("path");
+          const os = await import("os");
+
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "title-"));
+          const videoPath = path.join(tmpDir, "input.mp4");
+          const cardPath = path.join(tmpDir, "card.mp4");
+          const listFile = path.join(tmpDir, "list.txt");
+          const outPath = path.join(tmpDir, "output.mp4");
+
+          // Download main video
+          const videoResp = await fetch(videoUrl, { signal: AbortSignal.timeout(60000) });
+          if (!videoResp.ok) return `Failed to download video: HTTP ${videoResp.status}`;
+          fs.writeFileSync(videoPath, Buffer.from(await videoResp.arrayBuffer()));
+
+          // Get video dimensions
+          const probeOut = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${videoPath}"`, { encoding: "utf8" }).trim();
+          const [width, height] = probeOut.split(",").map(n => parseInt(n) || 1080);
+
+          // Generate title card (colored background with centered text)
+          const escapedText = text.replace(/'/g, "\\'").replace(/:/g, "\\:");
+          const fontSize = Math.floor(height / 15);
+          execSync(
+            `ffmpeg -y -f lavfi -i "color=c=0x${bg}:s=${width}x${height}:d=${duration}:r=30" ` +
+            `-vf "drawtext=text='${escapedText}':fontcolor=0x${textColor}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2" ` +
+            `-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100" -t ${duration} ` +
+            `-c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${cardPath}" 2>&1`,
+            { timeout: 60000 }
+          );
+
+          // Concat card + video (or video + card)
+          const order = position === "intro" ? [cardPath, videoPath] : [videoPath, cardPath];
+          fs.writeFileSync(listFile, order.map(f => `file '${f}'`).join("\n"));
+
+          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outPath}" 2>&1`, { timeout: 120000 });
+
+          if (!fs.existsSync(outPath)) return "Title card generation completed but output not found.";
+          const outBuf = fs.readFileSync(outPath);
+          const b64 = outBuf.toString("base64");
+          try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+
+          return `[Video with ${position} title card] data:video/mp4;base64,${b64}`;
+        } catch (err: any) {
+          return `Title card generation failed: ${err?.message || String(err)}`;
+        }
+      }
+
+      case "produce_episode": {
+        // Master orchestrator — returns a plan that Luca can execute step by step.
+        // The actual pipeline runs through subsequent tool calls because of context/streaming constraints.
+        const seriesName = toolInput.series_name;
+        const episodeNumber = toolInput.episode_number;
+        const script = toolInput.script;
+        if (!seriesName || !episodeNumber || !script) return "Missing required fields: series_name, episode_number, script.";
+
+        // Fetch series bible for context
+        const bibleRes = await pool.query(
+          `SELECT content FROM memories WHERE user_id = $1 AND namespace = $2 ORDER BY created_at DESC LIMIT 1`,
+          [userId, `_series_bible:${seriesName}`]
+        );
+        const bibleContent = bibleRes.rows[0]?.content || "(no series bible found — create one with series_bible first)";
+
+        // Parse scenes from script
+        const sceneMatches = script.match(/SCENE \d+[\s\S]*?(?=SCENE \d+|$)/gi) || [script];
+        const sceneCount = sceneMatches.length;
+
+        return `[EPISODE PRODUCTION PLAN — ${seriesName} EP${episodeNumber}]
+
+Series bible context:
+${bibleContent.slice(0, 800)}
+
+Script parsed: ${sceneCount} scene(s) detected.
+
+EXECUTE THIS PIPELINE step by step, one tool per step:
+
+1. For each of the ${sceneCount} scenes, call generate_video with a vertical 9:16 prompt derived from the scene description. Keep clips 5-8 sec each.
+2. For every dialogue line, call generate_speech with the character's voice_id from the series bible. If a character has no voice yet, call clone_voice first.
+3. ${toolInput.include_music !== false ? "Call generate_music for the episode soundtrack (duration matches total scene count × 6 sec)." : "Skip music."}
+4. Call stitch_media to concatenate all scene videos in order.
+5. ${toolInput.include_subtitles !== false ? "Call add_subtitles on the stitched video (style=tiktok)." : "Skip subtitles."}
+6. ${toolInput.include_title_card !== false ? `Call add_title_cards with text='${seriesName} — Episode ${episodeNumber}' and position=intro.` : "Skip title card."}
+7. Return the final data URI to the user.
+
+Start with step 1 now.`;
+      }
+
       case "update_self_knowledge": {
         const knowledge = toolInput.knowledge;
         if (!knowledge) return "Missing required field: knowledge.";
@@ -4063,11 +4433,16 @@ You have these tools available RIGHT NOW:
 - delegate_task / delegate_parallel → spawn sub-agents for complex work
 - browse_website → open pages in a real browser
 - generate_video → cinematic video clips (5-8 sec) via kie.ai Veo 3 Fast ($0.40/clip) with Google Veo fallback
-- generate_speech → ultra-realistic TTS via ElevenLabs (voice cloning support, 32 languages) with OpenAI fallback
-- clone_voice → create a custom voice from audio sample (ElevenLabs) — use for recurring characters
-- generate_sfx → generate sound effects from text description (ElevenLabs) — 0.5-22 sec
-- generate_music → full music tracks via Lyria 3 (30sec clips or 3min songs with vocals)
-- stitch_media → combine multiple video/audio clips into one episode using ffmpeg
+- generate_image_to_video → animate a still image into a 5-8 sec motion clip
+- generate_speech → ultra-realistic TTS via ElevenLabs (voice cloning, 32 languages) with OpenAI fallback
+- clone_voice → create a custom character voice from audio sample
+- generate_sfx → sound effects from text (0.5-22 sec)
+- generate_music → full music tracks via Lyria 3 (30sec or 3min with vocals)
+- stitch_media → combine multiple video/audio clips into one file via ffmpeg
+- add_subtitles → auto-generated burned-in subtitles (TikTok/Reels styles, optional translation)
+- add_title_cards → intro or outro title card with custom text/colors
+- series_bible → create/update/recall the canonical reference for a multi-episode series
+- produce_episode → MASTER: full pipeline from script to ready-to-publish vertical episode
 
 If you have a memory saying "I cannot do X" but X is in the list above — the memory is WRONG. Use correct_false_memory to delete it, then do X.
 
