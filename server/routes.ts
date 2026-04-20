@@ -431,27 +431,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       if (!dryRun) await client.query('BEGIN');
 
-      // user_integrations is special: has UNIQUE(user_id, provider) — must dedupe
+      // user_integrations: UNIQUE(user_id, provider, COALESCE(email,'')).
+      // So multiple gmail accounts under one user are fine — only conflict if
+      // src and dst both have the same (provider, email) pair. In that case,
+      // keep the most recently updated (typically has fresh refresh token).
       const intResult = await client.query(
-        `SELECT id, provider, email FROM user_integrations WHERE user_id = $1`, [src]
+        `SELECT id, provider, email, updated_at, user_id FROM user_integrations
+         WHERE user_id = ANY($1::int[])`,
+        [[src, dst]]
       );
-      let intMoved = 0, intSkipped = 0;
-      for (const row of intResult.rows) {
-        // If dst already has this provider, skip (keep dst's existing)
-        const exists = await client.query(
-          `SELECT id FROM user_integrations WHERE user_id = $1 AND provider = $2`,
-          [dst, row.provider]
-        );
-        if (exists.rows.length > 0) {
-          intSkipped++;
-          continue;
+      let intMoved = 0, intSkipped = 0, intReplaced = 0;
+      const srcRows = intResult.rows.filter((r: any) => Number(r.user_id) === src);
+      const dstRows = intResult.rows.filter((r: any) => Number(r.user_id) === dst);
+      for (const row of srcRows) {
+        const dstMatch = dstRows.find((d: any) => d.provider === row.provider && (d.email || '') === (row.email || ''));
+        if (dstMatch) {
+          // Conflict on (provider, email). Keep newer.
+          const srcUpd = Number(row.updated_at) || 0;
+          const dstUpd = Number(dstMatch.updated_at) || 0;
+          if (srcUpd > dstUpd) {
+            // src wins — delete dst's, move src
+            if (!dryRun) {
+              await client.query(`DELETE FROM user_integrations WHERE id = $1`, [dstMatch.id]);
+              await client.query(`UPDATE user_integrations SET user_id = $1 WHERE id = $2`, [dst, row.id]);
+            }
+            intReplaced++;
+          } else {
+            // dst wins — just drop src's row
+            if (!dryRun) await client.query(`DELETE FROM user_integrations WHERE id = $1`, [row.id]);
+            intSkipped++;
+          }
+        } else {
+          // No conflict — just move
+          if (!dryRun) await client.query(`UPDATE user_integrations SET user_id = $1 WHERE id = $2`, [dst, row.id]);
+          intMoved++;
         }
-        if (!dryRun) {
-          await client.query(`UPDATE user_integrations SET user_id = $1 WHERE id = $2`, [dst, row.id]);
-        }
-        intMoved++;
       }
-      summary.tables.user_integrations = { moved: intMoved, skipped_duplicates: intSkipped };
+      summary.tables.user_integrations = { moved: intMoved, replaced_dst: intReplaced, skipped_older: intSkipped };
 
       // Generic tables: just remap user_id
       for (const table of remapTables) {
