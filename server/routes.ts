@@ -4359,7 +4359,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/partner/inbox/confirm/:token", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { token } = req.params;
+    const token = String(req.params.token || "");
     const { action } = req.body || {};
     if (!token) return res.status(400).json({ error: "token required" });
     if (action !== "confirm" && action !== "cancel") {
@@ -4386,7 +4386,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           entry.action.body,
         );
         logger.info({ source: "send-confirm", kind: "send_reply", userId, sent_id: result.sent_id }, "Email reply confirmed and sent");
-        return res.json({ ok: true, status: "sent", ...result });
+        return res.json({ ok: true, status: "sent", sent_id: result.sent_id, thread_id: result.thread_id });
       } else {
         const { sendGmailNew } = await import("./cloud-integrations");
         const result = await sendGmailNew(
@@ -4399,7 +4399,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           entry.action.bcc,
         );
         logger.info({ source: "send-confirm", kind: "send_new", userId, sent_id: result.sent_id }, "New email confirmed and sent");
-        return res.json({ ok: true, status: "sent", ...result });
+        return res.json({ ok: true, status: "sent", sent_id: result.sent_id, thread_id: result.thread_id });
       }
     } catch (err: any) {
       const status = (err as any).status || 500;

@@ -3526,7 +3526,6 @@ export default function PartnerChat() {
         />
       </>
     )}
-    </div>
 
     {/* ── Email Send Confirm Modal (Luca tool: send_new_email / send_email_reply) ── */}
     <EmailConfirmModal
@@ -3535,5 +3534,6 @@ export default function PartnerChat() {
       onSent={() => setEmailConfirmPayload(null)}
       onCancelled={() => setEmailConfirmPayload(null)}
     />
+    </div>
   );
 }
