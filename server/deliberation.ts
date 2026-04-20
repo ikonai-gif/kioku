@@ -3184,12 +3184,19 @@ print("Converted MD to DOCX")
           const fileListContent = downloaded.map(f => `file '${f}'`).join("\n");
           fs.writeFileSync(listFile, fileListContent);
 
-          // Run ffmpeg concat
+          // Run ffmpeg concat. IMPORTANT: route stderr to file (not merged to stdout),
+          // else execSync's default 1MB pipe buffer overflows (ENOBUFS) for large outputs.
+          const stderrFile = path.join(tmpDir, "ffmpeg.log");
           const ffmpegCmd = outputFormat === "mp4"
-            ? `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outputFile}" 2>&1`
-            : `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:a libmp3lame -q:a 2 "${outputFile}" 2>&1`;
-
-          execSync(ffmpegCmd, { timeout: 120000 });
+            ? `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outputFile}" 2>"${stderrFile}"`
+            : `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:a libmp3lame -q:a 2 "${outputFile}" 2>"${stderrFile}"`;
+          try {
+            execSync(ffmpegCmd, { timeout: 120000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 });
+          } catch (e: any) {
+            let tail = "";
+            try { tail = fs.readFileSync(stderrFile, "utf8").slice(-1000); } catch {}
+            return `Media stitching failed: ${(e?.message || String(e)).slice(0, 200)}. ffmpeg_tail: ${tail}`;
+          }
 
           if (!fs.existsSync(outputFile)) {
             return "FFmpeg completed but output file not found.";
@@ -3353,7 +3360,7 @@ print("Converted MD to DOCX")
           fs.writeFileSync(videoPath, Buffer.from(await videoResp.arrayBuffer()));
 
           // Extract audio
-          execSync(`ffmpeg -y -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}" 2>&1`, { timeout: 60000 });
+          execSync(`ffmpeg -y -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}"`, { timeout: 60000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 });
 
           // Transcribe with Whisper API
           const OAI = (await import("openai")).default;
@@ -3392,7 +3399,7 @@ print("Converted MD to DOCX")
           const styleStr = styleMap[style] || styleMap.tiktok;
 
           // Burn subtitles
-          execSync(`ffmpeg -y -i "${videoPath}" -vf "subtitles='${srtPath}':force_style='${styleStr}'" -c:a copy "${outPath}" 2>&1`, { timeout: 120000 });
+          execSync(`ffmpeg -y -i "${videoPath}" -vf "subtitles='${srtPath}':force_style='${styleStr}'" -c:a copy "${outPath}"`, { timeout: 120000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
 
           if (!fs.existsSync(outPath)) return "Subtitles burn-in completed but output not found.";
           const outBuf = fs.readFileSync(outPath);
@@ -3473,7 +3480,7 @@ print("Converted MD to DOCX")
           const order = position === "intro" ? [cardPath, videoPath] : [videoPath, cardPath];
           fs.writeFileSync(listFile, order.map(f => `file '${f}'`).join("\n"));
 
-          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outPath}" 2>&1`, { timeout: 120000 });
+          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -movflags +faststart "${outPath}"`, { timeout: 120000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
 
           if (!fs.existsSync(outPath)) return "Title card generation completed but output not found.";
           const outBuf = fs.readFileSync(outPath);
