@@ -4258,6 +4258,84 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // GET /api/partner/inbox/thread?account=&id= — fetch full conversation thread
+  app.get("/api/partner/inbox/thread", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const account = String(req.query.account || "");
+    const id = String(req.query.id || "");
+    if (!account || !id) return res.status(400).json({ error: "account and id required" });
+    try {
+      const { getGmailThread } = await import("./cloud-integrations");
+      const thread = await getGmailThread(userId, account, id);
+      res.json(thread);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // GET /api/partner/inbox/search?q=&days=&perAccount= — free-text Gmail search
+  app.get("/api/partner/inbox/search", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const q = String(req.query.q || "").trim();
+    if (!q) return res.status(400).json({ error: "q required" });
+    const days = Math.min(Math.max(Number(req.query.days) || 90, 1), 365);
+    const perAccount = Math.min(Math.max(Number(req.query.perAccount) || 30, 1), 100);
+    try {
+      const { searchGmailAll } = await import("./cloud-integrations");
+      // Combine user query with date filter (unless they already specified one)
+      const finalQuery = /newer_than|older_than|after:|before:/i.test(q) ? q : `${q} newer_than:${days}d`;
+      const result = await searchGmailAll(userId, finalQuery, perAccount);
+      res.json({
+        meta: {
+          fetchedAt: Date.now(),
+          query: finalQuery,
+          totalMessages: (result.messages || []).length,
+          totalAccounts: (result.accountStatuses || []).length,
+        },
+        accountStatuses: result.accountStatuses,
+        messages: result.messages,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // POST /api/partner/inbox/reply { account, id, body } — send a reply within thread
+  app.post("/api/partner/inbox/reply", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { account, id, body } = req.body || {};
+    if (!account || !id || !body || typeof body !== "string") {
+      return res.status(400).json({ error: "account, id, body (string) required" });
+    }
+    try {
+      const { sendGmailReply } = await import("./cloud-integrations");
+      const result = await sendGmailReply(userId, account, id, body);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
+  // POST /api/partner/inbox/send { account, to, subject, body, cc? } — brand-new email
+  app.post("/api/partner/inbox/send", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const { account, to, subject, body, cc } = req.body || {};
+    if (!account || !to || !subject || !body) {
+      return res.status(400).json({ error: "account, to, subject, body required" });
+    }
+    try {
+      const { sendGmailNew } = await import("./cloud-integrations");
+      const result = await sendGmailNew(userId, account, to, subject, body, cc);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
   // ── Scheduled Tasks API ─────────────────────────────────────────────────────
 
   // GET /api/tasks — list all tasks for user

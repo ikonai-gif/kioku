@@ -687,6 +687,168 @@ export async function modifyGmailMessage(
   return { ok: true };
 }
 
+// ── Gmail: fetch full thread (all messages in conversation) ──────────────
+export async function getGmailThread(
+  userId: number,
+  accountEmail: string,
+  threadId: string,
+): Promise<{
+  thread_id: string;
+  account: string;
+  messages: Array<{
+    id: string;
+    from: string;
+    to: string;
+    subject: string;
+    date: string;
+    body: string;
+    snippet: string;
+  }>;
+}> {
+  const accounts = await listGmailAccounts(userId);
+  const acct = accounts.find(a => a.email.toLowerCase() === accountEmail.toLowerCase());
+  if (!acct) throw new Error(`Gmail account ${accountEmail} not connected`);
+  const { token } = await getGmailTokenForAccount(acct.id);
+  const r = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=full`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20000) }
+  );
+  if (!r.ok) throw new Error(`Gmail thread fetch failed: ${r.status}`);
+  const d = await r.json() as any;
+  const messages = (d.messages || []).map((m: any) => {
+    const hdrs = (m.payload?.headers || []) as Array<{ name: string; value: string }>;
+    const getH = (n: string) => hdrs.find(h => h.name.toLowerCase() === n.toLowerCase())?.value || "";
+    return {
+      id: m.id,
+      from: getH("From"),
+      to: getH("To"),
+      subject: getH("Subject"),
+      date: getH("Date"),
+      body: extractBody(m.payload).slice(0, 8000),
+      snippet: m.snippet || "",
+    };
+  });
+  return { thread_id: threadId, account: accountEmail, messages };
+}
+
+// ── Gmail: send a reply within a thread ──────────────────────────────────
+export async function sendGmailReply(
+  userId: number,
+  accountEmail: string,
+  inReplyToMessageId: string,
+  bodyText: string,
+): Promise<{ ok: true; sent_id: string; thread_id: string }> {
+  const accounts = await listGmailAccounts(userId);
+  const acct = accounts.find(a => a.email.toLowerCase() === accountEmail.toLowerCase());
+  if (!acct) throw new Error(`Gmail account ${accountEmail} not connected`);
+  const { token } = await getGmailTokenForAccount(acct.id);
+
+  // Fetch original to get headers (Subject, From→To swap, Message-ID, References, In-Reply-To)
+  const origR = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${inReplyToMessageId}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=In-Reply-To`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) }
+  );
+  if (!origR.ok) throw new Error(`Failed to fetch original message: ${origR.status}`);
+  const orig = await origR.json() as any;
+  const threadId = orig.threadId as string;
+  const hdrs = (orig.payload?.headers || []) as Array<{ name: string; value: string }>;
+  const getH = (n: string) => hdrs.find(h => h.name.toLowerCase() === n.toLowerCase())?.value || "";
+  const origSubject = getH("Subject");
+  const origFrom = getH("From");
+  const origMsgId = getH("Message-ID");
+  const origRefs = getH("References");
+
+  const replySubject = origSubject.toLowerCase().startsWith("re:") ? origSubject : `Re: ${origSubject}`;
+  // Build references chain
+  const refs = [origRefs, origMsgId].filter(Boolean).join(" ").trim();
+
+  // Compose RFC 2822 message
+  const lines = [
+    `From: ${accountEmail}`,
+    `To: ${origFrom}`,
+    `Subject: ${replySubject}`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: 8bit",
+  ];
+  if (origMsgId) lines.push(`In-Reply-To: ${origMsgId}`);
+  if (refs) lines.push(`References: ${refs}`);
+  lines.push("");
+  lines.push(bodyText);
+  const raw = lines.join("\r\n");
+
+  // Base64url encode
+  const encoded = Buffer.from(raw, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  const sendR = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw: encoded, threadId }),
+      signal: AbortSignal.timeout(20000),
+    }
+  );
+  if (!sendR.ok) {
+    const errBody = await sendR.text().catch(() => "");
+    throw new Error(`Gmail send failed: ${sendR.status} ${errBody.slice(0, 300)}`);
+  }
+  const sent = await sendR.json() as any;
+  return { ok: true, sent_id: sent.id, thread_id: sent.threadId };
+}
+
+// ── Gmail: send a brand-new message ──────────────────────────────────────
+export async function sendGmailNew(
+  userId: number,
+  accountEmail: string,
+  to: string,
+  subject: string,
+  bodyText: string,
+  cc?: string,
+): Promise<{ ok: true; sent_id: string; thread_id: string }> {
+  const accounts = await listGmailAccounts(userId);
+  const acct = accounts.find(a => a.email.toLowerCase() === accountEmail.toLowerCase());
+  if (!acct) throw new Error(`Gmail account ${accountEmail} not connected`);
+  const { token } = await getGmailTokenForAccount(acct.id);
+
+  const lines = [
+    `From: ${accountEmail}`,
+    `To: ${to}`,
+  ];
+  if (cc) lines.push(`Cc: ${cc}`);
+  lines.push(
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    bodyText
+  );
+  const raw = lines.join("\r\n");
+  const encoded = Buffer.from(raw, "utf8").toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  const sendR = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw: encoded }),
+      signal: AbortSignal.timeout(20000),
+    }
+  );
+  if (!sendR.ok) {
+    const errBody = await sendR.text().catch(() => "");
+    throw new Error(`Gmail send failed: ${sendR.status} ${errBody.slice(0, 300)}`);
+  }
+  const sent = await sendR.json() as any;
+  return { ok: true, sent_id: sent.id, thread_id: sent.threadId };
+}
+
 export function buildGoogleOAuthUrl(userId: number): string {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
     throw new Error("Google OAuth not configured (missing GOOGLE_CLIENT_ID or redirect URI)");
