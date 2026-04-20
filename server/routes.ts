@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
 import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
-import { triggerAgentResponses, generateProactiveMessage, executePartnerTool } from "./deliberation";
+import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, abortRoomTurn, isRoomTurnActive } from "./deliberation";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
@@ -2204,6 +2204,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       sharedReferences: rel.sharedReferences,
       emotionalHistory: rel.emotionalHistory,
     });
+  }));
+
+  // Feature #4: POST /api/partner/abort — user clicked Stop.
+  // Aborts Luca's current turn in the given room: the tool-call loop exits
+  // on its next iteration and the in-flight tool call returns up the stack.
+  app.post("/api/partner/abort", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.body?.roomId);
+    if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad roomId" });
+    // Ownership: only allow aborting rooms that belong to this user
+    try {
+      const row = await pool.query(
+        `SELECT id FROM rooms WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [roomId, userId]
+      );
+      if (row.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    } catch { return res.status(500).json({ error: "Server error" }); }
+    const aborted = abortRoomTurn(roomId);
+    res.json({ aborted, active: isRoomTurnActive(roomId) });
   }));
 
   // GET /api/partner/status — combined emotional state + relationship for logged-in user's primary agent

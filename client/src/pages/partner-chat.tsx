@@ -3290,19 +3290,49 @@ export default function PartnerChat() {
             )}
           </button>
 
-          {/* Send Button */}
-          <Button
-            size="sm"
-            className="rounded-xl h-11 w-11 p-0 flex-shrink-0"
-            style={{
-              background: (input.trim() || imageBase64 || attachedFileName) ? "#C9A340" : "rgba(201,163,64,0.2)",
-              color: (input.trim() || imageBase64 || attachedFileName) ? "#0a0f1e" : "rgba(201,163,64,0.5)",
-            }}
-            onClick={creativeMode ? sendCreative : send}
-            disabled={(!input.trim() && !imageBase64 && !attachedFileName) || (!partnerRoomId && !creativeMode) || sendMutation.isPending || isCreating}
-          >
-            {isCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : creativeMode ? <Sparkles className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-          </Button>
+          {/* Send / Stop Button — Feature #4: turns into Stop while Luca is thinking */}
+          {isThinking && partnerRoomId ? (
+            <Button
+              size="sm"
+              className="rounded-xl h-11 w-11 p-0 flex-shrink-0"
+              style={{
+                background: "rgba(239,68,68,0.15)",
+                color: "#ef4444",
+                border: "1px solid rgba(239,68,68,0.4)",
+              }}
+              title="Остановить"
+              onClick={() => {
+                const token = getSessionToken();
+                fetch(`${API_BASE}/api/partner/abort`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { "x-session-token": token } : {}),
+                  },
+                  credentials: "include",
+                  body: JSON.stringify({ roomId: partnerRoomId }),
+                }).catch(() => {});
+              }}
+            >
+              <span
+                className="w-3 h-3 rounded-sm"
+                style={{ background: "#ef4444" }}
+              />
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              className="rounded-xl h-11 w-11 p-0 flex-shrink-0"
+              style={{
+                background: (input.trim() || imageBase64 || attachedFileName) ? "#C9A340" : "rgba(201,163,64,0.2)",
+                color: (input.trim() || imageBase64 || attachedFileName) ? "#0a0f1e" : "rgba(201,163,64,0.5)",
+              }}
+              onClick={creativeMode ? sendCreative : send}
+              disabled={(!input.trim() && !imageBase64 && !attachedFileName) || (!partnerRoomId && !creativeMode) || sendMutation.isPending || isCreating}
+            >
+              {isCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : creativeMode ? <Sparkles className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+            </Button>
+          )}
         </div>
         <div className="flex items-center justify-between px-1 pt-1.5">
           <span className="text-[9px] text-muted-foreground/30">

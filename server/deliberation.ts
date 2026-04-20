@@ -3979,6 +3979,24 @@ const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
 const roomLocks = new Map<number, number>(); // roomId → timestamp
 const ROOM_LOCK_TIMEOUT_MS = 60_000; // 60s max (reduced from 120s — stale locks block responses)
 
+// ── Feature #4: abort controllers per room turn ───────────────────────────────
+// When user clicks Stop, we abort the live turn: tool-call loop exits
+// on next iteration and executePartnerTool throws out of the current call.
+const activeTurnAborts = new Map<number, AbortController>(); // roomId → controller
+
+export function abortRoomTurn(roomId: number): boolean {
+  const ctl = activeTurnAborts.get(roomId);
+  if (!ctl) return false;
+  try { ctl.abort(new Error("user_stop")); } catch {}
+  activeTurnAborts.delete(roomId);
+  roomLocks.delete(roomId); // release lock so new turns can start
+  return true;
+}
+
+export function isRoomTurnActive(roomId: number): boolean {
+  return activeTurnAborts.has(roomId);
+}
+
 /**
  * Trigger AI agent responses after a human message is posted.
  * Runs async — does NOT block the HTTP response.
@@ -4003,6 +4021,11 @@ export async function triggerAgentResponses(
     roomLocks.delete(roomId);
   }
   roomLocks.set(roomId, Date.now());
+
+  // Feature #4: register abort controller for this turn so the user can Stop it
+  const __turnAbort = new AbortController();
+  activeTurnAborts.set(roomId, __turnAbort);
+  const __isAborted = () => __turnAbort.signal.aborted;
 
   try {
     // Get all agents in the room that are online and NOT the one who just spoke
@@ -4299,6 +4322,8 @@ export async function triggerAgentResponses(
             const maxToolIterations = 10;
             const generatedAssets: string[] = []; // Collect image URLs etc. to append to final reply
             for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
+              // Feature #4: stop if user clicked Stop
+              if (__isAborted()) { reply = reply || "[остановлено]"; break; }
               const claudeMsg = await anthropicClient.messages.create({
                 model: claudeModel,
                 max_tokens: claudeMaxTokens,
@@ -4327,6 +4352,7 @@ export async function triggerAgentResponses(
               const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
               for (const block of toolUseBlocks) {
                 if (block.type !== "tool_use") continue;
+                if (__isAborted()) break; // Feature #4
                 const result = await executePartnerTool(
                   block.name,
                   block.input as Record<string, any>,
@@ -4386,6 +4412,7 @@ export async function triggerAgentResponses(
           // Agent loop — multi-step tool calling (mirrors Claude tool loop)
           const maxToolIterationsOai = 10;
           for (let toolIter = 0; toolIter < maxToolIterationsOai; toolIter++) {
+            if (__isAborted()) { reply = reply || "[остановлено]"; break; } // Feature #4
             const completion = await oaiClient.chat.completions.create({
               model: resolvedModel,
               ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
@@ -4420,6 +4447,7 @@ export async function triggerAgentResponses(
 
             // Execute each tool call
             for (const toolCall of msg.tool_calls) {
+              if (__isAborted()) break; // Feature #4
               const tcAny = toolCall as any;
               const toolName = tcAny.function.name;
               let toolArgs: Record<string, any> = {};
@@ -4636,6 +4664,10 @@ export async function triggerAgentResponses(
     }
   } finally {
     roomLocks.delete(roomId);
+    // Feature #4: release abort controller so the room can start a new turn
+    if (activeTurnAborts.get(roomId) === __turnAbort) {
+      activeTurnAborts.delete(roomId);
+    }
   }
 }
 
