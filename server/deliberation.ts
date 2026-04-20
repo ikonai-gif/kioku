@@ -826,6 +826,22 @@ async function executePartnerTool(
         });
         const imageUrl = response.data?.[0]?.url || "";
         const revisedPrompt = response.data?.[0]?.revised_prompt || "";
+
+        // CRITICAL: DALL-E URLs expire in ~1 hour (Azure Blob). Download immediately and convert to data URI.
+        let dataUri = "";
+        if (imageUrl) {
+          try {
+            const imgResp = await fetch(imageUrl, { signal: AbortSignal.timeout(30000) });
+            if (imgResp.ok) {
+              const buf = Buffer.from(await imgResp.arrayBuffer());
+              const mime = imgResp.headers.get("content-type") || "image/png";
+              dataUri = `data:${mime};base64,${buf.toString("base64")}`;
+            }
+          } catch (err) {
+            console.error("[generate_image] Failed to download DALL-E image:", err);
+          }
+        }
+
         // Store creation memory (fire-and-forget)
         storage.createMemory({
           userId,
@@ -835,20 +851,23 @@ async function executePartnerTool(
           importance: 0.7,
           namespace: "_creations",
         }).catch(() => {});
-        // Auto-save to gallery
-        if (imageUrl) {
+        // Auto-save to gallery with PERSISTENT data URI (not expiring URL)
+        if (dataUri) {
           (storage as any).addGalleryItem({
             userId,
             agentId,
             type: "image",
             title: toolInput.prompt.slice(0, 200),
-            contentUrl: imageUrl,
+            contentUrl: dataUri,
             prompt: toolInput.prompt,
             metadata: { style: toolInput.style || "vivid", revisedPrompt },
           }).catch(() => {});
         }
+        if (dataUri) {
+          return `Image generated successfully. ${dataUri}`;
+        }
         return imageUrl
-          ? `Image generated successfully. URL: ${imageUrl}`
+          ? `Image generated but download to persistent storage failed. Temporary URL (expires in 1 hour): ${imageUrl}`
           : "Image generation failed — no URL returned.";
       }
 
