@@ -736,6 +736,20 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    name: "reframe_vertical",
+    description: "Convert a horizontal or square video to vertical 9:16 (1080x1920) for ReelShort/TikTok/Reels publishing. Two modes: 'crop' (smart center crop), 'blur_bg' (fit video into 9:16 with blurred background fill so nothing is cropped). Use blur_bg when faces/subjects might be near edges.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: { type: "string", description: "URL or workspace path of source video" },
+        mode: { type: "string", enum: ["crop", "blur_bg"], description: "Default: blur_bg" },
+        target_width: { type: "number", description: "Default 1080" },
+        target_height: { type: "number", description: "Default 1920" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "series_bible",
     description: "Create or update the 'bible' for a vertical series — the authoritative reference for characters, setting, visual style, tone, and season arcs. ALWAYS use at the start of any multi-episode project. Stored in memory so every subsequent episode stays consistent. Use action='create' for new series, 'update' to extend, 'get' to recall.",
     input_schema: {
@@ -872,6 +886,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "generate_sfx": return `Звуковой эффект: "${truncate(input.prompt)}"`;
     case "generate_music": return `Пишу музыку: "${truncate(input.prompt)}"`;
     case "stitch_media": return `Склеиваю ${Array.isArray(input.urls) ? input.urls.length : "?"} файла(ов)`;
+    case "reframe_vertical": return `Конвертирую в вертикаль 9:16`;
     case "add_subtitles": return `Накладываю субтитры`;
     case "add_title_cards": return `Добавляю титры: "${truncate(input.text, 40)}"`;
     case "series_bible": return `Series Bible: ${input.action || "get"} "${truncate(input.series_name, 40)}"`;
@@ -3471,6 +3486,68 @@ print("Converted MD to DOCX")
         }
       }
 
+      case "reframe_vertical": {
+        const source = toolInput.url;
+        if (!source || typeof source !== "string") return "Missing required field: url.";
+        const mode = (toolInput.mode === "crop" ? "crop" : "blur_bg") as "crop" | "blur_bg";
+        const targetW = Math.max(64, Math.floor(Number(toolInput.target_width) || 1080));
+        const targetH = Math.max(64, Math.floor(Number(toolInput.target_height) || 1920));
+
+        try {
+          const { execSync } = await import("child_process");
+          const fs = await import("fs");
+          const path = await import("path");
+          const os = await import("os");
+
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "reframe-"));
+          const inputPath = path.join(tmpDir, "input.mp4");
+          const outPath = path.join(tmpDir, "output.mp4");
+          const stderrFile = path.join(tmpDir, "ffmpeg.log");
+
+          // Download source (supports https or data: URI)
+          if (source.startsWith("data:")) {
+            const m = source.match(/^data:[^;]+;base64,(.+)$/);
+            if (!m) return "Malformed data URI.";
+            fs.writeFileSync(inputPath, Buffer.from(m[1], "base64"));
+          } else {
+            const resp = await fetch(source, { signal: AbortSignal.timeout(90000) });
+            if (!resp.ok) return `Failed to download source: HTTP ${resp.status}`;
+            fs.writeFileSync(inputPath, Buffer.from(await resp.arrayBuffer()));
+          }
+
+          // Build filter. crop = smart center crop; blur_bg = fit with blurred bg behind.
+          const vfCrop = `crop='min(iw,ih*${targetW}/${targetH})':'min(ih,iw*${targetH}/${targetW})',scale=${targetW}:${targetH}`;
+          const fc = mode === "crop"
+            ? `-vf "${vfCrop}"`
+            : `-filter_complex "[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},boxblur=20:5[bg];[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2"`;
+
+          const cmd = `ffmpeg -y -i "${inputPath}" ${fc} -c:v libx264 -pix_fmt yuv420p -c:a copy -movflags +faststart "${outPath}" 2>"${stderrFile}"`;
+          try {
+            execSync(cmd, { timeout: 180000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+          } catch (e: any) {
+            let tail = "";
+            try { tail = fs.readFileSync(stderrFile, "utf8").slice(-1000); } catch {}
+            // Retry without audio if audio copy failed (some sources have no audio stream)
+            const cmdNoAudio = `ffmpeg -y -i "${inputPath}" ${fc} -c:v libx264 -pix_fmt yuv420p -an -movflags +faststart "${outPath}" 2>"${stderrFile}"`;
+            try {
+              execSync(cmdNoAudio, { timeout: 180000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+            } catch (e2: any) {
+              try { tail = fs.readFileSync(stderrFile, "utf8").slice(-1000); } catch {}
+              return `Reframe failed: ${(e2?.message || String(e2)).slice(0, 200)}. ffmpeg_tail: ${tail}`;
+            }
+          }
+
+          if (!fs.existsSync(outPath)) return "Reframe completed but output file not found.";
+          const outBuf = fs.readFileSync(outPath);
+          const b64 = outBuf.toString("base64");
+          try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+
+          return `[Vertical ${targetW}x${targetH} ${mode}] data:video/mp4;base64,${b64}`;
+        } catch (err: any) {
+          return `Reframe failed: ${err?.message || String(err)}`;
+        }
+      }
+
       case "series_bible": {
         const action = toolInput.action;
         const seriesName = toolInput.series_name;
@@ -3773,7 +3850,7 @@ Script parsed: ${sceneCount} scene(s) detected.
 
 EXECUTE THIS PIPELINE step by step, one tool per step:
 
-1. For each of the ${sceneCount} scenes, call generate_video with a vertical 9:16 prompt derived from the scene description. Keep clips 5-8 sec each.
+1. For each of the ${sceneCount} scenes, call generate_video with a vertical 9:16 prompt derived from the scene description. Keep clips 5-8 sec each. (If any source clip is horizontal/square, run reframe_vertical on it before stitching — vertical 9:16 export is built in.)
 2. For every dialogue line, call generate_speech with the character's voice_id from the series bible. If a character has no voice yet, call clone_voice first.
 3. ${toolInput.include_music !== false ? "Call generate_music for the episode soundtrack (duration matches total scene count × 6 sec)." : "Skip music."}
 4. Call stitch_media to concatenate all scene videos in order.
@@ -3907,6 +3984,7 @@ Start with step 1 now.`;
       "stitch_media",
       "add_subtitles",
       "add_title_cards",
+      "reframe_vertical",
     ]);
     if (workspaceEnabled && MEDIA_TOOLS.has(toolName) && typeof __finalResult === "string") {
       try {
@@ -3927,6 +4005,7 @@ Start with step 1 now.`;
             stitch_media: "mp4",
             add_subtitles: "mp4",
             add_title_cards: "mp4",
+            reframe_vertical: "mp4",
           };
           // If result looks like an audio data URI, prefer that extension
           let ext = extMap[toolName] || "bin";
@@ -5010,6 +5089,7 @@ You have these tools available RIGHT NOW:
 - generate_sfx → sound effects from text (0.5-22 sec)
 - generate_music → full music tracks via Lyria 3 (30sec or 3min with vocals)
 - stitch_media → combine multiple video/audio clips into one file via ffmpeg
+- reframe_vertical → convert any video to vertical 9:16 (smart crop or blurred-bg fit) for ReelShort/TikTok publishing
 - add_subtitles → auto-generated burned-in subtitles (TikTok/Reels styles, optional translation)
 - add_title_cards → intro or outro title card with custom text/colors
 - series_bible → create/update/recall the canonical reference for a multi-episode series
