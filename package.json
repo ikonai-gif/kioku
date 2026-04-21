@@ -10,7 +10,8 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
@@ -102,6 +103,7 @@
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.1.18",
+    "@testcontainers/postgresql": "^11.14.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
@@ -121,6 +123,7 @@
     "postcss": "^8.4.47",
     "supertest": "^7.2.2",
     "tailwindcss": "^3.4.17",
+    "testcontainers": "^11.14.0",
     "tsx": "^4.20.5",
     "typescript": "5.6.3",
     "vite": "^7.3.0",
