@@ -328,6 +328,13 @@ export type AestheticPreference = typeof aestheticPreferences.$inferSelect;
 
 // ── Meeting Room — Track A (Week 1 schema) ───────────────────────────────────
 // NOTE: room_type column added to existing rooms table via migration SQL only
+//
+// TIMESTAMP TYPE DECISION (A1 from BRO2 Round 2 review):
+// Legacy tables use BIGINT Unix-ms. New meeting_* tables use TIMESTAMPTZ (Postgres native, timezone-aware, better for date math + indexing).
+// Cross-table queries joining meetings ↔ rooms/users need conversion:
+//   toUnixMs(ts) = ts.getTime()
+//   fromUnixMs(ms) = new Date(ms)
+// Utility helpers to be added to storage.ts in Week 2. Legacy tables stay BIGINT (migration cost not justified for MVP).
 
 // Meetings — top-level meeting entity linked to a room
 export const meetings = pgTable("meetings", {
@@ -378,7 +385,8 @@ export const meetingParticipantProfiles = pgTable("meeting_participant_profiles"
   carryOverMemory: boolean("carry_over_memory").notNull().default(false),
   createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  index("idx_mpp_meeting_agent").on(t.meetingId, t.agentId),
+  // F3: one profile per (meeting, agent) — UNIQUE prevents duplicate profiles per participant
+  uniqueIndex("uniq_mpp_meeting_agent").on(t.meetingId, t.agentId),
 ]);
 
 export const insertMeetingParticipantProfileSchema = createInsertSchema(meetingParticipantProfiles).omit({ id: true, createdAt: true });
@@ -397,7 +405,7 @@ export const meetingContext = pgTable("meeting_context", {
   createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("uniq_mc_sequence").on(t.meetingId, t.sequenceNumber),
-  index("idx_mc_meeting").on(t.meetingId, t.sequenceNumber),
+  // F1: no separate idx_mc_meeting — uniq_mc_sequence already provides B-tree on (meeting_id, sequence_number)
   // GIN index on scope_agent_ids is created via raw SQL in initDb — Drizzle does not support USING GIN syntax in schema defs yet
 ]);
 
@@ -416,7 +424,7 @@ export const meetingArtifacts = pgTable("meeting_artifacts", {
   createdAt:        timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt:        timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  index("idx_ma_meeting").on(t.meetingId),
+  // F2: no separate idx_ma_meeting — idx_ma_type covers lookup by meeting_id via leftmost prefix
   index("idx_ma_type").on(t.meetingId, t.type),
 ]);
 

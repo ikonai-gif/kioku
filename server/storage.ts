@@ -561,7 +561,7 @@ export async function initDb() {
       carry_over_memory BOOLEAN NOT NULL DEFAULT false,
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_mpp_meeting_agent ON meeting_participant_profiles(meeting_id, agent_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_mpp_meeting_agent ON meeting_participant_profiles(meeting_id, agent_id);
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS meeting_context (
@@ -576,7 +576,6 @@ export async function initDb() {
       created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE UNIQUE INDEX IF NOT EXISTS uniq_mc_sequence ON meeting_context(meeting_id, sequence_number);
-    CREATE INDEX IF NOT EXISTS idx_mc_meeting ON meeting_context(meeting_id, sequence_number);
     CREATE INDEX IF NOT EXISTS idx_mc_scope_gin ON meeting_context USING GIN (scope_agent_ids);
     CREATE SEQUENCE IF NOT EXISTS meeting_context_seq_global;
   `);
@@ -591,7 +590,6 @@ export async function initDb() {
       created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_ma_meeting ON meeting_artifacts(meeting_id);
     CREATE INDEX IF NOT EXISTS idx_ma_type ON meeting_artifacts(meeting_id, type);
   `);
 }

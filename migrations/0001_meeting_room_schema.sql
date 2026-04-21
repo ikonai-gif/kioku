@@ -15,7 +15,7 @@ ALTER TABLE rooms
 CREATE TABLE IF NOT EXISTS meetings (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   room_id           INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-  creator_user_id   INTEGER NOT NULL REFERENCES users(id),
+  creator_user_id   INTEGER NOT NULL REFERENCES users(id),  -- ON DELETE intentionally not set: users with meetings cannot be hard-deleted (use soft-delete)
   state             VARCHAR(30) NOT NULL DEFAULT 'pending'
     CHECK (state IN ('pending','active','waiting_for_turn','waiting_for_approval','completed','aborted')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS meeting_participant_profiles (
   carry_over_memory BOOLEAN NOT NULL DEFAULT false,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_mpp_meeting_agent ON meeting_participant_profiles(meeting_id, agent_id);
+-- One profile per (meeting, agent) — prevents duplicate profiles per participant
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_mpp_meeting_agent ON meeting_participant_profiles(meeting_id, agent_id);
 
 -- ── 5. meeting_context (Lamport-like ordering via sequence_number) ─────────────
 CREATE TABLE IF NOT EXISTS meeting_context (
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS meeting_context (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_mc_sequence ON meeting_context(meeting_id, sequence_number);
-CREATE INDEX IF NOT EXISTS idx_mc_meeting ON meeting_context(meeting_id, sequence_number);
+-- Note: no separate idx_mc_meeting — uniq_mc_sequence already provides B-tree on (meeting_id, sequence_number)
 CREATE INDEX IF NOT EXISTS idx_mc_scope_gin ON meeting_context USING GIN (scope_agent_ids);  -- O(1) "is agent X in scope?" lookup
 CREATE SEQUENCE IF NOT EXISTS meeting_context_seq_global;  -- fallback global seq; per-meeting sequence handled in app layer
 
@@ -84,5 +85,5 @@ CREATE TABLE IF NOT EXISTS meeting_artifacts (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_ma_meeting ON meeting_artifacts(meeting_id);
+-- Note: no separate idx_ma_meeting — idx_ma_type covers lookup by meeting_id via leftmost prefix
 CREATE INDEX IF NOT EXISTS idx_ma_type ON meeting_artifacts(meeting_id, type);
