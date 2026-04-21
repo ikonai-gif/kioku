@@ -20,6 +20,7 @@ import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { scoreEmotion } from "./emotion-scorer";
 import { embedText } from "./embeddings";
+import logger from "./logger";
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const dbUrl = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/kioku";
@@ -45,8 +46,48 @@ pool.on('error', (err) => {
 
 export const db = drizzle(pool);
 
+// ── Migration guard ─────────────────────────────────────────────────────────
+/**
+ * Atomically claims and runs a named migration.
+ *
+ * Uses INSERT ... ON CONFLICT DO NOTHING to claim the version atomically — only the first
+ * instance that inserts wins, preventing TOCTOU races when multiple Railway instances
+ * start concurrently. The loser sees rowCount=0 and skips the sql.
+ *
+ * Monitoring: rows with duration_ms=0 older than 1h indicate a crashed mid-migration
+ * instance — alert on SELECT * FROM schema_migrations WHERE duration_ms = 0 AND applied_at < NOW() - INTERVAL '1h'.
+ */
+export async function runMigration(version: string, sql: string): Promise<void> {
+  // Atomic claim: INSERT wins the race, ON CONFLICT DO NOTHING ensures single execution
+  const claim = await pool.query(
+    `INSERT INTO schema_migrations (version, duration_ms)
+     VALUES ($1, 0) ON CONFLICT DO NOTHING`,
+    [version],
+  );
+  if (claim.rowCount === 0) return; // already applied or claimed by another instance
+
+  const start = Date.now();
+  await pool.query(sql);
+  const duration = Date.now() - start;
+
+  await pool.query(
+    `UPDATE schema_migrations SET duration_ms = $2 WHERE version = $1`,
+    [version, duration],
+  );
+  logger.info({ version, duration_ms: duration }, '[migration] applied');
+}
+
 // ── Schema init (idempotent) ──────────────────────────────────────────────────
 export async function initDb() {
+  // ── Baseline: schema_migrations table (must be first — runMigration depends on it) ──
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version     TEXT PRIMARY KEY,
+      applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      duration_ms INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id           SERIAL PRIMARY KEY,
@@ -594,6 +635,11 @@ export async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_ma_type ON meeting_artifacts(meeting_id, type);
   `);
+
+  // ── Week 3 migrations: version-guarded new changes ──────────────────────────────
+  // Demo migration: verifies the migration-guard infrastructure works end-to-end.
+  // Uses a no-op SQL (SELECT 1) so it is safe to run on any database state.
+  await runMigration('v2026_04_21_001_meeting_room_week3', 'SELECT 1;');
 }
 
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────
