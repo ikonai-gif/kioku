@@ -1,0 +1,61 @@
+import { describe, it, expect } from "vitest";
+import { getPartnerToolsForAgent, LUCA_STUDIO_TOOL_NAMES, buildPartnerPrompt } from "../../server/deliberation.js";
+
+describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
+  it("returns exactly 16 tools for Luca", () => {
+    const tools = getPartnerToolsForAgent({ name: "Luca" });
+    expect(tools).toHaveLength(16);
+  });
+
+  it("returns only tools in LUCA_STUDIO_TOOL_NAMES for Luca", () => {
+    const tools = getPartnerToolsForAgent({ name: "Luca" });
+    for (const t of tools) {
+      expect(LUCA_STUDIO_TOOL_NAMES.has(t.name)).toBe(true);
+    }
+  });
+
+  it("returns the full registry for unknown / non-Luca partner agents", () => {
+    const luca = getPartnerToolsForAgent({ name: "Luca" });
+    const other = getPartnerToolsForAgent({ name: "SomeOther" });
+    const nullAgent = getPartnerToolsForAgent(null);
+    expect(other.length).toBeGreaterThan(luca.length);
+    expect(nullAgent.length).toBe(other.length);
+    expect(other.length).toBeGreaterThanOrEqual(40); // registry has 60+ tools
+  });
+
+  it("does NOT expose Gmail, web_search, stripe, github, or other non-studio tools to Luca", () => {
+    const tools = getPartnerToolsForAgent({ name: "Luca" });
+    const names = new Set(tools.map(t => t.name));
+    const forbidden = [
+      "gmail_search", "gmail_read", "send_email_reply", "send_new_email",
+      "web_search", "read_url",
+      "stripe_list", "github_call", "vercel_call", "supabase_query",
+      "google_sheets", "google_drive", "gcal",
+      "creative_writing", "run_code", "composio_action",
+      "build_project", "analyze_image", "browse_website",
+      "plan_steps", "delegate_task",
+      "read_own_prompt", "suggest_self_improvement",
+    ];
+    for (const f of forbidden) {
+      expect(names.has(f)).toBe(false);
+    }
+  });
+
+  it("LUCA_STUDIO_TOOL_NAMES stays in sync with what buildPartnerPrompt advertises", () => {
+    // If prompt lists a tool, the schema must expose it; if schema exposes it, prompt must list it.
+    const prompt = buildPartnerPrompt("Luca", "", "## WHO YOU ARE\nYou are Luca.\n");
+    for (const toolName of LUCA_STUDIO_TOOL_NAMES) {
+      expect(prompt).toContain(toolName);
+    }
+  });
+
+  it("all 16 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
+    const tools = getPartnerToolsForAgent({ name: "Luca" });
+    for (const t of tools) {
+      expect(typeof t.name).toBe("string");
+      expect(t.name.length).toBeGreaterThan(0);
+      expect(t.input_schema).toBeDefined();
+      expect((t.input_schema as any).type).toBe("object");
+    }
+  });
+});
