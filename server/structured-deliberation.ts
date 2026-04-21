@@ -91,15 +91,20 @@ const LLM_TIMEOUT_MS = 45_000; // 45s per LLM call
  * @param customApiKey — per-agent API key override (falls back to shared env key)
  * @param agentId      — required for per-agent breaker keying when customApiKey set
  */
-async function callOpenAI(
-  model: string,
-  systemPrompt: string,
-  userMessage: string,
-  maxTokens: number,
-  temperature: number,
-  customApiKey?: string | null,
-  agentId?: number,
-): Promise<string> {
+export interface CallOpenAIOptions {
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens: number;
+  temperature: number;
+  /** Per-agent API key override (falls back to shared env key when omitted). */
+  customApiKey?: string | null;
+  /** Required alongside customApiKey for per-agent breaker keying. */
+  agentId?: number;
+}
+
+async function callOpenAI(opts: CallOpenAIOptions): Promise<string> {
+  const { model, systemPrompt, userMessage, maxTokens, temperature, customApiKey, agentId } = opts;
   if (!customApiKey && !HAS_OPENAI_KEY) throw new Error("OPENAI_API_KEY not configured");
 
   const params = {
@@ -196,7 +201,7 @@ async function callLLM(
       }
       console.warn(`[deliberation] Gemini failed, falling back to OpenAI:`, err.message);
       try {
-        return await callOpenAI(DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, openaiKey, agentId);
+        return await callOpenAI({ model: DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, customApiKey: openaiKey, agentId });
       } catch (openaiErr: any) {
         throw new Error(`All AI providers failed. Gemini: ${err.message}, OpenAI: ${openaiErr.message}`);
       }
@@ -205,7 +210,7 @@ async function callLLM(
 
   // OpenAI models — try OpenAI first, fall back to Gemini
   try {
-    return await callOpenAI(model, systemPrompt, userMessage, maxTokens, temperature, openaiKey, agentId);
+    return await callOpenAI({ model, systemPrompt, userMessage, maxTokens, temperature, customApiKey: openaiKey, agentId });
   } catch (err: any) {
     if (!GEMINI_API_KEY && !geminiKey) {
       throw new Error(`All AI providers failed. OpenAI: ${err.message}`);

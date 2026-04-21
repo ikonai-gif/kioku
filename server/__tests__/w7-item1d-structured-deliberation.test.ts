@@ -144,7 +144,7 @@ describe("W7 1d — callOpenAI rethrows CircuitOpenError from shared breaker", (
     // (shared-key path: customApiKey absent) must propagate that error.
     let caught: any;
     try {
-      await callOpenAI("gpt-4o", "sys", "user", 100, 0.5);
+      await callOpenAI({ model: "gpt-4o", systemPrompt: "sys", userMessage: "user", maxTokens: 100, temperature: 0.5 });
     } catch (e) {
       caught = e;
     }
@@ -240,7 +240,7 @@ describe("W7 1d F2 — per-agent isolation: A's OPEN breaker doesn't block B", (
     // Now call `callOpenAI` AS AGENT A with custom key → hits the per-agent
     // breaker, which is OPEN → throws CircuitOpenError.
     await expect(
-      callOpenAI("gpt-4o", "sys", "user", 100, 0.5, "sk-agent-1", 1),
+      callOpenAI({ model: "gpt-4o", systemPrompt: "sys", userMessage: "user", maxTokens: 100, temperature: 0.5, customApiKey: "sk-agent-1", agentId: 1 }),
     ).rejects.toBeInstanceOf(CircuitOpenError);
 
     // B has NO custom key — it goes through the shared breaker, which is
@@ -258,7 +258,7 @@ describe("W7 1d F2 — per-agent isolation: A's OPEN breaker doesn't block B", (
     __setOpenAIClientForTest(okSharedClient);
 
     // B is a shared-key agent; callOpenAI with no customApiKey → shared breaker.
-    const replyB = await callOpenAI("gpt-4o", "sys", "user", 100, 0.5);
+    const replyB = await callOpenAI({ model: "gpt-4o", systemPrompt: "sys", userMessage: "user", maxTokens: 100, temperature: 0.5 });
     expect(replyB).toBe("B-ok");
   });
 });
