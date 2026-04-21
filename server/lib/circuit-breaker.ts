@@ -135,7 +135,10 @@ export class CircuitBreaker {
             (this.opts.successThreshold ?? 1)
           ) {
             this._transition("HALF_OPEN", "CLOSED", "probe succeeded");
-            this._resetCounters();
+            // F1/SF1: preserve cumulative totals (totalCalls/totalFailures/
+            // lastFailureAt) across HALF_OPEN↔CLOSED transitions. Only the
+            // transient consecutive counters + openedAt get zeroed.
+            this._resetTransientCounters();
           }
           return result;
         } catch (err) {
@@ -144,6 +147,10 @@ export class CircuitBreaker {
             this.lastError = err instanceof Error ? err : new Error(String(err));
             this.lastFailureAt = Date.now();
             this.totalFailures++;
+            // F1: a failed probe restarts the probe gauntlet. Zero the
+            // success counter so a previously successful probe in this
+            // HALF_OPEN window cannot later falsely close the circuit.
+            this.consecutiveSuccesses = 0;
             // Fresh OPEN with new openedAt
             this.openedAt = Date.now();
             this._transition("HALF_OPEN", "OPEN", "probe failed");
@@ -195,7 +202,7 @@ export class CircuitBreaker {
   /** Reset to CLOSED state with zeroed counters. For tests + manual recovery. */
   reset(): void {
     this._transition(this._state, "CLOSED", "manual reset");
-    this._resetCounters();
+    this._resetAllCounters();
     this.probeInFlight = false;
     this.lastError = undefined;
   }
@@ -207,13 +214,30 @@ export class CircuitBreaker {
     this.opts.onStateChange?.(from, to, reason);
   }
 
-  private _resetCounters(): void {
+  /**
+   * Zero every counter — called only by `reset()` (explicit manual recovery).
+   * Do NOT use for state-machine transitions; use `_resetTransientCounters`.
+   */
+  private _resetAllCounters(): void {
     this.consecutiveFailures = 0;
     this.consecutiveSuccesses = 0;
     this.openedAt = null;
     this.lastFailureAt = null;
     this.totalCalls = 0;
     this.totalFailures = 0;
+  }
+
+  /**
+   * F1/SF1: reset only counters that are meaningful within a single OPEN
+   * episode. Cumulative totals (`totalCalls`, `totalFailures`,
+   * `lastFailureAt`) are preserved across HALF_OPEN↔CLOSED transitions so
+   * operators can still observe long-run failure history.
+   */
+  private _resetTransientCounters(): void {
+    this.consecutiveFailures = 0;
+    this.consecutiveSuccesses = 0;
+    this.openedAt = null;
+    // Keep: totalCalls, totalFailures, lastFailureAt
   }
 
   private _countAsFailure(err: unknown): boolean {
