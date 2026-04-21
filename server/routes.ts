@@ -468,6 +468,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: bulk delete memories by id (master key only) ──────
+  // Parity with /api/admin/dump-user. Used for phantom-memory hygiene
+  // after capability changes (W7 P2.7). Scoped to a single userId so
+  // we never touch another user's rows even if caller supplies wrong ids.
+  app.post("/api/admin/delete-memories", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.body?.userId ?? req.query.userId ?? ""), 10);
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    const rawIds = Array.isArray(req.body?.memoryIds) ? req.body.memoryIds : [];
+    const ids = rawIds
+      .map((v: any) => parseInt(String(v), 10))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+    if (ids.length === 0) return res.status(400).json({ error: "memoryIds (non-empty number[]) required" });
+    if (ids.length > 500) return res.status(400).json({ error: "max 500 ids per call" });
+    try {
+      const { pool } = await import("./storage");
+      // Single scoped query, pg array binding. userId guard is non-negotiable.
+      const r = await pool.query(
+        `DELETE FROM memories WHERE user_id = $1 AND id = ANY($2::int[]) RETURNING id`,
+        [userId, ids]
+      );
+      const deletedIds: number[] = r.rows.map((row: any) => row.id);
+      const notFound = ids.filter((id: number) => !deletedIds.includes(id));
+      res.json({ ok: true, requested: ids.length, deleted: deletedIds.length, deletedIds, notFound });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "delete failed" });
+    }
+  }));
+
   // ── Admin: list all users (master key only) ──────────────────
   app.get("/api/admin/users", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";

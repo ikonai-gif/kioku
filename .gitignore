@@ -1,11 +1,12 @@
-node_modules/
-.env
-*.log
-.vercel
-dist/
 
 # Security: prevent database and config leaks
 *.db
+*.log
 *.sqlite
 *.sqlite3
+.env
 .mcp.json
+.vercel
+coverage/
+dist/
+node_modules/
