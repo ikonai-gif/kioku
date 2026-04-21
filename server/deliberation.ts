@@ -5621,6 +5621,28 @@ export async function triggerAgentResponses(
         // Broadcast to WS subscribers
         if (msg) broadcastToRoom(roomId, msg);
 
+        // W6 Item 2a: if we served a boilerplate reply because the per-agent
+        // breaker was open, send a parallel system-hint so the client can show
+        // a "temporarily unavailable, retry in ~30s" toast without re-rendering
+        // the bubble. Payload intentionally has no id/content — clients that
+        // route on `type` should treat this as a signal, not a message.
+        if (breakerDegraded) {
+          broadcastToRoom(roomId, {
+            type: "degraded_agent_notice",
+            agentId: agent.id,
+            agentName: displayName,
+            degraded: true,
+            retryAfterMs: 30_000,
+          } as any);
+          logger.warn({
+            component: "deliberation",
+            event: "degraded_agent_notice_broadcast",
+            agentId: agent.id,
+            agentName: displayName,
+            roomId,
+          }, "[deliberation] sent degradation notice to room");
+        }
+
         // Fire-and-forget interaction tracking + familiarity growth (Phase 4c)
         storage.incrementInteraction(agent.id, userId).catch(() => {});
         storage.getRelationship(agent.id, userId).then(rel => {
