@@ -181,8 +181,11 @@ export function checkQueues(): Check {
 /**
  * Report process memory usage.
  *
- * Q8.2 / O1: Uses RSS + RAILWAY_MEMORY_LIMIT_MB when available.
- * Falls back to V8 heap% when no limit is configured.
+ * Q8.2 / O1: When RAILWAY_MEMORY_LIMIT_MB is set we report rss/limit % and
+ * use the 80/95 threshold. When no limit is configured (e.g. local dev,
+ * self-hosted) we report `status: "ok"` with `limit_unknown: true` — we
+ * cannot meaningfully threshold without a ceiling, and V8 heap% turned out
+ * to flag healthy processes as degraded (W4 retro).
  */
 export function checkMemory(): Check {
   const mem = process.memoryUsage();
@@ -190,9 +193,18 @@ export function checkMemory(): Check {
   const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
   const limitMB =
     parseInt(process.env.RAILWAY_MEMORY_LIMIT_MB || "0", 10) || null;
-  const pct = limitMB
-    ? Math.round((rssMB / limitMB) * 100)
-    : Math.round((mem.heapUsed / mem.heapTotal) * 100);
+
+  if (!limitMB) {
+    return {
+      status: "ok",
+      rss_mb: rssMB,
+      heap_mb: heapUsedMB,
+      limit_mb: null,
+      limit_unknown: true,
+    };
+  }
+
+  const pct = Math.round((rssMB / limitMB) * 100);
   const status: Check["status"] =
     pct > 95 ? "down" : pct > 80 ? "degraded" : "ok";
 
