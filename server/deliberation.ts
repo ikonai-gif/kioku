@@ -5405,6 +5405,9 @@ export async function triggerAgentResponses(
           }
         }
 
+        // W6 1c: hoisted out of the OpenAI-path block so downstream (sycophancy,
+        // streaming) can consult it. Claude path leaves it false.
+        let breakerDegraded = false;
         if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
           // OpenAI path (default or fallback when Claude client unavailable).
           // W6 1b: route through withAgentBreaker — custom-key agents get their
@@ -5434,7 +5437,6 @@ export async function triggerAgentResponses(
 
           // Agent loop — multi-step tool calling (mirrors Claude tool loop)
           const maxToolIterationsOai = 10;
-          let breakerDegraded = false;
           for (let toolIter = 0; toolIter < maxToolIterationsOai; toolIter++) {
             if (__isAborted()) { reply = reply || "[остановлено]"; break; } // Feature #4
             let completion;
@@ -5527,7 +5529,9 @@ export async function triggerAgentResponses(
               }
             }
           }
-          void breakerDegraded;
+          if (breakerDegraded) {
+            logger.warn({ component: "deliberation", event: "breaker_degraded_skip_downstream", agentId: agent.id }, "[deliberation] breaker open — skipping sycophancy + stream, broadcasting boilerplate directly");
+          }
 
           // Append generated asset URLs to reply so user always sees them
           if (reply && generatedAssetsOai.length > 0) {
@@ -5543,9 +5547,13 @@ export async function triggerAgentResponses(
         }
 
         // Sycophancy check — revise if score > 6 (Phase 4d)
-        const sycCheck = await checkSycophancy(triggerContent, reply);
-        if (sycCheck.score > 6 && sycCheck.revised) {
-          reply = sycCheck.revised;
+        // W6 1c (Bro2 N2): skip when breaker is degraded — reply is fixed boilerplate,
+        // and a second OpenAI call would just compound a cascading outage.
+        if (!breakerDegraded) {
+          const sycCheck = await checkSycophancy(triggerContent, reply);
+          if (sycCheck.score > 6 && sycCheck.revised) {
+            reply = sycCheck.revised;
+          }
         }
 
         // Stagger: first agent responds after 800ms, each subsequent +600ms
@@ -5555,7 +5563,9 @@ export async function triggerAgentResponses(
         const displayName = isPartnerChat ? "Luca" : agent.name;
 
         // Stream the reply in chunks via WebSocket for Partner Chat (visual typing effect)
-        if (isPartnerChat && reply) {
+        // W6 1c (Bro2 N2): skip streaming when breaker is degraded — the user gets the
+        // boilerplate in one shot via the broadcast below instead of a fake typewriter.
+        if (isPartnerChat && reply && !breakerDegraded) {
           const words = reply.split(/(\s+)/);
           for (let w = 0; w < words.length; w += 3) {
             const chunk = words.slice(w, w + 3).join("");
@@ -6070,9 +6080,9 @@ async function checkMemoryConsent(userId: number, namespace: string): Promise<bo
 async function extractPassivePreferences(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
   if (!(await checkMemoryConsent(userId, '_preferences'))) return;
   try {
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6089,7 +6099,14 @@ Return ONLY valid JSON. No explanation.`,
       ],
       max_tokens: 500,
       temperature: 0.3,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "passive_degraded", fn: "extractPassivePreferences", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+        return;
+      }
+      throw err;
+    }
     const text = response.choices[0]?.message?.content?.trim() || "[]";
     let prefs: any[];
     try {
@@ -6122,9 +6139,9 @@ Return ONLY valid JSON. No explanation.`,
 async function trackConversationInsight(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
   if (!(await checkMemoryConsent(userId, '_conversation_insights'))) return;
   try {
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6145,7 +6162,14 @@ Return ONLY valid JSON.`,
       ],
       max_tokens: 300,
       temperature: 0.3,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "insight_degraded", fn: "trackConversationInsight", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+        return;
+      }
+      throw err;
+    }
     const text = response.choices[0]?.message?.content?.trim() || "{}";
     let parsed: any;
     try {
@@ -6199,9 +6223,9 @@ async function summarizeConversation(userId: number, agentId: number, roomId: nu
       `${m.agentName || 'User'}: ${m.content}`
     ).join('\n');
 
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6224,7 +6248,14 @@ Write 3-5 sentences. No bullet points. No JSON.`,
       ],
       max_tokens: 400,
       temperature: 0.3,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "summary_degraded", fn: "summarizeConversation", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+        return;
+      }
+      throw err;
+    }
 
     const summary = response.choices[0]?.message?.content?.trim();
     if (!summary) return;
@@ -6295,9 +6326,9 @@ export async function generateProactiveMessage(
       episodeMems.length > 0 ? `Recent conversations:\n${episodeMems.join('\n')}` : '',
     ].filter(Boolean).join('\n\n');
 
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6321,7 +6352,14 @@ ${memoryContext}`,
       ],
       max_tokens: 200,
       temperature: 0.8,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "proactive_degraded", fn: "generateProactiveMessage", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+        return null;
+      }
+      throw err;
+    }
 
     const text = response.choices[0]?.message?.content?.trim();
     if (!text || text === 'NO_MESSAGE' || text.includes('NO_MESSAGE')) return null;
