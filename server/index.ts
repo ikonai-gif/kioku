@@ -21,6 +21,7 @@ import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
 import { getOpenAIBreakerState } from "./lib/openai-client";
 import { getAllAgentBreakerStates } from "./lib/openai-per-agent-breaker";
+import { getAnthropicBreakerState } from "./lib/anthropic-client";
 import { startScheduler } from "./scheduler";
 import logger, { generateRequestId } from "./logger";
 import { logFlags } from "./feature-flags";
@@ -204,6 +205,7 @@ app.get("/api/admin/monitor", (req: Request, res: Response) => {
     .slice(0, 5);
   res.json({
     openaiBreaker: getOpenAIBreakerState(),
+    anthropicBreaker: getAnthropicBreakerState(),
     agentBreakers: {
       total: states.length,
       open: states.filter((s) => s.state === "OPEN").length,
