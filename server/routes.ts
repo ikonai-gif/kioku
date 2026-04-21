@@ -15,6 +15,7 @@ import { registerPrivacyRoutes } from "./privacy";
 import { registerMeetingRoutes } from "./routes/meetings";
 import { requireFlag } from "./feature-flags";
 import { PRIVATE_MODE, isEmailAllowed, getPrivateModeStatus } from "./lib/private-mode";
+import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
   exchangeGoogleCode, exchangeDropboxCode,
@@ -4623,19 +4624,22 @@ Do NOT:
     demoSessionMessages.set(sessionId, sessionCount + 1);
 
     try {
-      const OpenAI = (await import("openai")).default;
-      const openai = new OpenAI();
-      const completion = await openai.chat.completions.create({
+      const completion = await withOpenAIBreaker((openai) => openai.chat.completions.create({
         model: "gpt-4.1-mini",
         max_tokens: 300,
         messages: [
           { role: "system", content: DEMO_SYSTEM_PROMPT },
           { role: "user", content: message },
         ],
-      });
+      }));
       const reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response. Try again!";
       res.json({ reply });
     } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        const retryAfterMs = typeof err?.retryAfterMs === "number" ? err.retryAfterMs : 30000;
+        res.setHeader("Retry-After", Math.ceil(retryAfterMs / 1000).toString());
+        return res.status(503).json({ error: "service_unavailable", retry_after_ms: retryAfterMs });
+      }
       logger.error({ source: "demo-chat", err }, "demo chat error");
       res.status(500).json({ error: "Something went wrong. Please try again." });
     }
