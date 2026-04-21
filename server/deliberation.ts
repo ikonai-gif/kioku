@@ -5406,9 +5406,12 @@ export async function triggerAgentResponses(
         }
 
         if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
-          // OpenAI path (default or fallback when Claude client unavailable)
-          const oaiClient = getOpenAIClient(agent as any);
-          if (!oaiClient) continue;
+          // OpenAI path (default or fallback when Claude client unavailable).
+          // W6 1b: route through withAgentBreaker — custom-key agents get their
+          // own per-agent breaker + client; shared-key agents ride the
+          // process-wide breaker. We no longer instantiate a client up-front;
+          // still guard the "no OpenAI access anywhere" case via getOpenAIClient.
+          if (!getOpenAIClient(agent as any)) continue;
           const resolvedModel = (chatModel.startsWith("gemini-") || chatModel.startsWith("claude-")) ? "gpt-4.1-mini" : chatModel;
           // gpt-5+ and o-series models have different parameter requirements
           const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
@@ -5431,27 +5434,39 @@ export async function triggerAgentResponses(
 
           // Agent loop — multi-step tool calling (mirrors Claude tool loop)
           const maxToolIterationsOai = 10;
+          let breakerDegraded = false;
           for (let toolIter = 0; toolIter < maxToolIterationsOai; toolIter++) {
             if (__isAborted()) { reply = reply || "[остановлено]"; break; } // Feature #4
-            const completion = await oaiClient.chat.completions.create({
-              model: resolvedModel,
-              ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
-              // gpt-5-mini only supports temperature=1, so omit for new models
-              ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
-              messages: oaiMessages,
-              ...(isPartnerChat ? {
-                tools: partnerTools.map(t => ({
-                  type: "function" as const,
-                  function: {
-                    name: t.name,
-                    description: t.description,
-                    parameters: (t as any).input_schema || { type: "object", properties: {} },
-                  }
-                })),
-                // Force tool use on first turn, then let model respond naturally
-                tool_choice: toolIter === 0 ? "required" as const : "auto" as const,
-              } : {}),
-            });
+            let completion;
+            try {
+              completion = await withAgentBreaker(agent as any, (client) => client.chat.completions.create({
+                model: resolvedModel,
+                ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+                // gpt-5-mini only supports temperature=1, so omit for new models
+                ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
+                messages: oaiMessages,
+                ...(isPartnerChat ? {
+                  tools: partnerTools.map(t => ({
+                    type: "function" as const,
+                    function: {
+                      name: t.name,
+                      description: t.description,
+                      parameters: (t as any).input_schema || { type: "object", properties: {} },
+                    }
+                  })),
+                  // Force tool use on first turn, then let model respond naturally
+                  tool_choice: toolIter === 0 ? "required" as const : "auto" as const,
+                } : {}),
+              }));
+            } catch (err: any) {
+              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5439" }, "[deliberation] per-agent breaker open");
+                reply = "This agent is temporarily unavailable. Try again in ~30s.";
+                breakerDegraded = true;
+                break;
+              }
+              throw err;
+            }
 
             const choice = completion.choices[0];
             const msg = choice?.message;
@@ -5493,15 +5508,26 @@ export async function triggerAgentResponses(
 
             // If this was the last iteration, make one final call to get text response
             if (toolIter === maxToolIterationsOai - 1) {
-              const finalCompletion = await oaiClient.chat.completions.create({
-                model: resolvedModel,
-                ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
-                ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
-                messages: oaiMessages,
-              });
-              reply = finalCompletion.choices[0]?.message?.content?.trim();
+              try {
+                const finalCompletion = await withAgentBreaker(agent as any, (client) => client.chat.completions.create({
+                  model: resolvedModel,
+                  ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+                  ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
+                  messages: oaiMessages,
+                }));
+                reply = finalCompletion.choices[0]?.message?.content?.trim();
+              } catch (err: any) {
+                if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5499" }, "[deliberation] per-agent breaker open");
+                  reply = "This agent is temporarily unavailable. Try again in ~30s.";
+                  breakerDegraded = true;
+                  break;
+                }
+                throw err;
+              }
             }
           }
+          void breakerDegraded;
 
           // Append generated asset URLs to reply so user always sees them
           if (reply && generatedAssetsOai.length > 0) {
