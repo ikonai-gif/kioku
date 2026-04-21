@@ -21,6 +21,33 @@ export type Check = {
   [k: string]: unknown;
 };
 
+// ── timedDbPing ───────────────────────────────────────────────────────────────
+
+/**
+ * SF3: Run `SELECT 1` against a pool client with a hard timeout.
+ *
+ * Races the query against a `setTimeout(timeoutMs)` — if the timer wins, we
+ * reject with a `timeout` error. The in-flight query is NOT cancelled here
+ * (pg clients don't cancel mid-query without a separate pg_cancel_backend
+ * call); the caller is expected to release the client and move on.
+ */
+export async function timedDbPing(
+  client: { query: (sql: string) => Promise<unknown> },
+  timeoutMs: number,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      client.query("SELECT 1"),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ── checkDatabase ─────────────────────────────────────────────────────────────
 
 /**
@@ -39,8 +66,11 @@ export async function checkDatabase(signal?: AbortSignal): Promise<Check> {
       client.release();
       return { status: "down", error: "timeout", latency_ms: Date.now() - t0 };
     }
-    await client.query("SELECT 1");
-    client.release();
+    try {
+      await timedDbPing(client, 2000);
+    } finally {
+      client.release();
+    }
     return { status: "ok", latency_ms: Date.now() - t0 };
   } catch (err: any) {
     return { status: "down", latency_ms: Date.now() - t0, error: err.message };
