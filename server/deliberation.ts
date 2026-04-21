@@ -5405,6 +5405,9 @@ export async function triggerAgentResponses(
           }
         }
 
+        // W6 1c: hoisted out of the OpenAI-path block so downstream (sycophancy,
+        // streaming) can consult it. Claude path leaves it false.
+        let breakerDegraded = false;
         if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
           // OpenAI path (default or fallback when Claude client unavailable).
           // W6 1b: route through withAgentBreaker — custom-key agents get their
@@ -5434,7 +5437,6 @@ export async function triggerAgentResponses(
 
           // Agent loop — multi-step tool calling (mirrors Claude tool loop)
           const maxToolIterationsOai = 10;
-          let breakerDegraded = false;
           for (let toolIter = 0; toolIter < maxToolIterationsOai; toolIter++) {
             if (__isAborted()) { reply = reply || "[остановлено]"; break; } // Feature #4
             let completion;
@@ -5527,7 +5529,9 @@ export async function triggerAgentResponses(
               }
             }
           }
-          void breakerDegraded;
+          if (breakerDegraded) {
+            logger.warn({ component: "deliberation", event: "breaker_degraded_skip_downstream", agentId: agent.id }, "[deliberation] breaker open — skipping sycophancy + stream, broadcasting boilerplate directly");
+          }
 
           // Append generated asset URLs to reply so user always sees them
           if (reply && generatedAssetsOai.length > 0) {
@@ -5543,9 +5547,13 @@ export async function triggerAgentResponses(
         }
 
         // Sycophancy check — revise if score > 6 (Phase 4d)
-        const sycCheck = await checkSycophancy(triggerContent, reply);
-        if (sycCheck.score > 6 && sycCheck.revised) {
-          reply = sycCheck.revised;
+        // W6 1c (Bro2 N2): skip when breaker is degraded — reply is fixed boilerplate,
+        // and a second OpenAI call would just compound a cascading outage.
+        if (!breakerDegraded) {
+          const sycCheck = await checkSycophancy(triggerContent, reply);
+          if (sycCheck.score > 6 && sycCheck.revised) {
+            reply = sycCheck.revised;
+          }
         }
 
         // Stagger: first agent responds after 800ms, each subsequent +600ms
@@ -5555,7 +5563,9 @@ export async function triggerAgentResponses(
         const displayName = isPartnerChat ? "Luca" : agent.name;
 
         // Stream the reply in chunks via WebSocket for Partner Chat (visual typing effect)
-        if (isPartnerChat && reply) {
+        // W6 1c (Bro2 N2): skip streaming when breaker is degraded — the user gets the
+        // boilerplate in one shot via the broadcast below instead of a fake typewriter.
+        if (isPartnerChat && reply && !breakerDegraded) {
           const words = reply.split(/(\s+)/);
           for (let w = 0; w < words.length; w += 3) {
             const chunk = words.slice(w, w + 3).join("");
