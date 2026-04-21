@@ -5366,7 +5366,7 @@ export async function triggerAgentResponses(
                 }));
               } catch (err: any) {
                 if (isCircuitOpenError(err)) {
-                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "claude-toolloop" }, "[deliberation] anthropic breaker open mid-loop");
+                  logger.warn({ component: "deliberation", event: "degraded_foreground_agent", agentId: agent.id, site: "claude-toolloop" }, "[deliberation] anthropic breaker open mid-loop");
                   reply = "This agent is temporarily unavailable. Try again in ~30s.";
                   breakerDegraded = true;
                   break;
@@ -5481,7 +5481,7 @@ export async function triggerAgentResponses(
               }));
             } catch (err: any) {
               if (isCircuitOpenError(err)) {
-                logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5439" }, "[deliberation] per-agent breaker open");
+                logger.warn({ component: "deliberation", event: "degraded_foreground_agent", agentId: agent.id, site: "openai-prestream" }, "[deliberation] per-agent breaker open");
                 reply = "This agent is temporarily unavailable. Try again in ~30s.";
                 breakerDegraded = true;
                 break;
@@ -5539,7 +5539,7 @@ export async function triggerAgentResponses(
                 reply = finalCompletion.choices[0]?.message?.content?.trim();
               } catch (err: any) {
                 if (isCircuitOpenError(err)) {
-                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5499" }, "[deliberation] per-agent breaker open");
+                  logger.warn({ component: "deliberation", event: "degraded_foreground_agent", agentId: agent.id, site: "openai-stream" }, "[deliberation] per-agent breaker open");
                   reply = "This agent is temporarily unavailable. Try again in ~30s.";
                   breakerDegraded = true;
                   break;
@@ -5549,7 +5549,7 @@ export async function triggerAgentResponses(
             }
           }
           if (breakerDegraded) {
-            logger.warn({ component: "deliberation", event: "breaker_degraded_skip_downstream", agentId: agent.id }, "[deliberation] breaker open — skipping sycophancy + stream, broadcasting boilerplate directly");
+            logger.warn({ component: "deliberation", event: "degraded_downstream_skip", agentId: agent.id }, "[deliberation] breaker open — skipping sycophancy + stream, broadcasting boilerplate directly");
           }
 
           // Append generated asset URLs to reply so user always sees them
@@ -6147,7 +6147,7 @@ Return ONLY valid JSON. No explanation.`,
       }));
     } catch (err: any) {
       if (isCircuitOpenError(err)) {
-        logger.debug({ component: "deliberation", event: "passive_degraded", fn: "extractPassivePreferences", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+        logger.debug({ component: "deliberation", event: "degraded_background_passive", fn: "extractPassivePreferences", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
         return;
       }
       throw err;
@@ -6210,7 +6210,7 @@ Return ONLY valid JSON.`,
       }));
     } catch (err: any) {
       if (isCircuitOpenError(err)) {
-        logger.debug({ component: "deliberation", event: "insight_degraded", fn: "trackConversationInsight", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+        logger.debug({ component: "deliberation", event: "degraded_background_insight", fn: "trackConversationInsight", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
         return;
       }
       throw err;
@@ -6296,7 +6296,7 @@ Write 3-5 sentences. No bullet points. No JSON.`,
       }));
     } catch (err: any) {
       if (isCircuitOpenError(err)) {
-        logger.debug({ component: "deliberation", event: "summary_degraded", fn: "summarizeConversation", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+        logger.debug({ component: "deliberation", event: "degraded_background_summary", fn: "summarizeConversation", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
         return;
       }
       throw err;
@@ -6400,7 +6400,7 @@ ${memoryContext}`,
       }));
     } catch (err: any) {
       if (isCircuitOpenError(err)) {
-        logger.debug({ component: "deliberation", event: "proactive_degraded", fn: "generateProactiveMessage", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+        logger.debug({ component: "deliberation", event: "degraded_background_proactive", fn: "generateProactiveMessage", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
         return null;
       }
       throw err;

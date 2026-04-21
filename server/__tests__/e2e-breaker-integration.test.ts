@@ -338,8 +338,9 @@ describe.sequential("W7 N5 — E2E breaker integration suite", () => {
   describe("Scenario 4 — Background silent-return (Item 1c)", () => {
     // Mirrors the catch pattern at deliberation.ts:6147-6152
     // (extractPassivePreferences) and :6400-6406 (generateProactiveMessage).
-    // On CircuitOpenError these background tasks log `passive_degraded`
-    // or `proactive_degraded` at DEBUG level and return — no throw, no
+    // On CircuitOpenError these background tasks log
+    // `degraded_background_passive` or `degraded_background_proactive` at
+    // DEBUG level and return — no throw, no
     // error log, no user-visible impact.
     async function backgroundTaskPattern(): Promise<null> {
       try {
