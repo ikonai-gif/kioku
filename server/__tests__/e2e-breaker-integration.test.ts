@@ -338,8 +338,9 @@ describe.sequential("W7 N5 — E2E breaker integration suite", () => {
   describe("Scenario 4 — Background silent-return (Item 1c)", () => {
     // Mirrors the catch pattern at deliberation.ts:6147-6152
     // (extractPassivePreferences) and :6400-6406 (generateProactiveMessage).
-    // On CircuitOpenError these background tasks log `passive_degraded`
-    // or `proactive_degraded` at DEBUG level and return — no throw, no
+    // On CircuitOpenError these background tasks log
+    // `degraded_background_passive` or `degraded_background_proactive` at
+    // DEBUG level and return — no throw, no
     // error log, no user-visible impact.
     async function backgroundTaskPattern(): Promise<null> {
       try {
@@ -390,9 +391,32 @@ describe.sequential("W7 N5 — E2E breaker integration suite", () => {
       expect(win).toMatch(/withOpenAIBreaker\(/);
       expect(win).toMatch(/send503\(res, err\)/);
       expect(win).toMatch(/checkDemoRateLimit\(/);
+      // W7 P2.1 N5 N3 — pin the exact per-minute threshold so a silent
+      // routes.ts change (e.g. 10 → 20) doesn't leave the 2c mirror green.
+      expect(win).toMatch(/checkDemoRateLimit\(\w+,\s*10,\s*60_?000/);
       // The 429 shape the 2c test asserts:
       expect(win).toMatch(/error:\s*["']rate_limited["']/);
       expect(win).toMatch(/retry_after_s/);
+    });
+
+    // W7 P2.1 N5 N2 — pin the degraded_agent_notice WS broadcast in
+    // deliberation.ts so a refactor that drops/renames the type or payload
+    // shape (agentId / agentName / degraded / retryAfterMs) fails loudly
+    // here, not silently in the UI. Mirrors the contract the E2E suite
+    // relies on for breaker-OPEN → WS-broadcast end-to-end flow.
+    it("deliberation.ts still emits broadcastToRoom({type: 'degraded_agent_notice', ...}) with required fields", async () => {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const src = readFileSync(join(__dirname, "..", "deliberation.ts"), "utf8");
+      const block = src.match(
+        /broadcastToRoom\(\s*roomId\s*,\s*\{[^}]*type:\s*"degraded_agent_notice"[\s\S]*?\}\s*\)/,
+      );
+      expect(block, "degraded_agent_notice broadcast block not found").toBeTruthy();
+      const s = block![0];
+      expect(s).toMatch(/agentId:\s*agent\.id/);
+      expect(s).toMatch(/agentName:\s*displayName/);
+      expect(s).toMatch(/degraded:\s*true/);
+      expect(s).toMatch(/retryAfterMs:\s*30_?000/);
     });
   });
 });

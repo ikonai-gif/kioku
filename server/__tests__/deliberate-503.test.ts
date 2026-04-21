@@ -152,13 +152,13 @@ describe("W7 NEW-1 — source contract: routes.ts calls send503 at each CircuitO
     "utf8",
   );
 
-  it("imports CircuitOpenError from ./lib/openai-client", () => {
+  it("imports isCircuitOpenError + send503 from ./lib/http-errors", () => {
+    // W7 P2.1 §9: the triple-guard pattern was deduped into the
+    // isCircuitOpenError helper alongside send503. Both now import from
+    // the same http-errors module.
     expect(src).toMatch(
-      /import\s*\{[^}]*\bCircuitOpenError\b[^}]*\}\s*from\s*["']\.\/lib\/openai-client["']/,
+      /import\s*\{[^}]*\bisCircuitOpenError\b[^}]*\}\s*from\s*["']\.\/lib\/http-errors["']/,
     );
-  });
-
-  it("imports send503 from ./lib/http-errors", () => {
     expect(src).toMatch(
       /import\s*\{[^}]*\bsend503\b[^}]*\}\s*from\s*["']\.\/lib\/http-errors["']/,
     );
@@ -184,7 +184,7 @@ describe("W7 NEW-1 — source contract: routes.ts calls send503 at each CircuitO
     expect(endpointIdx, "/deliberate endpoint not found").toBeGreaterThan(-1);
     const nextEndpoint = src.indexOf("app.post(", endpointIdx + 1);
     const window = src.slice(endpointIdx, nextEndpoint > -1 ? nextEndpoint : endpointIdx + 4000);
-    expect(window).toMatch(/instanceof\s+CircuitOpenError|CIRCUIT_OPEN/);
+    expect(window).toMatch(/isCircuitOpenError\(|instanceof\s+CircuitOpenError|CIRCUIT_OPEN/);
     expect(window).toMatch(/send503\(\s*res\b/);
   });
 
@@ -193,7 +193,7 @@ describe("W7 NEW-1 — source contract: routes.ts calls send503 at each CircuitO
     expect(endpointIdx, "/api/demo/chat endpoint not found").toBeGreaterThan(-1);
     const nextEndpoint = src.indexOf("app.post(", endpointIdx + 1);
     const window = src.slice(endpointIdx, nextEndpoint > -1 ? nextEndpoint : endpointIdx + 6000);
-    expect(window).toMatch(/instanceof\s+CircuitOpenError|CIRCUIT_OPEN/);
+    expect(window).toMatch(/isCircuitOpenError\(|instanceof\s+CircuitOpenError|CIRCUIT_OPEN/);
     expect(window).toMatch(/send503\(\s*res\b/);
   });
 
@@ -201,7 +201,7 @@ describe("W7 NEW-1 — source contract: routes.ts calls send503 at each CircuitO
     const globalIdx = src.search(/app\.use\(\(\s*err:\s*any[\s\S]*?ValidationError/);
     expect(globalIdx, "global error handler not found").toBeGreaterThan(-1);
     const window = src.slice(globalIdx, globalIdx + 1500);
-    expect(window).toMatch(/instanceof\s+CircuitOpenError|CIRCUIT_OPEN/);
+    expect(window).toMatch(/isCircuitOpenError\(|instanceof\s+CircuitOpenError|CIRCUIT_OPEN/);
     expect(window).toMatch(/send503\(\s*res\b/);
   });
 });

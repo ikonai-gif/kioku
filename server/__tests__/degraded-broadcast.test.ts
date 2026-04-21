@@ -68,35 +68,28 @@ describe("W6 2a — degraded_agent_notice broadcast shape", () => {
   });
 
   it("broadcastToRoom preserves `type: degraded_agent_notice` over the default", async () => {
-    // Inject a fake client into the ws module's roomClients map by going
-    // through the public `setupWebSocket` path. Simpler: import the module,
-    // grab its exports, and monkey-register via a narrow test hook.
-    //
-    // roomClients is module-private. Rather than add a test hook just for
-    // this, we reach in via the module namespace. The alternative (adding
-    // __registerClientForTest to production code) is worse.
+    // roomClients is module-private (no test hook exported by ws.ts). We
+    // try to reach in via the module namespace; if the Map isn't surfaced,
+    // we fall through to a pure-function shape check (broadcastToRoom is a
+    // no-op on an empty room, so we can't observe .send there — instead
+    // the source-contract describe block below pins the wire shape).
     const ws = await import("../ws");
-    const mod: any = ws;
-    // Access via any — the Map is module-private but this is test-only.
-    // If internal structure changes, this test will fail loudly — the right
-    // failure mode.
-    const roomClientsAccess = Object.values(mod).find(
+    const roomClientsAccess = Object.values(ws as Record<string, unknown>).find(
       (v) => v instanceof Map,
     ) as Map<number, Set<any>> | undefined;
+
     if (!roomClientsAccess) {
-      // Can't reach roomClients — fall back to a wire-format check via spy.
-      // Spy on WebSocket.prototype.send imported from the mocked `ws`.
-      const client = new FakeWs();
-      const roomId = 9901;
-      // Since we can't register, instead: exercise the function with no
-      // clients (a no-op) and assert it does not throw for the shape.
-      expect(() => broadcastToRoom(roomId, {
-        type: "degraded_agent_notice",
-        agentId: 42,
-        agentName: "Luca",
-        degraded: true,
-        retryAfterMs: 30_000,
-      } as any)).not.toThrow();
+      // Runtime branch unreachable via public API; the shape is pinned by
+      // the source-contract tests below.
+      expect(() =>
+        broadcastToRoom(9901, {
+          type: "degraded_agent_notice",
+          agentId: 42,
+          agentName: "Luca",
+          degraded: true,
+          retryAfterMs: 30_000,
+        }),
+      ).not.toThrow();
       return;
     }
 
@@ -110,7 +103,7 @@ describe("W6 2a — degraded_agent_notice broadcast shape", () => {
         agentName: "Luca",
         degraded: true,
         retryAfterMs: 30_000,
-      } as any);
+      });
 
       expect(client.sent).toHaveLength(1);
       const payload = JSON.parse(client.sent[0]);

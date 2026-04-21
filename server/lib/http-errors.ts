@@ -11,6 +11,25 @@
  */
 
 import type { Response } from "express";
+import { CircuitOpenError } from "./circuit-breaker";
+
+/**
+ * Unified predicate for the open-circuit error produced by
+ * `CircuitBreaker.exec`. Before this helper, 13+ call sites hand-rolled the
+ * same triple-guard:
+ *
+ *   err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN"
+ *
+ * Three checks, not one, because (a) the `instanceof` fails across module
+ * realms (e.g. tests that mock the breaker module), (b) older sites threw
+ * bare Errors with `.name` set, and (c) external callers check `.code`. All
+ * three remain valid wire contracts, so the helper preserves them verbatim.
+ */
+export function isCircuitOpenError(err: unknown): boolean {
+  if (err instanceof CircuitOpenError) return true;
+  const e = err as { name?: unknown; code?: unknown } | null | undefined;
+  return e?.name === "CircuitOpenError" || e?.code === "CIRCUIT_OPEN";
+}
 
 export interface Send503Options {
   /**
@@ -52,6 +71,12 @@ export interface Send503Options {
  * with a `retryAfterMs` field and no explicit `retryAfterSec` was provided,
  * that value takes precedence so dynamic cooldowns (e.g. per-agent) still
  * flow through.
+ *
+ * ⚠ Callers MUST gate this behind `isCircuitOpenError(err)` before invoking,
+ * or pass an explicit `opts.reason`. The default `reason: "upstream_circuit_open"`
+ * is the W6 Item 2b wire contract for breaker-triggered 503s — emitting it
+ * for any other 5xx would misclassify the failure for clients that dispatch
+ * on `reason` (e.g. the mobile retry UX).
  */
 export function send503(
   res: Response,

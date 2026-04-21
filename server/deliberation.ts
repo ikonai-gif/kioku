@@ -10,7 +10,8 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage } from "./storage";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
-import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
+import { withOpenAIBreaker } from "./lib/openai-client";
+import { isCircuitOpenError } from "./lib/http-errors";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
 import { withAnthropicBreaker } from "./lib/anthropic-client";
 import logger from "./logger";
@@ -1171,7 +1172,7 @@ export async function executePartnerTool(
             quality: "standard",
           }));
         } catch (err: any) {
-          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+          if (isCircuitOpenError(err)) {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "generate_image" }, "[deliberation] breaker open");
             return "Image generation temporarily unavailable. Try again in ~30s.";
           }
@@ -1250,7 +1251,7 @@ export async function executePartnerTool(
             max_tokens: 500,
           }));
         } catch (err: any) {
-          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+          if (isCircuitOpenError(err)) {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "analyze_image" }, "[deliberation] breaker open");
             return "Image analysis temporarily unavailable.";
           }
@@ -1286,7 +1287,7 @@ export async function executePartnerTool(
             max_tokens: 2000,
           }));
         } catch (err: any) {
-          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+          if (isCircuitOpenError(err)) {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "creative_writing" }, "[deliberation] breaker open");
             return "Writing assistance temporarily unavailable.";
           }
@@ -1452,7 +1453,7 @@ export async function executePartnerTool(
                 max_tokens: 1000,
               }));
             } catch (err: any) {
-              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+              if (isCircuitOpenError(err)) {
                 logger.warn({ component: "deliberation", event: "degraded_tool", tool: "read_url" }, "[deliberation] breaker open");
                 return `(summarization unavailable, raw content follows)\n\nPage content (${url}):\n${textContent.slice(0, 5000)}`;
               }
@@ -1492,7 +1493,7 @@ export async function executePartnerTool(
           }
           return (content + citations) || "Search returned no results.";
         } catch (err: any) {
-          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+          if (isCircuitOpenError(err)) {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "web_search" }, "[deliberation] breaker open");
             return `(summarization unavailable, raw content follows)\n\nWeb search temporarily unavailable for query: ${toolInput.query}`;
           }
@@ -1560,7 +1561,7 @@ export async function executePartnerTool(
                 max_tokens: 1000,
               }));
             } catch (err: any) {
-              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+              if (isCircuitOpenError(err)) {
                 logger.warn({ component: "deliberation", event: "degraded_tool", tool: "read_file" }, "[deliberation] breaker open");
                 return `(summarization unavailable, raw content follows)\n\nFile content:\n${textContent.slice(0, 5000)}`;
               }
@@ -1915,7 +1916,7 @@ export async function executePartnerTool(
               response_format: "verbose_json",
             }));
           } catch (err: any) {
-            if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            if (isCircuitOpenError(err)) {
               logger.warn({ component: "deliberation", event: "degraded_tool", tool: "listen_audio_transcribe" }, "[deliberation] breaker open");
               return "Video analysis temporarily unavailable.";
             }
@@ -1938,7 +1939,7 @@ export async function executePartnerTool(
                 max_tokens: 1000,
               }));
             } catch (err: any) {
-              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+              if (isCircuitOpenError(err)) {
                 logger.warn({ component: "deliberation", event: "degraded_tool", tool: "listen_audio_analyze" }, "[deliberation] breaker open");
                 return `Video analysis temporarily unavailable. Raw transcription: ${text.slice(0, 2000)}`;
               }
@@ -3831,7 +3832,7 @@ print("Converted MD to DOCX")
           const b64 = buffer.toString("base64");
           return `[Audio generated via OpenAI TTS] data:audio/mp3;base64,${b64}`;
         } catch (err: any) {
-          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+          if (isCircuitOpenError(err)) {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "generate_speech" }, "[deliberation] breaker open");
             return "Speech generation temporarily unavailable. Try again in ~30s or set ELEVENLABS_API_KEY.";
           }
@@ -4319,7 +4320,7 @@ print("Converted MD to DOCX")
               language: toolInput.language,
             }));
           } catch (err: any) {
-            if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            if (isCircuitOpenError(err)) {
               logger.warn({ component: "deliberation", event: "degraded_tool", tool: "subtitle_transcribe" }, "[deliberation] breaker open");
               return "Audio transcription temporarily unavailable.";
             }
@@ -4341,7 +4342,7 @@ print("Converted MD to DOCX")
               }));
               srtContent = translation.choices[0]?.message?.content || srtContent;
             } catch (err: any) {
-              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+              if (isCircuitOpenError(err)) {
                 logger.warn({ component: "deliberation", event: "degraded_tool", tool: "subtitle_translate" }, "[deliberation] breaker open");
                 srtContent = `(translation unavailable, original below)\n\n${originalSrt}`;
               } else {
@@ -4974,7 +4975,18 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 
 export const deliberationEnabled = !!openai || !!GEMINI_API_KEY || !!ANTHROPIC_API_KEY;
 
-/** Get an OpenAI client for a given agent — uses per-agent key if set, else shared */
+/**
+ * Get an OpenAI client for a given agent — uses per-agent key if set, else shared.
+ *
+ * @deprecated Prefer `withOpenAIBreaker` / `withAgentBreaker` from
+ *   `server/lib/openai-client.ts` and `server/lib/openai-per-agent-breaker.ts`.
+ *   Those wrappers own the client construction AND the breaker guard — calling
+ *   `.chat.completions.create` on a raw client returned from here bypasses the
+ *   breaker entirely and will pile up hung requests on upstream degradation.
+ *   The last remaining use here (the null-check at ~5435) is a guard against
+ *   the "no OpenAI access anywhere" case and will be replaced when the
+ *   per-agent breaker exposes a `hasClient(agent)` predicate.
+ */
 function getOpenAIClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): OpenAI | null {
   if (agent.llmApiKey && agent.llmProvider === "openai") return new OpenAI({ apiKey: agent.llmApiKey });
   return openai;
@@ -5364,8 +5376,8 @@ export async function triggerAgentResponses(
                   ...(isPartnerChat ? { tools: partnerTools, ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
                 }));
               } catch (err: any) {
-                if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "claude-toolloop" }, "[deliberation] anthropic breaker open mid-loop");
+                if (isCircuitOpenError(err)) {
+                  logger.warn({ component: "deliberation", event: "degraded_foreground_agent", agentId: agent.id, site: "claude-toolloop" }, "[deliberation] anthropic breaker open mid-loop");
                   reply = "This agent is temporarily unavailable. Try again in ~30s.";
                   breakerDegraded = true;
                   break;
@@ -5479,8 +5491,8 @@ export async function triggerAgentResponses(
                 } : {}),
               }));
             } catch (err: any) {
-              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-                logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5439" }, "[deliberation] per-agent breaker open");
+              if (isCircuitOpenError(err)) {
+                logger.warn({ component: "deliberation", event: "degraded_foreground_agent", agentId: agent.id, site: "openai-prestream" }, "[deliberation] per-agent breaker open");
                 reply = "This agent is temporarily unavailable. Try again in ~30s.";
                 breakerDegraded = true;
                 break;
@@ -5537,8 +5549,8 @@ export async function triggerAgentResponses(
                 }));
                 reply = finalCompletion.choices[0]?.message?.content?.trim();
               } catch (err: any) {
-                if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5499" }, "[deliberation] per-agent breaker open");
+                if (isCircuitOpenError(err)) {
+                  logger.warn({ component: "deliberation", event: "degraded_foreground_agent", agentId: agent.id, site: "openai-stream" }, "[deliberation] per-agent breaker open");
                   reply = "This agent is temporarily unavailable. Try again in ~30s.";
                   breakerDegraded = true;
                   break;
@@ -5548,7 +5560,7 @@ export async function triggerAgentResponses(
             }
           }
           if (breakerDegraded) {
-            logger.warn({ component: "deliberation", event: "breaker_degraded_skip_downstream", agentId: agent.id }, "[deliberation] breaker open — skipping sycophancy + stream, broadcasting boilerplate directly");
+            logger.warn({ component: "deliberation", event: "degraded_downstream_skip", agentId: agent.id }, "[deliberation] breaker open — skipping sycophancy + stream, broadcasting boilerplate directly");
           }
 
           // Append generated asset URLs to reply so user always sees them
@@ -5651,7 +5663,7 @@ export async function triggerAgentResponses(
             agentName: displayName,
             degraded: true,
             retryAfterMs: 30_000,
-          } as any);
+          });
           // W7 F4.5 PII audit: agentName is user-chosen free text — slice to
           // 40 chars in the log so runaway nicknames / emails / PII can't
           // land in full in our log store. agentId is the stable identifier
@@ -6145,8 +6157,8 @@ Return ONLY valid JSON. No explanation.`,
       temperature: 0.3,
       }));
     } catch (err: any) {
-      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-        logger.debug({ component: "deliberation", event: "passive_degraded", fn: "extractPassivePreferences", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+      if (isCircuitOpenError(err)) {
+        logger.debug({ component: "deliberation", event: "degraded_background_passive", fn: "extractPassivePreferences", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
         return;
       }
       throw err;
@@ -6208,8 +6220,8 @@ Return ONLY valid JSON.`,
       temperature: 0.3,
       }));
     } catch (err: any) {
-      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-        logger.debug({ component: "deliberation", event: "insight_degraded", fn: "trackConversationInsight", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+      if (isCircuitOpenError(err)) {
+        logger.debug({ component: "deliberation", event: "degraded_background_insight", fn: "trackConversationInsight", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
         return;
       }
       throw err;
@@ -6294,8 +6306,8 @@ Write 3-5 sentences. No bullet points. No JSON.`,
       temperature: 0.3,
       }));
     } catch (err: any) {
-      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-        logger.debug({ component: "deliberation", event: "summary_degraded", fn: "summarizeConversation", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+      if (isCircuitOpenError(err)) {
+        logger.debug({ component: "deliberation", event: "degraded_background_summary", fn: "summarizeConversation", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
         return;
       }
       throw err;
@@ -6398,8 +6410,8 @@ ${memoryContext}`,
       temperature: 0.8,
       }));
     } catch (err: any) {
-      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-        logger.debug({ component: "deliberation", event: "proactive_degraded", fn: "generateProactiveMessage", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+      if (isCircuitOpenError(err)) {
+        logger.debug({ component: "deliberation", event: "degraded_background_proactive", fn: "generateProactiveMessage", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
         return null;
       }
       throw err;

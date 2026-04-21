@@ -1,6 +1,13 @@
 /**
  * W7 Item 1d — structured-deliberation.ts wrap + per-agent + fallback log
  *
+ * ⚠ Coupling: these tests assume the shared OpenAI circuit breaker's
+ * `failureThreshold = 5` (see `server/lib/openai-client.ts`). The "fail 5
+ * times to trip → 6th call gets CircuitOpenError" pattern below is wired to
+ * that exact constant. If the threshold ever changes, update the loop bounds
+ * here AND in `e2e-breaker-integration.test.ts` / `openai-per-agent-breaker`
+ * tests, or these suites will silently over/under-trip.
+ *
  * Covers three of the four required tests (the fourth is the classifyLLMError
  * / withRetry pair, which lives in `error-retry.test.ts` next to its target):
  *
@@ -144,7 +151,7 @@ describe("W7 1d — callOpenAI rethrows CircuitOpenError from shared breaker", (
     // (shared-key path: customApiKey absent) must propagate that error.
     let caught: any;
     try {
-      await callOpenAI("gpt-4o", "sys", "user", 100, 0.5);
+      await callOpenAI({ model: "gpt-4o", systemPrompt: "sys", userMessage: "user", maxTokens: 100, temperature: 0.5 });
     } catch (e) {
       caught = e;
     }
@@ -240,7 +247,7 @@ describe("W7 1d F2 — per-agent isolation: A's OPEN breaker doesn't block B", (
     // Now call `callOpenAI` AS AGENT A with custom key → hits the per-agent
     // breaker, which is OPEN → throws CircuitOpenError.
     await expect(
-      callOpenAI("gpt-4o", "sys", "user", 100, 0.5, "sk-agent-1", 1),
+      callOpenAI({ model: "gpt-4o", systemPrompt: "sys", userMessage: "user", maxTokens: 100, temperature: 0.5, customApiKey: "sk-agent-1", agentId: 1 }),
     ).rejects.toBeInstanceOf(CircuitOpenError);
 
     // B has NO custom key — it goes through the shared breaker, which is
@@ -258,7 +265,7 @@ describe("W7 1d F2 — per-agent isolation: A's OPEN breaker doesn't block B", (
     __setOpenAIClientForTest(okSharedClient);
 
     // B is a shared-key agent; callOpenAI with no customApiKey → shared breaker.
-    const replyB = await callOpenAI("gpt-4o", "sys", "user", 100, 0.5);
+    const replyB = await callOpenAI({ model: "gpt-4o", systemPrompt: "sys", userMessage: "user", maxTokens: 100, temperature: 0.5 });
     expect(replyB).toBe("B-ok");
   });
 });

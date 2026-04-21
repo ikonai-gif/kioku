@@ -15,8 +15,8 @@ import { registerPrivacyRoutes } from "./privacy";
 import { registerMeetingRoutes } from "./routes/meetings";
 import { requireFlag } from "./feature-flags";
 import { PRIVATE_MODE, isEmailAllowed, getPrivateModeStatus } from "./lib/private-mode";
-import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
-import { send503 } from "./lib/http-errors";
+import { withOpenAIBreaker } from "./lib/openai-client";
+import { send503, isCircuitOpenError } from "./lib/http-errors";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
   exchangeGoogleCode, exchangeDropboxCode,
@@ -2163,7 +2163,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (err) {
       const e = err as any;
       // W6 Item 2b / W7 NEW-1: circuit-open → 503 + Retry-After via send503.
-      if (e instanceof CircuitOpenError || e?.name === "CircuitOpenError" || e?.code === "CIRCUIT_OPEN") {
+      if (isCircuitOpenError(e)) {
         return send503(res, e);
       }
       const message = (err as Error).message;
@@ -4656,7 +4656,7 @@ Do NOT:
       const reply = completion.choices[0]?.message?.content || "Sorry, I couldn't generate a response. Try again!";
       res.json({ reply });
     } catch (err: any) {
-      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+      if (isCircuitOpenError(err)) {
         // W7 NEW-1: unified through send503. Retry-After now derives from
         // err.retryAfterMs (rounded up to seconds) via the helper, and the
         // body gains the `reason: "upstream_circuit_open"` field that the
@@ -5079,7 +5079,7 @@ Do NOT:
     // send503. In practice asyncHandler catches and most routes handle
     // their own errors, so this rarely fires — it documents the contract
     // for any route whose catch misses and lets next(err) bubble.
-    if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+    if (isCircuitOpenError(err)) {
       return send503(res, err);
     }
     logger.error({ source: "routes", err }, "unhandled error");
