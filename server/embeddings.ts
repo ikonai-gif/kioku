@@ -1,25 +1,28 @@
-import OpenAI from "openai";
-
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
+import logger from "./logger";
 
 const MODEL = "text-embedding-3-small"; // 1536 dims, $0.02/1M tokens
 
 /**
  * Generate embedding for a text string.
- * Returns null if OpenAI is not configured.
+ * Returns null if OpenAI is not configured or the circuit is open.
  */
 export async function embedText(text: string): Promise<number[] | null> {
-  if (!openai) return null;
+  if (!process.env.OPENAI_API_KEY) return null;
   try {
-    const res = await openai.embeddings.create({
-      model: MODEL,
-      input: text.slice(0, 8000), // max safe input
-    });
+    const res = await withOpenAIBreaker((client) =>
+      client.embeddings.create({
+        model: MODEL,
+        input: text.slice(0, 8000), // max safe input
+      }),
+    );
     return res.data[0]?.embedding ?? null;
   } catch (err) {
-    console.error("[embeddings] error:", err);
+    if (err instanceof CircuitOpenError) {
+      logger.debug({ component: "embeddings" }, "[embeddings] circuit open — skipping");
+      return null;
+    }
+    logger.error({ component: "embeddings", err }, "[embeddings] error");
     return null;
   }
 }
@@ -38,4 +41,4 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-export const embeddingsEnabled = !!openai;
+export const embeddingsEnabled = !!process.env.OPENAI_API_KEY;

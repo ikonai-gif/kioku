@@ -5,7 +5,8 @@
  * Uses GPT-4o-mini for cheap, fast emotional assessment.
  */
 
-import OpenAI from 'openai';
+import { withOpenAIBreaker, CircuitOpenError } from './lib/openai-client';
+import logger from './logger';
 import { getDecayedEmotionalState, clampPAD, padToEmotionLabel, defaultEmotionalState, slowReflection } from './emotional-state';
 
 const APPRAISAL_PROMPT = `You are an emotion analyzer for an AI agent.
@@ -33,7 +34,6 @@ export async function fastAppraisal(
 
     const decayed = getDecayedEmotionalState(state);
 
-    const openai = new OpenAI();
     const prompt = APPRAISAL_PROMPT
       .replace('{P}', decayed.pleasure.toFixed(2))
       .replace('{A}', decayed.arousal.toFixed(2))
@@ -41,12 +41,14 @@ export async function fastAppraisal(
       .replace('{emotion}', decayed.emotionLabel)
       .replace('{event}', eventDescription.slice(0, 300));
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-      max_tokens: 80,
-    });
+    const response = await withOpenAIBreaker((openai) =>
+      openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 80,
+      }),
+    );
 
     const text = response.choices[0]?.message?.content?.trim();
     if (!text) return;
@@ -71,7 +73,10 @@ export async function fastAppraisal(
     if (newPoignancy > 150) {
       slowReflection(agentId, userId, storage).catch(() => {});
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logger.debug({ component: 'fast-appraisal' }, '[fast-appraisal] circuit open — skipping');
+    }
     // Silent fail — emotional appraisal is non-critical
   }
 }

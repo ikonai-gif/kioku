@@ -59,9 +59,9 @@ let _client: OpenAI | null = null;
 
 function getClient(): OpenAI {
   if (_client) return _client;
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY not configured");
-  }
+  // The OpenAI SDK itself raises a clear error when OPENAI_API_KEY is missing.
+  // We avoid adding our own env check here so that tests that mock the
+  // "openai" module (without setting a key) construct their stub cleanly.
   _client = new OpenAI();
   return _client;
 }

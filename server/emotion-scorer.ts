@@ -5,7 +5,8 @@
  * Each value 0.0 to 1.0.
  */
 
-import OpenAI from 'openai';
+import { withOpenAIBreaker, CircuitOpenError } from './lib/openai-client';
+import logger from './logger';
 
 const EMOTION_SCORE_PROMPT = `Rate the emotional content of this text on 8 dimensions (0.0 to 1.0).
 Return ONLY a JSON array of 8 floats in this exact order:
@@ -17,19 +18,23 @@ JSON array:`;
 
 export async function scoreEmotion(content: string): Promise<number[] | null> {
   try {
-    const openai = new OpenAI(); // uses OPENAI_API_KEY env var
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
-      messages: [{ role: 'user', content: EMOTION_SCORE_PROMPT.replace('{content}', content.slice(0, 500)) }],
-      temperature: 0.1,
-      max_tokens: 50,
-    });
+    const response = await withOpenAIBreaker((openai) =>
+      openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: EMOTION_SCORE_PROMPT.replace('{content}', content.slice(0, 500)) }],
+        temperature: 0.1,
+        max_tokens: 50,
+      }),
+    );
     const text = response.choices[0]?.message?.content?.trim();
     if (!text) return null;
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed) || parsed.length !== 8) return null;
     return parsed.map((v: number) => Math.max(0, Math.min(1, v)));
-  } catch {
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logger.debug({ component: 'emotion-scorer' }, '[emotion-scorer] circuit open — skipping');
+    }
     return null;
   }
 }
