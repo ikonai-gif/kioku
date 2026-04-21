@@ -16,6 +16,7 @@ import { registerMeetingRoutes } from "./routes/meetings";
 import { requireFlag } from "./feature-flags";
 import { PRIVATE_MODE, isEmailAllowed, getPrivateModeStatus } from "./lib/private-mode";
 import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
+import { send503 } from "./lib/http-errors";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
   exchangeGoogleCode, exchangeDropboxCode,
@@ -2152,17 +2153,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(session);
     } catch (err) {
       const e = err as any;
-      // W6 Item 2b: circuit-open → 503 + Retry-After. Today runDeliberation
-      // doesn't itself throw CircuitOpenError (structured-deliberation.ts
-      // still has un-wrapped OpenAI clients — W7 Item 1d). This guard lands
-      // first so once 1d ships the 503 mapping is already in place.
+      // W6 Item 2b / W7 NEW-1: circuit-open → 503 + Retry-After via send503.
       if (e instanceof CircuitOpenError || e?.name === "CircuitOpenError" || e?.code === "CIRCUIT_OPEN") {
-        res.setHeader("Retry-After", "30");
-        return res.status(503).json({
-          error: "service_unavailable",
-          reason: "upstream_circuit_open",
-          retry_after_ms: 30_000,
-        });
+        return send503(res, e);
       }
       const message = (err as Error).message;
       const status = message.includes("already running") ? 409 : 500;
@@ -4649,9 +4642,11 @@ Do NOT:
       res.json({ reply });
     } catch (err: any) {
       if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-        const retryAfterMs = typeof err?.retryAfterMs === "number" ? err.retryAfterMs : 30000;
-        res.setHeader("Retry-After", Math.ceil(retryAfterMs / 1000).toString());
-        return res.status(503).json({ error: "service_unavailable", retry_after_ms: retryAfterMs });
+        // W7 NEW-1: unified through send503. Retry-After now derives from
+        // err.retryAfterMs (rounded up to seconds) via the helper, and the
+        // body gains the `reason: "upstream_circuit_open"` field that the
+        // other two sites already carried.
+        return send503(res, err);
       }
       logger.error({ source: "demo-chat", err }, "demo chat error");
       res.status(500).json({ error: "Something went wrong. Please try again." });
@@ -5070,17 +5065,12 @@ Do NOT:
     if (err instanceof ValidationError) {
       return res.status(400).json({ error: err.message });
     }
-    // W6 Item 2b: belt-and-braces CircuitOpenError → 503 mapping. In
-    // practice asyncHandler catches and most routes handle their own errors,
-    // so this rarely fires — it documents the contract for any route whose
-    // catch misses and lets next(err) bubble.
+    // W6 Item 2b / W7 NEW-1: belt-and-braces CircuitOpenError → 503 via
+    // send503. In practice asyncHandler catches and most routes handle
+    // their own errors, so this rarely fires — it documents the contract
+    // for any route whose catch misses and lets next(err) bubble.
     if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
-      res.setHeader("Retry-After", "30");
-      return res.status(503).json({
-        error: "service_unavailable",
-        reason: "upstream_circuit_open",
-        retry_after_ms: 30_000,
-      });
+      return send503(res, err);
     }
     logger.error({ source: "routes", err }, "unhandled error");
     res.status(500).json({ error: "Internal server error" });
