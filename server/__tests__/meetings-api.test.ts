@@ -197,12 +197,12 @@ class FakePg {
       return { rows, rowCount: rows.length };
     }
 
-    // DELETE-soft: UPDATE meetings SET state = 'aborted' ... WHERE id=$1 AND creator_user_id=$2
+    // DELETE-soft: UPDATE meetings SET state = 'aborted' ... WHERE id=$1 RETURNING
     // (literal 'aborted' string appears only in the DELETE handler; check before generic PATCH.)
     if (/UPDATE\s+meetings[\s\S]*SET\s+state\s*=\s*'aborted'/i.test(s)) {
-      const [id, uid] = params!;
+      const id = params![0];
       const m = this.meetings.get(id);
-      if (!m || m.creator_user_id !== uid) return { rows: [], rowCount: 0 };
+      if (!m) return { rows: [], rowCount: 0 };
       m.state = "aborted";
       if (m.ended_at == null) m.ended_at = new Date();
       return { rows: [{ id: m.id, state: m.state, ended_at: m.ended_at }], rowCount: 1 };
@@ -515,6 +515,54 @@ describe("Meeting Room API", () => {
     expect(res1.status).toBe(200);
     expect(res1.body.state).toBe("aborted");
     expect(res1.body.ended_at).toBeTruthy();
+  });
+
+  it("DELETE /api/meetings/:id — 400 meeting_terminal when already completed", async () => {
+    const app = makeApp(1);
+    const created = await request(app).post("/api/meetings").send({ room_id: 10 });
+    const id = created.body.id;
+    await request(app).patch(`/api/meetings/${id}`).send({ state: "active" });
+    await request(app).patch(`/api/meetings/${id}`).send({ state: "completed" });
+
+    const res = await request(app).delete(`/api/meetings/${id}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("meeting_terminal");
+    expect(res.body.state).toBe("completed");
+  });
+
+  it("DELETE /api/meetings/:id — 400 meeting_terminal when already aborted", async () => {
+    const app = makeApp(1);
+    const created = await request(app).post("/api/meetings").send({ room_id: 10 });
+    const id = created.body.id;
+    // First delete: 200 (pending → aborted)
+    await request(app).delete(`/api/meetings/${id}`);
+    // Second delete: 400 terminal
+    const res = await request(app).delete(`/api/meetings/${id}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("meeting_terminal");
+    expect(res.body.state).toBe("aborted");
+  });
+
+  it("DELETE /api/meetings/:id — 404 on non-existent meeting", async () => {
+    const app = makeApp(1);
+    const res = await request(app).delete(`/api/meetings/${randomUUID()}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("meeting_not_found");
+  });
+
+  it("DELETE /api/meetings/:id — non-creator on existing meeting → 404 (no existence leak)", async () => {
+    const app1 = makeApp(1);
+    const created = await request(app1).post("/api/meetings").send({ room_id: 10 });
+    const id = created.body.id;
+
+    const app2 = makeApp(2);
+    const res = await request(app2).delete(`/api/meetings/${id}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("meeting_not_found");
+
+    // And the meeting is still in its original state (not silently aborted)
+    const get = await request(app1).get(`/api/meetings/${id}`);
+    expect(get.body.state).toBe("pending");
   });
 
   it("POST /api/meetings/:id/context — seq numbers 1,2,3 on sequential", async () => {

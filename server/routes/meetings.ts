@@ -363,7 +363,7 @@ export function registerMeetingRoutes(
   );
 
   // ── DELETE /api/meetings/:id ───────────────────────────────────────────────
-  // Soft delete: state='aborted' + ended_at=NOW().
+  // Soft delete: state='aborted' + ended_at=NOW(). Rejects terminal state.
   app.delete(
     "/api/meetings/:id",
     asyncHandler(async (req, res) => {
@@ -373,22 +373,49 @@ export function registerMeetingRoutes(
       const id = String(req.params.id ?? "");
       if (!isValidUuid(id)) return res.status(400).json({ error: "invalid_id" });
 
-      const { rows } = await pool.query(
-        `UPDATE meetings
-            SET state = 'aborted',
-                ended_at = COALESCE(ended_at, NOW())
-          WHERE id = $1 AND creator_user_id = $2
-        RETURNING id, state, ended_at`,
-        [id, userId],
-      );
-      if (rows.length === 0) {
-        return res.status(404).json({ error: "meeting_not_found" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        const { rows: meetingRows } = await client.query(
+          `SELECT creator_user_id, state FROM meetings WHERE id = $1 FOR UPDATE`,
+          [id],
+        );
+        const meeting = meetingRows[0];
+        if (!meeting) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "meeting_not_found" });
+        }
+        if (meeting.creator_user_id !== userId) {
+          // 404 on write to avoid existence leak.
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "meeting_not_found" });
+        }
+        if (TERMINAL_STATES.has(meeting.state as MeetingState)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "meeting_terminal", state: meeting.state });
+        }
+
+        const { rows: updated } = await client.query(
+          `UPDATE meetings
+              SET state = 'aborted',
+                  ended_at = COALESCE(ended_at, NOW())
+            WHERE id = $1
+          RETURNING id, state, ended_at`,
+          [id],
+        );
+        await client.query("COMMIT");
+        logger.info(
+          { component: "meetings", userId, meetingId: id, action: "delete", result: "ok" },
+          "[meetings] soft-deleted",
+        );
+        return res.json(updated[0]);
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
       }
-      logger.info(
-        { component: "meetings", userId, meetingId: id, action: "delete", result: "ok" },
-        "[meetings] soft-deleted",
-      );
-      return res.json(rows[0]);
     }),
   );
 
