@@ -39,3 +39,35 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npx eslint . --ext .ts,.tsx --max-warnings=100 || true  # lint (allow some warnings)
+
+  # Testcontainers-backed integration tests (real Postgres). Slow — only run
+  # when a path that could invalidate the SQL invariants we're testing has
+  # changed. Everything else is covered by the fast unit suite above.
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            relevant:
+              - 'migrations/**'
+              - 'server/routes/meetings.ts'
+              - 'server/routes/**'
+              - 'server/storage.ts'
+              - 'server/db.ts'
+              - 'server/app.ts'
+              - 'server/__tests__/**/*.integration.test.ts'
+              - 'vitest.integration.config.ts'
+              - 'package.json'
+              - 'package-lock.json'
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.relevant == 'true'
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - if: steps.changes.outputs.relevant == 'true'
+        run: npm ci
+      - if: steps.changes.outputs.relevant == 'true'
+        run: npm run test:integration
