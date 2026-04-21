@@ -19,6 +19,8 @@ import { rateLimitMiddleware } from "./ratelimit";
 import { applySecurityMiddleware } from "./security";
 import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
+import { getOpenAIBreakerState } from "./lib/openai-client";
+import { getAllAgentBreakerStates } from "./lib/openai-per-agent-breaker";
 import { startScheduler } from "./scheduler";
 import logger, { generateRequestId } from "./logger";
 import { logFlags } from "./feature-flags";
@@ -185,6 +187,29 @@ app.get("/health/monitor", (req: Request, res: Response) => {
     return res.status(403).json({ error: "Admin access required" });
   }
   res.json(getMonitorSummary());
+});
+
+// W6 1b: Admin breaker monitor — master key protected (deviation from brief's
+// ADMIN_USER_IDS pattern: this codebase uses KIOKU_MASTER_KEY header auth for
+// all other admin endpoints, so we stay consistent).
+app.get("/api/admin/monitor", (req: Request, res: Response) => {
+  const masterKey = process.env.KIOKU_MASTER_KEY;
+  if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  const states = getAllAgentBreakerStates();
+  const topOffenders = states
+    .filter((s) => s.state === "OPEN")
+    .sort((a, b) => b.failures - a.failures)
+    .slice(0, 5);
+  res.json({
+    openaiBreaker: getOpenAIBreakerState(),
+    agentBreakers: {
+      total: states.length,
+      open: states.filter((s) => s.state === "OPEN").length,
+      topOffenders,
+    },
+  });
 });
 
 // Admin request logs endpoint — master key protected (sync registration)
