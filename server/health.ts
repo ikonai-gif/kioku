@@ -8,6 +8,15 @@
 import type { Express, Request, Response } from "express";
 import { pool } from "./storage";
 import { safeCompare } from "./index";
+import {
+  checkDatabase as checkDatabaseNew,
+  checkRedis as checkRedisNew,
+  checkMigrations,
+  checkQueues,
+  checkMemory as checkMemoryNew,
+  aggregateStatus,
+  type Check,
+} from "./lib/health-checks";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface CheckResult {
@@ -203,6 +212,42 @@ export function registerHealthRoutes(app: Express): void {
   };
   app.get("/health/ready", readinessHandler);
   app.get("/ready", readinessHandler);
+
+  // GET /health/detailed — public per-domain status (uptime monitoring, status pages)
+  // Q8.7: returns 200 even on status=down — this is intentional, don't change to 503
+  app.get("/health/detailed", async (_req: Request, res: Response) => {
+    // Q8.1: 2.5s total budget via AbortController
+    const ctrl = new AbortController();
+    const deadline = setTimeout(() => ctrl.abort(), 2500);
+    const signal = ctrl.signal;
+
+    const results = await Promise.allSettled([
+      checkDatabaseNew(signal),
+      checkRedisNew(signal),
+      checkMigrations(signal),
+      Promise.resolve(checkQueues()),
+      Promise.resolve(checkMemoryNew()),
+    ]);
+    clearTimeout(deadline);
+
+    const keys = ["database", "redis", "migrations", "queues", "memory"] as const;
+    const checks: Record<string, Check> = {};
+    results.forEach((r, i) => {
+      checks[keys[i]] = r.status === "fulfilled"
+        ? r.value
+        : { status: "degraded", error: "timeout" };
+    });
+
+    // Q8.7: intentionally 200 even on status=down (diagnostic endpoint, not gate)
+    res.json({
+      status: aggregateStatus(checks),
+      version: VERSION,
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || process.env.GIT_COMMIT?.slice(0, 7) || "unknown",
+      uptime_s: Math.floor((Date.now() - START_TIME) / 1000),
+      timestamp: new Date().toISOString(),
+      checks,
+    });
+  });
 
   // GET /health/deep — full diagnostic (internal/partner use)
   app.get("/health/deep", async (req: Request, res: Response) => {

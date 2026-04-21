@@ -291,26 +291,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerBilling(app);
   registerPrivacyRoutes(app, getUser);
 
-  // ── Health ────────────────────────────────────────────────────
-  app.get("/health", async (_req, res) => {
-    try {
-      await pool.query("SELECT 1");
-      res.json({
-        status: "ok",
-        version: "1.0.0",
-        uptime: Math.floor(process.uptime()),
-        database: "connected",
-        timestamp: new Date().toISOString()
-      });
-    } catch (err) {
-      res.status(503).json({
-        status: "down",
-        database: "disconnected",
-        error: (err as Error).message
-      });
-    }
-  });
-
   // ── Auth ──────────────────────────────────────────────────────
   // ── Debug — env var check (master key only) ──────────────────
   app.get("/api/debug/env-check", asyncHandler(async (req, res) => {
