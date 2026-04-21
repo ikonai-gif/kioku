@@ -23,6 +23,7 @@ import { startScheduler } from "./scheduler";
 import logger, { generateRequestId } from "./logger";
 import { logFlags } from "./feature-flags";
 import { closeQueues } from "./queue";
+import { closeRedisClient } from "./lib/redis";
 import { getWss } from "./ws";
 
 // SECURITY: Constant-time string comparison to prevent timing attacks on secrets
@@ -359,6 +360,14 @@ app.use((req, res, next) => {
       ]);
     } catch (err) {
       logger.warn({ err: (err as Error).message }, '[shutdown] queue close timed out');
+    }
+
+    // 3b. Close general-purpose Redis client (idempotency etc.)
+    try {
+      await closeRedisClient();
+      logger.info('[shutdown] redis client closed');
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] redis close error');
     }
 
     // 4. Close Postgres pool (the `pool` export from storage.ts)
