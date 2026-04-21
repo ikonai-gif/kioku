@@ -12,6 +12,7 @@ import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachTo
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
 import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
+import { withAnthropicBreaker } from "./lib/anthropic-client";
 import logger from "./logger";
 import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl, listAgentIdsWithStorage } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
@@ -5292,6 +5293,11 @@ export async function triggerAgentResponses(
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
 
         let reply: string | undefined;
+        // W6 1c / W7 Variant C (NEW-3): unified flag across OpenAI + Claude
+        // paths. Hoisted above every LLM branch so downstream (sycophancy
+        // check, WS streaming, asset-emit, degraded-agent broadcast) can
+        // consult it regardless of which provider tripped its breaker.
+        let breakerDegraded = false;
 
         if (isGemini) {
           const geminiKey = getGeminiKey(agent as any);
@@ -5344,13 +5350,28 @@ export async function triggerAgentResponses(
             for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
               // Feature #4: stop if user clicked Stop
               if (__isAborted()) { reply = reply || "[остановлено]"; break; }
-              const claudeMsg = await anthropicClient.messages.create({
-                model: claudeModel,
-                max_tokens: claudeMaxTokens,
-                system: systemPrompt,
-                messages: claudeMessages,
-                ...(isPartnerChat ? { tools: partnerTools, ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
-              });
+              // W7 Variant C: wrap through the shared Anthropic breaker.
+              // On CircuitOpenError mid-loop (R6), abort the tool-use
+              // iteration, flip breakerDegraded, fall through to boilerplate
+              // reply — never return a partial response.
+              let claudeMsg;
+              try {
+                claudeMsg = await withAnthropicBreaker(anthropicClient, (c) => c.messages.create({
+                  model: claudeModel,
+                  max_tokens: claudeMaxTokens,
+                  system: systemPrompt,
+                  messages: claudeMessages,
+                  ...(isPartnerChat ? { tools: partnerTools, ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
+                }));
+              } catch (err: any) {
+                if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "claude-toolloop" }, "[deliberation] anthropic breaker open mid-loop");
+                  reply = "This agent is temporarily unavailable. Try again in ~30s.";
+                  breakerDegraded = true;
+                  break;
+                }
+                throw err;
+              }
 
               // Extract text from response
               const textBlock = claudeMsg.content.find((b) => b.type === "text");
@@ -5405,9 +5426,6 @@ export async function triggerAgentResponses(
           }
         }
 
-        // W6 1c: hoisted out of the OpenAI-path block so downstream (sycophancy,
-        // streaming) can consult it. Claude path leaves it false.
-        let breakerDegraded = false;
         if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
           // OpenAI path (default or fallback when Claude client unavailable).
           // W6 1b: route through withAgentBreaker — custom-key agents get their
