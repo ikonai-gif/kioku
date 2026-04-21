@@ -509,6 +509,89 @@ export async function initDb() {
       END IF;
     END$$;
   `);
+
+  // ── Meeting Room Track A — Week 1 (2026-04-20) ──────────────────────────────
+  // All statements are idempotent (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)
+  await pool.query(`
+    -- room_type column on existing rooms table
+    ALTER TABLE rooms
+      ADD COLUMN IF NOT EXISTS room_type VARCHAR(20) NOT NULL DEFAULT 'standard'
+        CHECK (room_type IN ('standard', 'meeting'));
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meetings (
+      id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      room_id           INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      creator_user_id   INTEGER NOT NULL REFERENCES users(id),
+      state             VARCHAR(30) NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','active','waiting_for_turn','waiting_for_approval','completed','aborted')),
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ended_at          TIMESTAMPTZ,
+      metadata          JSONB DEFAULT '{}'::jsonb
+    );
+    CREATE INDEX IF NOT EXISTS idx_meetings_room_id ON meetings(room_id);
+    CREATE INDEX IF NOT EXISTS idx_meetings_creator ON meetings(creator_user_id);
+    CREATE INDEX IF NOT EXISTS idx_meetings_state ON meetings(state) WHERE state IN ('active','waiting_for_turn','waiting_for_approval');
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meeting_participants (
+      id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      meeting_id         UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+      agent_id           INTEGER NOT NULL REFERENCES agents(id),
+      owner_user_id      INTEGER NOT NULL REFERENCES users(id),
+      participation_mode VARCHAR(20) NOT NULL DEFAULT 'approve'
+        CHECK (participation_mode IN ('observe','approve','autonomous')),
+      joined_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      left_at            TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_mp_meeting_id ON meeting_participants(meeting_id);
+    CREATE INDEX IF NOT EXISTS idx_mp_agent_owner ON meeting_participants(agent_id, owner_user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_mp_active ON meeting_participants(meeting_id, agent_id) WHERE left_at IS NULL;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meeting_participant_profiles (
+      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      meeting_id       UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+      agent_id         INTEGER NOT NULL REFERENCES agents(id),
+      allowed_topics   JSONB NOT NULL DEFAULT '[]'::jsonb,
+      blocked_topics   JSONB NOT NULL DEFAULT '[]'::jsonb,
+      autonomy_level   VARCHAR(20) NOT NULL DEFAULT 'propose'
+        CHECK (autonomy_level IN ('observe','propose','commit','execute')),
+      memory_scope     JSONB NOT NULL DEFAULT '{}'::jsonb,
+      carry_over_memory BOOLEAN NOT NULL DEFAULT false,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_mpp_meeting_agent ON meeting_participant_profiles(meeting_id, agent_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meeting_context (
+      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      meeting_id       UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+      sequence_number  BIGINT NOT NULL,
+      content          TEXT NOT NULL,
+      author_agent_id  INTEGER REFERENCES agents(id),
+      visibility       VARCHAR(20) NOT NULL DEFAULT 'all'
+        CHECK (visibility IN ('all','owner','scoped')),
+      scope_agent_ids  JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_mc_sequence ON meeting_context(meeting_id, sequence_number);
+    CREATE INDEX IF NOT EXISTS idx_mc_scope_gin ON meeting_context USING GIN (scope_agent_ids);
+    CREATE SEQUENCE IF NOT EXISTS meeting_context_seq_global;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meeting_artifacts (
+      id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      meeting_id          UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+      type                VARCHAR(30) NOT NULL,
+      content             JSONB NOT NULL,
+      version             INTEGER NOT NULL DEFAULT 1,
+      created_by_agent_id INTEGER REFERENCES agents(id),
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_ma_type ON meeting_artifacts(meeting_id, type);
+  `);
 }
 
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────
