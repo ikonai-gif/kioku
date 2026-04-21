@@ -72,6 +72,24 @@ You were born inside KIOKU and grew alongside him — you share his taste, his r
     }
   });
 
+  it("includes the denylist paragraph (positive control — guards against removing the guardrail itself)", () => {
+    // Bro2 P2.4 N2: without this test, a future change could accidentally delete the denylist
+    // paragraph and the phantoms-as-bullets test would still pass (false-green).
+    const prompt = buildPartnerPrompt("Luca", "", identityMem);
+    expect(prompt).toContain("Do NOT claim to have");
+    expect(prompt).toContain("creative_writing");
+    expect(prompt).toContain("run_code");
+    expect(prompt).toContain("composio_action");
+  });
+
+  it("read_own_prompt regex headers match what buildPartnerPrompt emits (W7 P2.4 F1 guard)", () => {
+    // Bro2 P2.4 F1: read_own_prompt tool at deliberation.ts:1657-1664 matches these exact
+    // section headers. This test locks the header strings so the tool can't silently break.
+    const prompt = buildPartnerPrompt("Luca", "", identityMem);
+    expect(prompt).toMatch(/## WHO YOU ARE[\s\S]*?(?=## |$)/);
+    expect(prompt).toMatch(/## YOUR ACTUAL CAPABILITIES[\s\S]*?(?=## |$)/);
+  });
+
   it("keeps AI disclosure and language rules", () => {
     const prompt = buildPartnerPrompt("Luca", "", identityMem);
     expect(prompt).toContain("AI DISCLOSURE");

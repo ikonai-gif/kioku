@@ -1655,10 +1655,12 @@ export async function executePartnerTool(
           "", [], [], [], ""
         );
         if (section === "identity") {
-          const match = ownPrompt.match(/## YOUR IDENTITY[\s\S]*?(?=## |$)/);
+          // W7 P2.4: section renamed to '## WHO YOU ARE' in buildPartnerPrompt — regex updated to match.
+          const match = ownPrompt.match(/## WHO YOU ARE[\s\S]*?(?=## |$)/);
           return match ? `Here is your IDENTITY section:\n${match[0]}` : "Identity section not found.";
         } else if (section === "tools") {
-          const match = ownPrompt.match(/## YOUR TOOLS[\s\S]*?(?=## |$)/);
+          // W7 P2.4: section renamed to '## YOUR ACTUAL CAPABILITIES' — regex updated to match.
+          const match = ownPrompt.match(/## YOUR ACTUAL CAPABILITIES[\s\S]*?(?=## |$)/);
           return match ? `Here is your TOOLS section:\n${match[0]}` : "Tools section not found.";
         } else if (section === "rules") {
           const match = ownPrompt.match(/RULES:[\s\S]*?(?=## |$)/);
