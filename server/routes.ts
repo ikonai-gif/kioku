@@ -2151,6 +2151,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       storage.incrementUsage(userId, 'rounds', roundCount).catch(() => {});
       res.json(session);
     } catch (err) {
+      const e = err as any;
+      // W6 Item 2b: circuit-open → 503 + Retry-After. Today runDeliberation
+      // doesn't itself throw CircuitOpenError (structured-deliberation.ts
+      // still has un-wrapped OpenAI clients — W7 Item 1d). This guard lands
+      // first so once 1d ships the 503 mapping is already in place.
+      if (e instanceof CircuitOpenError || e?.name === "CircuitOpenError" || e?.code === "CIRCUIT_OPEN") {
+        res.setHeader("Retry-After", "30");
+        return res.status(503).json({
+          error: "service_unavailable",
+          reason: "upstream_circuit_open",
+          retry_after_ms: 30_000,
+        });
+      }
       const message = (err as Error).message;
       const status = message.includes("already running") ? 409 : 500;
       res.status(status).json({ error: message });
@@ -5056,6 +5069,18 @@ Do NOT:
   app.use((err: any, _req: any, res: any, _next: any) => {
     if (err instanceof ValidationError) {
       return res.status(400).json({ error: err.message });
+    }
+    // W6 Item 2b: belt-and-braces CircuitOpenError → 503 mapping. In
+    // practice asyncHandler catches and most routes handle their own errors,
+    // so this rarely fires — it documents the contract for any route whose
+    // catch misses and lets next(err) bubble.
+    if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+      res.setHeader("Retry-After", "30");
+      return res.status(503).json({
+        error: "service_unavailable",
+        reason: "upstream_circuit_open",
+        retry_after_ms: 30_000,
+      });
     }
     logger.error({ source: "routes", err }, "unhandled error");
     res.status(500).json({ error: "Internal server error" });
