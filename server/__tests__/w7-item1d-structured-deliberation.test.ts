@@ -1,6 +1,13 @@
 /**
  * W7 Item 1d — structured-deliberation.ts wrap + per-agent + fallback log
  *
+ * ⚠ Coupling: these tests assume the shared OpenAI circuit breaker's
+ * `failureThreshold = 5` (see `server/lib/openai-client.ts`). The "fail 5
+ * times to trip → 6th call gets CircuitOpenError" pattern below is wired to
+ * that exact constant. If the threshold ever changes, update the loop bounds
+ * here AND in `e2e-breaker-integration.test.ts` / `openai-per-agent-breaker`
+ * tests, or these suites will silently over/under-trip.
+ *
  * Covers three of the four required tests (the fourth is the classifyLLMError
  * / withRetry pair, which lives in `error-retry.test.ts` next to its target):
  *

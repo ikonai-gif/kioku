@@ -4975,7 +4975,18 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 
 export const deliberationEnabled = !!openai || !!GEMINI_API_KEY || !!ANTHROPIC_API_KEY;
 
-/** Get an OpenAI client for a given agent — uses per-agent key if set, else shared */
+/**
+ * Get an OpenAI client for a given agent — uses per-agent key if set, else shared.
+ *
+ * @deprecated Prefer `withOpenAIBreaker` / `withAgentBreaker` from
+ *   `server/lib/openai-client.ts` and `server/lib/openai-per-agent-breaker.ts`.
+ *   Those wrappers own the client construction AND the breaker guard — calling
+ *   `.chat.completions.create` on a raw client returned from here bypasses the
+ *   breaker entirely and will pile up hung requests on upstream degradation.
+ *   The last remaining use here (the null-check at ~5435) is a guard against
+ *   the "no OpenAI access anywhere" case and will be replaced when the
+ *   per-agent breaker exposes a `hasClient(agent)` predicate.
+ */
 function getOpenAIClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): OpenAI | null {
   if (agent.llmApiKey && agent.llmProvider === "openai") return new OpenAI({ apiKey: agent.llmApiKey });
   return openai;
