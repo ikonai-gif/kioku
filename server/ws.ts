@@ -147,10 +147,59 @@ export function getActiveWsConnectionCount(): number {
 }
 
 /**
+ * Discriminated union of WS broadcast payloads accepted by
+ * `broadcastToRoom`. `GenericBroadcast` intentionally keeps the door open
+ * for storage-row passthrough (e.g. `if (msg) broadcastToRoom(roomId, msg)`
+ * in scheduler/deliberation) — the union is a type-safety floor, not a
+ * wall: known payloads get structural checks, unknown ones still compile.
+ *
+ * When the default `{ type: "message" }` shape is intended, set `type`
+ * explicitly here instead of relying on the spread default — the default
+ * remains for backwards-compat only.
+ */
+export type DegradedAgentNoticeBroadcast = {
+  type: "degraded_agent_notice";
+  agentId: number;
+  agentName: string;
+  degraded: boolean;
+  retryAfterMs: number;
+};
+
+export type NewMessageBroadcast = {
+  type: "new_message";
+  message: {
+    roomId: number;
+    agentId: number;
+    agentName: string;
+    agentColor: string;
+    content: string;
+    createdAt: number;
+  };
+};
+
+export type EmailConfirmRequiredBroadcast = {
+  type: "email_confirm_required";
+  token: string;
+  expiresAt: number;
+  preview: Record<string, unknown>;
+};
+
+export type GenericBroadcast = {
+  type?: string;
+  [key: string]: unknown;
+};
+
+export type WsBroadcast =
+  | DegradedAgentNoticeBroadcast
+  | NewMessageBroadcast
+  | EmailConfirmRequiredBroadcast
+  | GenericBroadcast;
+
+/**
  * Broadcast a new message to all clients subscribed to a room.
  * Called from routes.ts when a message is POSTed.
  */
-export function broadcastToRoom(roomId: number, payload: object) {
+export function broadcastToRoom(roomId: number, payload: WsBroadcast) {
   const clients = roomClients.get(roomId);
   if (!clients) return;
   const data = JSON.stringify({ type: "message", ...payload });
