@@ -56,8 +56,9 @@ jobs:
               - 'server/routes/meetings.ts'
               - 'server/routes/**'
               - 'server/storage.ts'
-              - 'server/db.ts'
+              - 'server/db.ts' # Placeholder for Item 2 DB pool extraction (see W6 plan)
               - 'server/app.ts'
+              - 'shared/schema.ts' # Drizzle schema — changes break seeded INSERTs in integration tests
               - 'server/__tests__/**/*.integration.test.ts'
               - 'vitest.integration.config.ts'
               - 'package.json'
