@@ -499,6 +499,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: set room agent_ids (master key only) ──────────────
+  // W7 P2.8 — Restore Luca (agent 16) in room 151 after structural drift.
+  // Accepts userId + roomId + agentIds (number[]); writes JSON-stringified
+  // array to match existing storage format. Scoped to (userId, roomId) so
+  // we can never touch another user's room.
+  app.post("/api/admin/set-room-agents", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.body?.userId ?? ""), 10);
+    const roomId = parseInt(String(req.body?.roomId ?? ""), 10);
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    if (!roomId || Number.isNaN(roomId)) return res.status(400).json({ error: "roomId required" });
+    const rawIds = Array.isArray(req.body?.agentIds) ? req.body.agentIds : null;
+    if (!rawIds) return res.status(400).json({ error: "agentIds (number[]) required" });
+    const agentIds = rawIds
+      .map((v: any) => parseInt(String(v), 10))
+      .filter((n: number) => Number.isFinite(n) && n > 0);
+    if (agentIds.length === 0) return res.status(400).json({ error: "agentIds must be non-empty" });
+    if (agentIds.length > 20) return res.status(400).json({ error: "max 20 agents per room" });
+    try {
+      const { pool } = await import("./storage");
+      // Verify all target agents exist and belong to this user — refuse to
+      // route a room to an agent the user doesn't own.
+      const agentCheck = await pool.query(
+        `SELECT id FROM agents WHERE user_id = $1 AND id = ANY($2::int[])`,
+        [userId, agentIds]
+      );
+      const foundIds = agentCheck.rows.map((r: any) => r.id);
+      const missing = agentIds.filter((id: number) => !foundIds.includes(id));
+      if (missing.length > 0) {
+        return res.status(400).json({ error: "agentIds not owned by user", missing });
+      }
+      const prev = await pool.query(
+        `SELECT id, agent_ids FROM rooms WHERE id = $1 AND user_id = $2`,
+        [roomId, userId]
+      );
+      if (prev.rows.length === 0) return res.status(404).json({ error: "room not found for user" });
+      const previousAgentIds = prev.rows[0].agent_ids;
+      const r = await pool.query(
+        `UPDATE rooms SET agent_ids = $1 WHERE id = $2 AND user_id = $3 RETURNING id, user_id, agent_ids, name`,
+        [JSON.stringify(agentIds), roomId, userId]
+      );
+      res.json({ ok: true, previousAgentIds, room: r.rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "update failed" });
+    }
+  }));
+
   // ── Admin: list all users (master key only) ──────────────────
   app.get("/api/admin/users", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";
