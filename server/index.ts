@@ -21,6 +21,9 @@ import { registerHealthRoutes } from "./health";
 import { startMonitor, getMonitorSummary } from "./monitor";
 import { startScheduler } from "./scheduler";
 import logger, { generateRequestId } from "./logger";
+import { logFlags } from "./feature-flags";
+import { closeQueues } from "./queue";
+import { getWss } from "./ws";
 
 // SECURITY: Constant-time string comparison to prevent timing attacks on secrets
 export function safeCompare(a: string, b: string): boolean {
@@ -165,6 +168,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Log feature flag state at startup
+  logFlags(logger);
+
   // Init DB — non-fatal: server starts even if DB is unreachable
   try {
     await initDb();
@@ -320,5 +326,55 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
     },
   );
+
+  // ── Graceful shutdown ────────────────────────────────────────────────────
+  let isShuttingDown = false;
+
+  async function gracefulShutdown(signal: string) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    logger.info({ signal }, '[shutdown] received signal, draining...');
+
+    // 1. Stop accepting new HTTP connections
+    httpServer.close((err) => {
+      if (err) logger.error({ err: err.message }, '[shutdown] httpServer close error');
+      else logger.info('[shutdown] http server closed');
+    });
+
+    // 2. Close WebSocket server
+    try {
+      const wss = getWss();
+      wss?.clients.forEach((client) => {
+        try { client.close(1001, 'Server shutting down'); } catch {}
+      });
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] ws close error');
+    }
+
+    // 3. Drain BullMQ queues (wait up to 30s for in-flight jobs)
+    try {
+      await Promise.race([
+        closeQueues(),
+        new Promise((_r, reject) => setTimeout(() => reject(new Error('timeout')), 30000)),
+      ]);
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] queue close timed out');
+    }
+
+    // 4. Close Postgres pool (the `pool` export from storage.ts)
+    try {
+      const { pool } = await import('./storage');
+      await pool.end();
+      logger.info('[shutdown] postgres pool closed');
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] pool end error');
+    }
+
+    logger.info('[shutdown] done');
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 })();
 

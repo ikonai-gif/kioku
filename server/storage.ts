@@ -30,7 +30,9 @@ const sslConfig = dbUrl.includes('neon.tech')
     : (dbUrl.includes('sslmode=require') ? { ssl: { rejectUnauthorized: true } } : {}));
 export const pool = new Pool({
   connectionString: dbUrl,
-  max: 10,
+  // Pool size: 20 (increased from 10 per Bro2 I1 — Meeting Room + Luca + scheduler
+  // can consume 8-10 connections concurrently, leaving HTTP starved)
+  max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
   ...sslConfig,

@@ -13,6 +13,10 @@ const roomClients = new Map<number, Set<WebSocket>>();
 // Track authenticated userId per WebSocket
 const wsUserMap = new WeakMap<WebSocket, number>();
 
+// Module-level wss reference for graceful shutdown
+let _wss: WebSocketServer | null = null;
+export function getWss(): WebSocketServer | null { return _wss; }
+
 function authenticateWs(req: any): number | null {
   // Try x-api-key header
   const apiKeyHeader = req.headers["x-api-key"] as string | undefined;
@@ -72,6 +76,7 @@ async function authenticateWsAsync(req: any): Promise<number | null> {
 
 export function setupWebSocket(httpServer: Server) {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  _wss = wss;
 
   wss.on("connection", async (ws, req) => {
     // Authenticate on connection
