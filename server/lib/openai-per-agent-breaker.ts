@@ -12,9 +12,10 @@
  * breaker for shared-key agents; otherwise a single bad shared call would
  * only trip one agent's breaker instead of protecting the whole process.)
  *
- * Bounded: MAX_AGENTS=1000. Eviction policy is LRU, skipping OPEN entries
- * when possible so we don't drop live incident data. Pathological fallback
- * (everything OPEN) evicts the true oldest entry.
+ * Bounded: MAX_AGENTS=1000. Eviction policy is FIFO eviction with non-OPEN
+ * preference — we walk Map insertion order and skip OPEN entries so we don't
+ * drop live incident data. Pathological fallback (everything OPEN) evicts the
+ * true oldest entry. Not true LRU (no touch-on-use).
  */
 
 import OpenAI from "openai";
@@ -146,10 +147,16 @@ export function __resetAllAgentBreakersForTest(): void {
 
 /** Test-only introspection — size of the per-agent registry. */
 export function __getAgentBreakerMapSizeForTest(): number {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("__getAgentBreakerMapSizeForTest may only run under NODE_ENV=test");
+  }
   return breakers.size;
 }
 
 /** Test-only introspection — set of agent ids currently tracked. */
 export function __getTrackedAgentIdsForTest(): number[] {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("__getTrackedAgentIdsForTest may only run under NODE_ENV=test");
+  }
   return Array.from(breakers.keys());
 }

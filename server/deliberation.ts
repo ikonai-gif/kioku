@@ -10,6 +10,9 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage } from "./storage";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
+import { withOpenAIBreaker, CircuitOpenError } from "./lib/openai-client";
+import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
+import logger from "./logger";
 import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl, listAgentIdsWithStorage } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
@@ -1144,8 +1147,6 @@ export async function executePartnerTool(
     const __result = await (async (): Promise<string> => {
     switch (toolName) {
       case "generate_image": {
-        const OAI = (await import("openai")).default;
-        const oaiClient = new OAI();
         // Fetch aesthetic context to enhance the prompt (same as /api/partner/create/image)
         let enhancedPrompt = toolInput.prompt;
         try {
@@ -1159,13 +1160,22 @@ export async function executePartnerTool(
         } catch { /* best-effort */ }
         if (toolInput.style) enhancedPrompt += `. Style: ${toolInput.style}`;
 
-        const response = await oaiClient.images.generate({
-          model: "dall-e-3",
-          prompt: enhancedPrompt.slice(0, 4000),
-          n: 1,
-          size: "1024x1024",
-          quality: "standard",
-        });
+        let response;
+        try {
+          response = await withOpenAIBreaker((oaiClient) => oaiClient.images.generate({
+            model: "dall-e-3",
+            prompt: enhancedPrompt.slice(0, 4000),
+            n: 1,
+            size: "1024x1024",
+            quality: "standard",
+          }));
+        } catch (err: any) {
+          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            logger.warn({ component: "deliberation", event: "degraded_tool", tool: "generate_image" }, "[deliberation] breaker open");
+            return "Image generation temporarily unavailable. Try again in ~30s.";
+          }
+          throw err;
+        }
         const imageUrl = response.data?.[0]?.url || "";
         const revisedPrompt = response.data?.[0]?.revised_prompt || "";
 
@@ -1214,8 +1224,6 @@ export async function executePartnerTool(
       }
 
       case "analyze_image": {
-        const OAI = (await import("openai")).default;
-        const oaiClient = new OAI();
         const question = toolInput.question || "What do you see in this image? Describe it naturally as a friend would.";
         // Support both URL and base64
         let imageContent: any;
@@ -1227,23 +1235,30 @@ export async function executePartnerTool(
         } else {
           return "No image provided. Please share an image URL or base64 data.";
         }
-        const response = await oaiClient.chat.completions.create({
-          model: "gpt-4.1-mini",
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: question },
-              imageContent,
-            ],
-          }],
-          max_tokens: 500,
-        });
+        let response;
+        try {
+          response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
+            model: "gpt-4.1-mini",
+            messages: [{
+              role: "user",
+              content: [
+                { type: "text", text: question },
+                imageContent,
+              ],
+            }],
+            max_tokens: 500,
+          }));
+        } catch (err: any) {
+          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            logger.warn({ component: "deliberation", event: "degraded_tool", tool: "analyze_image" }, "[deliberation] breaker open");
+            return "Image analysis temporarily unavailable.";
+          }
+          throw err;
+        }
         return response.choices[0]?.message?.content || "I couldn't make out the image clearly.";
       }
 
       case "creative_writing": {
-        const OAI = (await import("openai")).default;
-        const oaiClient = new OAI();
         // Build creative system prompt (simplified version of routes.ts buildCreativeSystemPrompt)
         let creativeSystem = `You are a creative partner — not a tool that generates text on command, but a collaborator who cares about quality. You have deep knowledge of literature, poetry, songwriting, and storytelling.`;
         if (toolInput.style) creativeSystem += `\nStyle: ${toolInput.style}`;
@@ -1258,15 +1273,24 @@ export async function executePartnerTool(
           }
         } catch { /* best-effort */ }
 
-        const response = await oaiClient.chat.completions.create({
-          model: "gpt-4.1-mini",
-          messages: [
-            { role: "system", content: creativeSystem },
-            { role: "user", content: toolInput.prompt },
-          ],
-          temperature: 0.85,
-          max_tokens: 2000,
-        });
+        let response;
+        try {
+          response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
+            model: "gpt-4.1-mini",
+            messages: [
+              { role: "system", content: creativeSystem },
+              { role: "user", content: toolInput.prompt },
+            ],
+            temperature: 0.85,
+            max_tokens: 2000,
+          }));
+        } catch (err: any) {
+          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            logger.warn({ component: "deliberation", event: "degraded_tool", tool: "creative_writing" }, "[deliberation] breaker open");
+            return "Writing assistance temporarily unavailable.";
+          }
+          throw err;
+        }
         const text = response.choices[0]?.message?.content || "";
         // Store creation memory (fire-and-forget)
         if (text) {
@@ -1416,16 +1440,23 @@ export async function executePartnerTool(
           if (!textContent) return "Page loaded but no readable text found.";
           // If user asked a specific question, use LLM to answer from content
           if (toolInput.question) {
-            const OAI = (await import("openai")).default;
-            const oaiClient = new OAI();
-            const answer = await oaiClient.chat.completions.create({
-              model: "gpt-4.1-mini",
-              messages: [
-                { role: "system", content: "Answer the question based ONLY on the provided web page content. Be concise and accurate. If the answer is not in the content, say so." },
-                { role: "user", content: `Page content:\n${textContent}\n\nQuestion: ${toolInput.question}` },
-              ],
-              max_tokens: 1000,
-            });
+            let answer;
+            try {
+              answer = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
+                model: "gpt-4.1-mini",
+                messages: [
+                  { role: "system", content: "Answer the question based ONLY on the provided web page content. Be concise and accurate. If the answer is not in the content, say so." },
+                  { role: "user", content: `Page content:\n${textContent}\n\nQuestion: ${toolInput.question}` },
+                ],
+                max_tokens: 1000,
+              }));
+            } catch (err: any) {
+              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                logger.warn({ component: "deliberation", event: "degraded_tool", tool: "read_url" }, "[deliberation] breaker open");
+                return `(summarization unavailable, raw content follows)\n\nPage content (${url}):\n${textContent.slice(0, 5000)}`;
+              }
+              throw err;
+            }
             return answer.choices[0]?.message?.content || textContent.slice(0, 3000);
           }
           return `Page content (${url}):\n${textContent.slice(0, 5000)}`;
@@ -1438,9 +1469,7 @@ export async function executePartnerTool(
       case "web_search": {
         // Real web search via OpenAI gpt-4o-mini-search-preview (Chat Completions with web_search_options)
         try {
-          const OAI = (await import("openai")).default;
-          const oaiClient = new OAI();
-          const searchResponse = await oaiClient.chat.completions.create({
+          const searchResponse = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
             model: "gpt-4o-mini-search-preview",
             web_search_options: {
               search_context_size: "medium",
@@ -1448,7 +1477,7 @@ export async function executePartnerTool(
             messages: [
               { role: "user", content: toolInput.query },
             ],
-          } as any);
+          } as any));
           const content = searchResponse.choices[0]?.message?.content || "";
           // Extract URL citations if present
           const annotations = (searchResponse.choices[0]?.message as any)?.annotations;
@@ -1462,6 +1491,10 @@ export async function executePartnerTool(
           }
           return (content + citations) || "Search returned no results.";
         } catch (err: any) {
+          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            logger.warn({ component: "deliberation", event: "degraded_tool", tool: "web_search" }, "[deliberation] breaker open");
+            return `(summarization unavailable, raw content follows)\n\nWeb search temporarily unavailable for query: ${toolInput.query}`;
+          }
           return `Web search failed: ${err?.message || String(err)}. I'll answer from my existing knowledge instead.`;
         }
       }
@@ -1515,16 +1548,23 @@ export async function executePartnerTool(
           if (!textContent.trim()) return "File downloaded but no readable text found.";
 
           if (toolInput.question) {
-            const OAI = (await import("openai")).default;
-            const oaiClient = new OAI();
-            const answer = await oaiClient.chat.completions.create({
-              model: "gpt-4.1-mini",
-              messages: [
-                { role: "system", content: "Answer the question based ONLY on the provided document content. Be concise." },
-                { role: "user", content: `Document content:\n${textContent}\n\nQuestion: ${toolInput.question}` },
-              ],
-              max_tokens: 1000,
-            });
+            let answer;
+            try {
+              answer = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
+                model: "gpt-4.1-mini",
+                messages: [
+                  { role: "system", content: "Answer the question based ONLY on the provided document content. Be concise." },
+                  { role: "user", content: `Document content:\n${textContent}\n\nQuestion: ${toolInput.question}` },
+                ],
+                max_tokens: 1000,
+              }));
+            } catch (err: any) {
+              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                logger.warn({ component: "deliberation", event: "degraded_tool", tool: "read_file" }, "[deliberation] breaker open");
+                return `(summarization unavailable, raw content follows)\n\nFile content:\n${textContent.slice(0, 5000)}`;
+              }
+              throw err;
+            }
             return answer.choices[0]?.message?.content || textContent.slice(0, 3000);
           }
 
@@ -1844,8 +1884,6 @@ export async function executePartnerTool(
           return `URL blocked: ${e.message}`;
         }
         try {
-          const OAI = (await import("openai")).default;
-          const oaiClient = new OAI();
           // Download audio file
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 30000);
@@ -1868,25 +1906,43 @@ export async function executePartnerTool(
           else if (contentType.includes("m4a") || contentType.includes("mp4")) ext = "m4a";
           // Create a File-like object for OpenAI
           const file = new File([audioBuffer], `audio.${ext}`, { type: contentType || `audio/${ext}` });
-          const transcription = await oaiClient.audio.transcriptions.create({
-            model: "whisper-1",
-            file,
-            response_format: "verbose_json",
-          });
+          let transcription;
+          try {
+            transcription = await withOpenAIBreaker((oaiClient) => oaiClient.audio.transcriptions.create({
+              model: "whisper-1",
+              file,
+              response_format: "verbose_json",
+            }));
+          } catch (err: any) {
+            if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+              logger.warn({ component: "deliberation", event: "degraded_tool", tool: "listen_audio_transcribe" }, "[deliberation] breaker open");
+              return "Video analysis temporarily unavailable.";
+            }
+            throw err;
+          }
           const text = (transcription as any).text || "";
           const language = (transcription as any).language || "unknown";
           const duration = (transcription as any).duration || 0;
           if (!text.trim()) return "Audio was processed but no speech was detected.";
           // If user asked a specific question, analyze the transcription
           if (toolInput.question) {
-            const analysis = await oaiClient.chat.completions.create({
-              model: "gpt-4.1-mini",
-              messages: [
-                { role: "system", content: "Answer the question based on the audio transcription provided. Be natural and concise." },
-                { role: "user", content: `Audio transcription (${language}, ${Math.round(duration)}s):\n${text}\n\nQuestion: ${toolInput.question}` },
-              ],
-              max_tokens: 1000,
-            });
+            let analysis;
+            try {
+              analysis = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
+                model: "gpt-4.1-mini",
+                messages: [
+                  { role: "system", content: "Answer the question based on the audio transcription provided. Be natural and concise." },
+                  { role: "user", content: `Audio transcription (${language}, ${Math.round(duration)}s):\n${text}\n\nQuestion: ${toolInput.question}` },
+                ],
+                max_tokens: 1000,
+              }));
+            } catch (err: any) {
+              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                logger.warn({ component: "deliberation", event: "degraded_tool", tool: "listen_audio_analyze" }, "[deliberation] breaker open");
+                return `Video analysis temporarily unavailable. Raw transcription: ${text.slice(0, 2000)}`;
+              }
+              throw err;
+            }
             return analysis.choices[0]?.message?.content || text;
           }
           // Store in memory
@@ -3761,21 +3817,23 @@ print("Converted MD to DOCX")
           const openaiVoice = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"].includes(voice)
             ? voice
             : "coral";
-          const OAI = (await import("openai")).default;
-          const oaiClient = new OAI({ apiKey: oaiKey });
-          const response = await oaiClient.audio.speech.create({
+          const response = await withOpenAIBreaker((oaiClient) => oaiClient.audio.speech.create({
             model: "gpt-4o-mini-tts",
             voice: openaiVoice as any,
             input: text.slice(0, 4096),
             instructions: instructions || undefined,
             speed,
             response_format: "mp3",
-          } as any);
+          } as any));
 
           const buffer = Buffer.from(await response.arrayBuffer());
           const b64 = buffer.toString("base64");
           return `[Audio generated via OpenAI TTS] data:audio/mp3;base64,${b64}`;
         } catch (err: any) {
+          if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+            logger.warn({ component: "deliberation", event: "degraded_tool", tool: "generate_speech" }, "[deliberation] breaker open");
+            return "Speech generation temporarily unavailable. Try again in ~30s or set ELEVENLABS_API_KEY.";
+          }
           return `Speech generation failed: ${err?.message || String(err)}`;
         }
       }
@@ -4250,28 +4308,45 @@ print("Converted MD to DOCX")
           execSync(`ffmpeg -y -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}"`, { timeout: 60000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 });
 
           // Transcribe with Whisper API
-          const OAI = (await import("openai")).default;
-          const oaiClient = new OAI();
           const audioStream = fs.createReadStream(audioPath);
-          const transcription = await oaiClient.audio.transcriptions.create({
-            file: audioStream as any,
-            model: "whisper-1",
-            response_format: "srt",
-            language: toolInput.language,
-          }) as any;
+          let transcription: any;
+          try {
+            transcription = await withOpenAIBreaker((oaiClient) => oaiClient.audio.transcriptions.create({
+              file: audioStream as any,
+              model: "whisper-1",
+              response_format: "srt",
+              language: toolInput.language,
+            }));
+          } catch (err: any) {
+            if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+              logger.warn({ component: "deliberation", event: "degraded_tool", tool: "subtitle_transcribe" }, "[deliberation] breaker open");
+              return "Audio transcription temporarily unavailable.";
+            }
+            throw err;
+          }
 
           let srtContent = typeof transcription === "string" ? transcription : transcription.text || "";
 
           // Optional translation
           if (translateTo) {
-            const translation = await oaiClient.chat.completions.create({
-              model: "gpt-4o-mini",
-              messages: [
-                { role: "system", content: `Translate SRT subtitles to ${translateTo}. Preserve all timestamps and numbering exactly. Only translate the text lines.` },
-                { role: "user", content: srtContent },
-              ],
-            });
-            srtContent = translation.choices[0]?.message?.content || srtContent;
+            const originalSrt = srtContent;
+            try {
+              const translation = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                  { role: "system", content: `Translate SRT subtitles to ${translateTo}. Preserve all timestamps and numbering exactly. Only translate the text lines.` },
+                  { role: "user", content: srtContent },
+                ],
+              }));
+              srtContent = translation.choices[0]?.message?.content || srtContent;
+            } catch (err: any) {
+              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                logger.warn({ component: "deliberation", event: "degraded_tool", tool: "subtitle_translate" }, "[deliberation] breaker open");
+                srtContent = `(translation unavailable, original below)\n\n${originalSrt}`;
+              } else {
+                throw err;
+              }
+            }
           }
 
           fs.writeFileSync(srtPath, srtContent);
@@ -5331,9 +5406,12 @@ export async function triggerAgentResponses(
         }
 
         if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
-          // OpenAI path (default or fallback when Claude client unavailable)
-          const oaiClient = getOpenAIClient(agent as any);
-          if (!oaiClient) continue;
+          // OpenAI path (default or fallback when Claude client unavailable).
+          // W6 1b: route through withAgentBreaker — custom-key agents get their
+          // own per-agent breaker + client; shared-key agents ride the
+          // process-wide breaker. We no longer instantiate a client up-front;
+          // still guard the "no OpenAI access anywhere" case via getOpenAIClient.
+          if (!getOpenAIClient(agent as any)) continue;
           const resolvedModel = (chatModel.startsWith("gemini-") || chatModel.startsWith("claude-")) ? "gpt-4.1-mini" : chatModel;
           // gpt-5+ and o-series models have different parameter requirements
           const isNewModel = resolvedModel.startsWith("gpt-5") || resolvedModel.startsWith("o3") || resolvedModel.startsWith("o4");
@@ -5356,27 +5434,39 @@ export async function triggerAgentResponses(
 
           // Agent loop — multi-step tool calling (mirrors Claude tool loop)
           const maxToolIterationsOai = 10;
+          let breakerDegraded = false;
           for (let toolIter = 0; toolIter < maxToolIterationsOai; toolIter++) {
             if (__isAborted()) { reply = reply || "[остановлено]"; break; } // Feature #4
-            const completion = await oaiClient.chat.completions.create({
-              model: resolvedModel,
-              ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
-              // gpt-5-mini only supports temperature=1, so omit for new models
-              ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
-              messages: oaiMessages,
-              ...(isPartnerChat ? {
-                tools: partnerTools.map(t => ({
-                  type: "function" as const,
-                  function: {
-                    name: t.name,
-                    description: t.description,
-                    parameters: (t as any).input_schema || { type: "object", properties: {} },
-                  }
-                })),
-                // Force tool use on first turn, then let model respond naturally
-                tool_choice: toolIter === 0 ? "required" as const : "auto" as const,
-              } : {}),
-            });
+            let completion;
+            try {
+              completion = await withAgentBreaker(agent as any, (client) => client.chat.completions.create({
+                model: resolvedModel,
+                ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+                // gpt-5-mini only supports temperature=1, so omit for new models
+                ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
+                messages: oaiMessages,
+                ...(isPartnerChat ? {
+                  tools: partnerTools.map(t => ({
+                    type: "function" as const,
+                    function: {
+                      name: t.name,
+                      description: t.description,
+                      parameters: (t as any).input_schema || { type: "object", properties: {} },
+                    }
+                  })),
+                  // Force tool use on first turn, then let model respond naturally
+                  tool_choice: toolIter === 0 ? "required" as const : "auto" as const,
+                } : {}),
+              }));
+            } catch (err: any) {
+              if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5439" }, "[deliberation] per-agent breaker open");
+                reply = "This agent is temporarily unavailable. Try again in ~30s.";
+                breakerDegraded = true;
+                break;
+              }
+              throw err;
+            }
 
             const choice = completion.choices[0];
             const msg = choice?.message;
@@ -5418,15 +5508,26 @@ export async function triggerAgentResponses(
 
             // If this was the last iteration, make one final call to get text response
             if (toolIter === maxToolIterationsOai - 1) {
-              const finalCompletion = await oaiClient.chat.completions.create({
-                model: resolvedModel,
-                ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
-                ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
-                messages: oaiMessages,
-              });
-              reply = finalCompletion.choices[0]?.message?.content?.trim();
+              try {
+                const finalCompletion = await withAgentBreaker(agent as any, (client) => client.chat.completions.create({
+                  model: resolvedModel,
+                  ...(isNewModel ? { max_completion_tokens: tokenLimit } : { max_tokens: tokenLimit }),
+                  ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
+                  messages: oaiMessages,
+                }));
+                reply = finalCompletion.choices[0]?.message?.content?.trim();
+              } catch (err: any) {
+                if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+                  logger.warn({ component: "deliberation", event: "degraded_agent", agentId: agent.id, site: "5499" }, "[deliberation] per-agent breaker open");
+                  reply = "This agent is temporarily unavailable. Try again in ~30s.";
+                  breakerDegraded = true;
+                  break;
+                }
+                throw err;
+              }
             }
           }
+          void breakerDegraded;
 
           // Append generated asset URLs to reply so user always sees them
           if (reply && generatedAssetsOai.length > 0) {
