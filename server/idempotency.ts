@@ -34,7 +34,9 @@ export const DEFAULT_PENDING_TTL = 60;
  * output regardless of insertion order. Arrays maintain their order (order matters).
  */
 function sortedStringify(value: unknown): string {
-  if (value === null || value === undefined) return JSON.stringify(value);
+  // JSON.stringify(undefined) returns undefined (not a string), which breaks createHash().
+  // Coerce both null and undefined to the JSON string "null".
+  if (value === null || value === undefined) return 'null';
   if (Array.isArray(value)) return `[${value.map(sortedStringify).join(',')}]`;
   if (typeof value === 'object') {
     const sorted = Object.keys(value as Record<string, unknown>)

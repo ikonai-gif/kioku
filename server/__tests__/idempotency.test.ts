@@ -136,6 +136,17 @@ describe('makeIdempotencyKey', () => {
     const key = makeIdempotencyKey('s', null);
     expect(key).toMatch(/^idem:s:[0-9a-f]{16}$/);
   });
+
+  it('handles undefined payload without throwing', () => {
+    expect(() => makeIdempotencyKey('test', undefined)).not.toThrow();
+    const key = makeIdempotencyKey('test', undefined);
+    expect(key).toMatch(/^idem:test:[0-9a-f]{16}$/);
+  });
+
+  it('treats undefined and null payloads as equivalent keys', () => {
+    // Both should serialize to "null" → same hash
+    expect(makeIdempotencyKey('s', undefined)).toBe(makeIdempotencyKey('s', null));
+  });
 });
 
 // ── claimIdempotencyKey ───────────────────────────────────────────────────────
