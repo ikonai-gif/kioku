@@ -9,6 +9,13 @@ export default defineConfig({
       "server/__tests__/**/*.test.ts",
       "tests/**/*.test.ts",
     ],
+    // Integration tests (Testcontainers-backed, real Postgres) live in their
+    // own config — vitest.integration.config.ts — and MUST NOT run in the
+    // default unit-test suite (they need Docker; default suite must stay fast).
+    exclude: [
+      "**/node_modules/**",
+      "**/*.integration.test.ts",
+    ],
     testTimeout: 30000,
   },
   resolve: {
