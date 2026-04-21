@@ -79,6 +79,11 @@ describe("CircuitBreaker — 14 cases", () => {
     expect(err1.retryAfterMs).toBeGreaterThan(0);
     expect(err1.retryAfterMs).toBeLessThanOrEqual(10_000);
     expect(err1.circuitName).toBe("test-2");
+    // W6 1b: cross-module identity — callers in deliberation.ts / routes.ts
+    // check err?.code === "CIRCUIT_OPEN" as a fallback for instanceof when
+    // multiple module copies exist. Guard the contract.
+    expect(err1.name).toBe("CircuitOpenError");
+    expect(err1.code).toBe("CIRCUIT_OPEN");
 
     // retryAfterMs should not exceed cooldownMs
     expect(err1.retryAfterMs).toBeLessThanOrEqual(10_000);
