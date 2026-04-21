@@ -24,7 +24,10 @@ const DB_RECONNECT_DELAY  = 5_000;   // wait 5s before DB reconnect attempt
 interface MonitorState {
   dbFailCount:     number;
   memFailCount:    number;
-  lastAlertAt:     number;
+  /** R3: per-component debounce — keyed by component name ("database", "memory", "migrations") */
+  lastAlertAt:     Record<string, number>;
+  /** Item 2: count of stale (crashed-mid-run) migrations detected */
+  staleMigrations: number;
   totalChecks:     number;
   totalRecoveries: number;
   startedAt:       string;
@@ -33,7 +36,8 @@ interface MonitorState {
 const state: MonitorState = {
   dbFailCount:     0,
   memFailCount:    0,
-  lastAlertAt:     0,
+  lastAlertAt:     {},  // R3: per-component, initially empty
+  staleMigrations: 0,
   totalChecks:     0,
   totalRecoveries: 0,
   startedAt:       new Date().toISOString(),
@@ -45,9 +49,12 @@ export function getMonitorState(): MonitorState { return { ...state }; }
 // Future: hook this to Slack/PagerDuty/Resend
 function alert(component: string, message: string, severity: "warn" | "critical"): void {
   const now = Date.now();
-  // Debounce: max 1 alert per component per 10 min
-  if (now - state.lastAlertAt < 10 * 60 * 1000) return;
-  state.lastAlertAt = now;
+  // R3: per-component debounce — each component has its own 10-min cooldown
+  // Previously this was a single global lastAlertAt which caused DB alerts to
+  // silence migration alerts for 10 min. Fixed: keyed by component.
+  const last = state.lastAlertAt[component] || 0;
+  if (now - last < 10 * 60 * 1000) return;
+  state.lastAlertAt[component] = now;
 
   const prefix = severity === "critical" ? "🔴 CRITICAL" : "🟡 WARN";
   console.error(`[monitor] ${prefix} [${component}] ${message}`);
@@ -147,20 +154,67 @@ export function getMonitorSummary() {
   const mem = process.memoryUsage();
   return {
     ...getMonitorState(),
-    heapUsedMB:  Math.round(mem.heapUsed  / 1024 / 1024),
-    heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
-    heapPct:     Math.round((mem.heapUsed / mem.heapTotal) * 100),
-    rssMB:       Math.round(mem.rss       / 1024 / 1024),
-    uptimeSeconds: Math.floor(process.uptime()),
+    heapUsedMB:      Math.round(mem.heapUsed  / 1024 / 1024),
+    heapTotalMB:     Math.round(mem.heapTotal / 1024 / 1024),
+    heapPct:         Math.round((mem.heapUsed / mem.heapTotal) * 100),
+    rssMB:           Math.round(mem.rss       / 1024 / 1024),
+    uptimeSeconds:   Math.floor(process.uptime()),
+    staleMigrations: state.staleMigrations,  // Item 2: expose in /health/monitor output
   };
 }
 
-// ── Start watchdog ────────────────────────────────────────────────────────────
+// ── Stale migration check ──────────────────────────────────────────────────────
+async function checkStaleMigrations(): Promise<void> {
+  try {
+    const { rows } = await pool.query<{ version: string; applied_at: Date }>(
+      `SELECT version, applied_at FROM schema_migrations
+       WHERE duration_ms = 0 AND applied_at < NOW() - INTERVAL '1 hour'
+       ORDER BY applied_at ASC`
+    );
+    state.staleMigrations = rows.length;
+    if (rows.length > 0) {
+      alert(
+        "migrations",
+        `${rows.length} stale migration(s): ${rows.map((r) => r.version).join(", ")}`,
+        "critical"
+      );
+    }
+  } catch (err: any) {
+    // Don't alert if DB itself is down — that\'s a separate component alert
+    log(`stale migration check failed: ${err.message}`);
+  }
+}
+
+// ── Start watchdog ────────────────────────────────────────────
 export function startMonitor(): void {
   log("[monitor] watchdog started — interval 60s", "monitor");
   // Run first check after 30s startup grace period
   setTimeout(() => {
     watchdogTick();
-    setInterval(watchdogTick, CHECK_INTERVAL_MS);
+    // Item 2: also check for stale migrations on each periodic tick
+    void checkStaleMigrations();
+    setInterval(() => {
+      watchdogTick();
+      void checkStaleMigrations();
+    }, CHECK_INTERVAL_MS);
   }, 30_000);
+}
+
+// Item 2: also export for tests
+export { checkStaleMigrations };
+
+/**
+ * Test-only: reset per-component debounce state so tests don't interfere.
+ * Not for production use.
+ */
+export function __resetMonitorStateForTest(): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("__resetMonitorStateForTest is test-only");
+  }
+  state.lastAlertAt = {};
+  state.staleMigrations = 0;
+  state.dbFailCount = 0;
+  state.memFailCount = 0;
+  state.totalChecks = 0;
+  state.totalRecoveries = 0;
 }
