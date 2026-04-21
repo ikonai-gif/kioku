@@ -21,6 +21,13 @@ export function classifyLLMError(err: any): ClassifiedError {
   const message = err?.message || String(err);
   const status = err?.status ?? err?.statusCode ?? extractStatusFromMessage(message);
 
+  // W7 Item 1d F1: upstream circuit is OPEN — there's nothing to retry, the
+  // breaker is the one saying "don't call." Classify PERMANENT so `withRetry`
+  // aborts after 1 attempt instead of sleeping the full 1s + 3s backoff.
+  if (err?.code === "CIRCUIT_OPEN" || err?.name === "CircuitOpenError") {
+    return { category: "PERMANENT", message, statusCode: 503 };
+  }
+
   // Timeout / abort
   if (err?.name === "AbortError" || message.includes("timeout") || message.includes("ETIMEDOUT")) {
     return { category: "TIMEOUT", message, statusCode: status };
