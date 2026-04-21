@@ -52,8 +52,10 @@ export function getQueue(name: QueueName): Queue {
 }
 
 /**
- * Graceful close — called from SIGTERM handler.
- * Drains in-flight jobs (waits up to 30s for in-flight), then closes connections.
+ * Close all queues and Redis connection — called from SIGTERM handler.
+ * For producer-only setup (Week 2): near-instant close, no drain needed.
+ * When workers are added (Week 3+): call worker.close() here for graceful job drain;
+ * 30s timeout enforced by the SIGTERM handler in server/index.ts.
  */
 export async function closeQueues(): Promise<void> {
   logger.info('[bullmq] closing queues...');
