@@ -160,12 +160,35 @@ describe('runMigration — atomic claim via INSERT ON CONFLICT DO NOTHING', () =
     expect(poolMock.query).toHaveBeenCalledTimes(4);
   });
 
-  it('propagates pool.query error if migration sql throws', async () => {
+  it('deletes claim row when migration sql throws (allows retry on restart)', async () => {
+    poolMock.query
+      .mockResolvedValueOnce(claimed())                                       // INSERT claim → rowCount=1
+      .mockRejectedValueOnce(new Error('SQL syntax error at line 3'))         // migration sql throws
+      .mockResolvedValueOnce(ok());                                           // DELETE unclaim
+
+    await expect(runMigration('v_fail', 'INVALID SQL;')).rejects.toThrow('SQL syntax error');
+
+    // 3 calls total: INSERT claim, failed sql, DELETE cleanup
+    expect(poolMock.query).toHaveBeenCalledTimes(3);
+    const deleteSql = (poolMock.query.mock.calls[2] as any[])[0] as string;
+    const deleteArgs = (poolMock.query.mock.calls[2] as any[])[1] as any[];
+    expect(deleteSql).toMatch(/DELETE FROM schema_migrations WHERE version = \$1/i);
+    expect(deleteArgs).toContain('v_fail');
+  });
+
+  it('does NOT run UPDATE duration_ms when migration sql throws', async () => {
     poolMock.query
       .mockResolvedValueOnce(claimed())
-      .mockRejectedValueOnce(new Error('SQL syntax error'));
+      .mockRejectedValueOnce(new Error('constraint violation'))
+      .mockResolvedValueOnce(ok()); // DELETE cleanup
 
-    await expect(runMigration('v_error', 'INVALID SQL;')).rejects.toThrow('SQL syntax error');
+    await expect(runMigration('v_fail_2', 'ALTER TABLE ...;')).rejects.toThrow();
+
+    // No UPDATE call — only INSERT, failed sql, DELETE
+    const updateCalls = poolMock.query.mock.calls.filter((call: any[]) =>
+      typeof call[0] === 'string' && /UPDATE schema_migrations/i.test(call[0])
+    );
+    expect(updateCalls).toHaveLength(0);
   });
 
   it('INSERT uses ON CONFLICT DO NOTHING syntax', async () => {

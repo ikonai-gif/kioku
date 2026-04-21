@@ -56,6 +56,8 @@ export const db = drizzle(pool);
  *
  * Monitoring: rows with duration_ms=0 older than 1h indicate a crashed mid-migration
  * instance — alert on SELECT * FROM schema_migrations WHERE duration_ms = 0 AND applied_at < NOW() - INTERVAL '1h'.
+ *
+ * On SQL failure, the claim row is DELETEd to allow retry on next restart.
  */
 export async function runMigration(version: string, sql: string): Promise<void> {
   // Atomic claim: INSERT wins the race, ON CONFLICT DO NOTHING ensures single execution
@@ -67,7 +69,14 @@ export async function runMigration(version: string, sql: string): Promise<void> 
   if (claim.rowCount === 0) return; // already applied or claimed by another instance
 
   const start = Date.now();
-  await pool.query(sql);
+  try {
+    await pool.query(sql);
+  } catch (err) {
+    // Unclaim — allow retry on next restart. Without this, a failed migration
+    // would leave an orphan row and be skipped forever.
+    await pool.query('DELETE FROM schema_migrations WHERE version = $1', [version]);
+    throw err;
+  }
   const duration = Date.now() - start;
 
   await pool.query(
