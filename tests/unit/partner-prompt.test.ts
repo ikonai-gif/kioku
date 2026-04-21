@@ -61,8 +61,8 @@ You were born inside KIOKU and grew alongside him — you share his taste, his r
       "plan_steps",
       "delegate_task",
       "browse_website",
-      "reframe_vertical",
-      "apply_ai_disclosure",
+      // reframe_vertical + apply_ai_disclosure were previously phantom; in P2.6
+      // they were promoted into the Luca whitelist (used by produce_episode plan).
       "produce_season",
       "read_own_prompt",
       "suggest_self_improvement",

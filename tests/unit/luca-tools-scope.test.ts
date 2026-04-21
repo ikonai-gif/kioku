@@ -2,9 +2,20 @@ import { describe, it, expect } from "vitest";
 import { getPartnerToolsForAgent, LUCA_STUDIO_TOOL_NAMES, buildPartnerPrompt } from "../../server/deliberation.js";
 
 describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
-  it("returns exactly 16 tools for Luca", () => {
+  it("returns exactly 18 tools for Luca (15 media + 3 workspace)", () => {
+    // P2.6: bumped from 16 to 18 — added reframe_vertical + apply_ai_disclosure
+    // because produce_episode pipeline plan names them by hand. Without them
+    // Luca's episode pipeline would silently skip legal disclosure (Bro2 F1).
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(16);
+    expect(tools).toHaveLength(18);
+  });
+
+  it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
+    const tools = getPartnerToolsForAgent({ name: "Luca" });
+    const names = new Set(tools.map(t => t.name));
+    // These two are named by hand in produce_episode plan (deliberation.ts:4661, 4667).
+    expect(names.has("reframe_vertical")).toBe(true);
+    expect(names.has("apply_ai_disclosure")).toBe(true);
   });
 
   it("returns only tools in LUCA_STUDIO_TOOL_NAMES for Luca", () => {
@@ -26,6 +37,8 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
   it("does NOT expose Gmail, web_search, stripe, github, or other non-studio tools to Luca", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     const names = new Set(tools.map(t => t.name));
+    // P2.6: reframe_vertical + apply_ai_disclosure removed from forbidden list
+    // (they are now in-scope for produce_episode pipeline).
     const forbidden = [
       "gmail_search", "gmail_read", "send_email_reply", "send_new_email",
       "web_search", "read_url",
@@ -33,7 +46,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
       "google_sheets", "google_drive", "gcal",
       "creative_writing", "run_code", "composio_action",
       "build_project", "analyze_image", "browse_website",
-      "plan_steps", "delegate_task",
+      "plan_steps", "delegate_task", "produce_season",
       "read_own_prompt", "suggest_self_improvement",
     ];
     for (const f of forbidden) {
