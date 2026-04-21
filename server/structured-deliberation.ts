@@ -12,7 +12,6 @@
  * Called via POST /api/v1/rooms/:id/deliberate
  */
 
-import OpenAI from "openai";
 import { createHmac } from "crypto";
 import { storage } from "./storage";
 import { broadcastToRoom, broadcastHumanTurn } from "./ws";
@@ -28,6 +27,9 @@ import { getDecayedEmotionalState } from "./emotional-state";
 import { checkPositionLock, savePositionLock } from "./position-lock";
 import { checkSycophancy } from "./sycophancy-checker";
 import { autoLinkDeliberation as provenanceAutoLink } from "./provenance";
+import { withOpenAIBreaker } from "./lib/openai-client";
+import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
+import logger from "./logger";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -40,9 +42,11 @@ function sanitizeForPrompt(input: string): string {
 
 // ── Multi-Model Clients ───────────────────────────────────────────
 
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+// W7 Item 1d: shared-key OpenAI calls go through `withOpenAIBreaker`, which
+// owns the process-wide client (constructed in `openai-client.ts`). We keep
+// a boolean so `callLLM` can tell whether a shared key is configured before
+// deciding to retry an OpenAI call after a Gemini failure.
+const HAS_OPENAI_KEY = Boolean(process.env.OPENAI_API_KEY);
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || null;
 
@@ -70,8 +74,22 @@ function resolveModel(model: string): string {
 const LLM_TIMEOUT_MS = 45_000; // 45s per LLM call
 
 /**
- * Call OpenAI LLM directly.
+ * Call OpenAI LLM directly, behind the appropriate circuit breaker.
+ *
+ * Routing (W7 Item 1d):
+ *  - customApiKey present AND agentId defined → `withAgentBreaker` for
+ *    per-agent isolation: one tenant's bad key cannot trip the shared
+ *    process-wide breaker for everyone else.
+ *  - else → `withOpenAIBreaker` (shared). Covers both (a) the default
+ *    shared-env-key path and (b) non-agent callers (creative deliberation
+ *    + synthesis) that have no agent identity and must fall through to
+ *    the shared breaker rather than silently skipping protection.
+ *
+ * `CircuitOpenError` propagates to the caller (`callLLM`), which catches
+ * it as a provider failure and engages the Gemini fallback.
+ *
  * @param customApiKey — per-agent API key override (falls back to shared env key)
+ * @param agentId      — required for per-agent breaker keying when customApiKey set
  */
 async function callOpenAI(
   model: string,
@@ -79,24 +97,31 @@ async function callOpenAI(
   userMessage: string,
   maxTokens: number,
   temperature: number,
-  customApiKey?: string | null
+  customApiKey?: string | null,
+  agentId?: number,
 ): Promise<string> {
-  const client = customApiKey
-    ? new OpenAI({ apiKey: customApiKey })
-    : openai;
-  if (!client) throw new Error("OPENAI_API_KEY not configured");
-  const completion = await client.chat.completions.create(
-    {
-      model,
-      max_tokens: maxTokens,
-      temperature,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-    },
-    { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) }
-  );
+  if (!customApiKey && !HAS_OPENAI_KEY) throw new Error("OPENAI_API_KEY not configured");
+
+  const params = {
+    model,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userMessage },
+    ],
+  };
+  const reqOpts = { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) };
+
+  const completion = (customApiKey && agentId !== undefined)
+    ? await withAgentBreaker(
+        { id: agentId, llmApiKey: customApiKey, llmProvider: "openai" },
+        (client) => client.chat.completions.create(params, reqOpts),
+      )
+    : await withOpenAIBreaker(
+        (client) => client.chat.completions.create(params, reqOpts),
+      );
+
   return completion.choices[0]?.message?.content?.trim() || "";
 }
 
@@ -144,13 +169,19 @@ async function callLLM(
   requestedModel: string,
   systemPrompt: string,
   userMessage: string,
-  options?: { maxTokens?: number; temperature?: number; agentLlm?: { provider?: string | null; apiKey?: string | null } }
+  options?: {
+    maxTokens?: number;
+    temperature?: number;
+    agentLlm?: { provider?: string | null; apiKey?: string | null };
+    agentId?: number; // W7 Item 1d F2: threaded to callOpenAI for per-agent breaker keying
+  }
 ): Promise<string> {
   const maxTokens = options?.maxTokens ?? 400;
   const temperature = options?.temperature ?? 0.7;
   const model = resolveModel(requestedModel);
   const agentApiKey = options?.agentLlm?.apiKey || null;
   const agentProvider = options?.agentLlm?.provider || null;
+  const agentId = options?.agentId;
 
   // Determine which API key to use for each provider
   const openaiKey = (agentProvider === "openai" && agentApiKey) ? agentApiKey : null;
@@ -160,12 +191,12 @@ async function callLLM(
     try {
       return await callGemini(model, systemPrompt, userMessage, maxTokens, temperature, geminiKey);
     } catch (err: any) {
-      if (!openai && !openaiKey) {
+      if (!HAS_OPENAI_KEY && !openaiKey) {
         throw new Error(`All AI providers failed. Gemini: ${err.message}`);
       }
       console.warn(`[deliberation] Gemini failed, falling back to OpenAI:`, err.message);
       try {
-        return await callOpenAI(DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, openaiKey);
+        return await callOpenAI(DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, openaiKey, agentId);
       } catch (openaiErr: any) {
         throw new Error(`All AI providers failed. Gemini: ${err.message}, OpenAI: ${openaiErr.message}`);
       }
@@ -174,12 +205,22 @@ async function callLLM(
 
   // OpenAI models — try OpenAI first, fall back to Gemini
   try {
-    return await callOpenAI(model, systemPrompt, userMessage, maxTokens, temperature, openaiKey);
+    return await callOpenAI(model, systemPrompt, userMessage, maxTokens, temperature, openaiKey, agentId);
   } catch (err: any) {
     if (!GEMINI_API_KEY && !geminiKey) {
       throw new Error(`All AI providers failed. OpenAI: ${err.message}`);
     }
-    console.warn(`[deliberation] OpenAI failed, falling back to Gemini:`, err.message);
+    // W7 Item 1d: visibility log when the OpenAI breaker being OPEN triggers
+    // a Gemini fallback. Answers "how often does this dormant /deliberate-503
+    // path actually fire in practice" at monitor time without adding a metric.
+    if (err?.code === "CIRCUIT_OPEN" || err?.name === "CircuitOpenError") {
+      logger.warn(
+        { event: "llm_fallback_circuit_open", agentId, fromModel: model, toProvider: "gemini" },
+        "[deliberation] OpenAI breaker open — falling back to Gemini",
+      );
+    } else {
+      console.warn(`[deliberation] OpenAI failed, falling back to Gemini:`, err.message);
+    }
     try {
       return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature, geminiKey);
     } catch (geminiErr: any) {
@@ -187,6 +228,10 @@ async function callLLM(
     }
   }
 }
+
+// W7 Item 1d tests: access internals without plumbing real stacks. Production
+// code must not import these paths.
+export const __testOnly__ = { callLLM, callOpenAI };
 
 // ── Webhook Dispatcher ─────────────────────────────────────────────
 
@@ -428,7 +473,7 @@ export async function runDeliberation(
   topic: string,
   options?: { model?: string; debateRounds?: number; includeHuman?: boolean; humanName?: string; parentDecisionId?: string }
 ): Promise<DeliberationSession> {
-  if (!openai && !GEMINI_API_KEY) throw new Error("No AI provider configured (set OPENAI_API_KEY or GEMINI_API_KEY)");
+  if (!HAS_OPENAI_KEY && !GEMINI_API_KEY) throw new Error("No AI provider configured (set OPENAI_API_KEY or GEMINI_API_KEY)");
   if (activeSessions.has(roomId)) throw new Error("Deliberation already running in this room");
 
   activeSessions.add(roomId);
@@ -859,6 +904,8 @@ async function collectPositions(
             maxTokens: 400,
             temperature: phase === "debate" ? 0.8 : 0.6,
             agentLlm: (agent.llmApiKey) ? { provider: agent.llmProvider, apiKey: agent.llmApiKey } : undefined,
+            // W7 Item 1d F2: per-agent breaker keying for custom-key isolation.
+            agentId: agent.id,
           }
         ),
         { maxRetries: 2, backoffMs: [1000, 3000], classifier: classifyLLMError }
