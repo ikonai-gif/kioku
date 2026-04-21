@@ -26,7 +26,7 @@ import {
 } from "./cloud-integrations";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
-import { checkRegistrationLimit, checkAuthRateLimit } from "./ratelimit";
+import { checkRegistrationLimit, checkAuthRateLimit, checkDemoRateLimit } from "./ratelimit";
 import { getLimits, AI_QUOTAS, getUsageLimits } from "./limits";
 import { consolidateMemories } from "./memory-consolidation";
 import { pruneDecayedMemories } from "./memory-gc";
@@ -776,6 +776,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // alias for frontend
   app.post("/api/auth/magic-link", ...validateMagicLink, asyncHandler(async (req, res) => {
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
+    // W7 F4.1: layer IP bucket (5/min) BEFORE email bucket (15/hour). Both
+    // must pass: IP bucket prevents spray (one attacker, many emails),
+    // email bucket prevents enumeration (many attackers, one email).
+    const mlIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+    const mlIpLimit = await checkDemoRateLimit(mlIp, 5, 60_000, "magic:ip");
+    if (!mlIpLimit.allowed) {
+      res.setHeader("Retry-After", String(mlIpLimit.retryAfterSec));
+      return res.status(429).json({ error: "rate_limited", retry_after_s: mlIpLimit.retryAfterSec });
+    }
     if (email && !checkAuthRateLimit(`magic:${email}`, 15, 3600000)) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
     }
@@ -4571,8 +4580,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // ── Public Demo Chat ──────────────────────────────────────────
+  // W7 F4.1: IP rate limits migrated to Redis-backed sliding window
+  // (server/ratelimit.ts#checkDemoRateLimit). Session-based cap stays
+  // in-memory — session-scoped counter, single-process-safe.
   const demoSessionMessages = new Map<string, number>();
-  const demoIpHourly = new Map<string, { count: number; reset: number }>();
 
   const DEMO_SYSTEM_PROMPT = `You are Luca, the AI companion from KIOKU™ — a next-generation AI agent platform.
 You are friendly, warm, and intelligent. You help visitors learn about KIOKU™.
@@ -4609,17 +4620,21 @@ Do NOT:
       return res.status(400).json({ error: "Invalid sessionId" });
     }
 
-    // Per-IP hourly rate limit (50/hr)
+    // W7 F4.1: layered IP rate limits via Redis-backed sliding window.
+    //   - 10 req/min/IP — catches bursts from the same IP
+    //   - 50 req/hour/IP — preserves the pre-PR hourly cap
+    // Both must pass; whichever fires first wins. Response shape matches
+    // the rest of the rate-limit surface: {error: "rate_limited", retry_after_s}.
     const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
-    const now = Date.now();
-    const ipEntry = demoIpHourly.get(ip);
-    if (ipEntry && now < ipEntry.reset) {
-      if (ipEntry.count >= 50) {
-        return res.status(429).json({ error: "Too many requests. Try again later." });
-      }
-      ipEntry.count++;
-    } else {
-      demoIpHourly.set(ip, { count: 1, reset: now + 3600000 });
+    const minLimit = await checkDemoRateLimit(ip, 10, 60_000, "demo:min");
+    if (!minLimit.allowed) {
+      res.setHeader("Retry-After", String(minLimit.retryAfterSec));
+      return res.status(429).json({ error: "rate_limited", retry_after_s: minLimit.retryAfterSec });
+    }
+    const hourLimit = await checkDemoRateLimit(ip, 50, 3_600_000, "demo:hour");
+    if (!hourLimit.allowed) {
+      res.setHeader("Retry-After", String(hourLimit.retryAfterSec));
+      return res.status(429).json({ error: "rate_limited", retry_after_s: hourLimit.retryAfterSec });
     }
 
     // Per-session limit (10 messages)
@@ -4653,15 +4668,10 @@ Do NOT:
     }
   }));
 
-  // Clean up stale demo session entries every 30 minutes
+  // W7 F4.1: demoIpHourly map removed — IP buckets now live in Redis
+  // (Redis TTL cleans them) or in ratelimit.ts's in-memory sweeper. Only
+  // session counters remain in-process, cleaned every 30 minutes.
   setInterval(() => {
-    const cutoff = Date.now();
-    const keys = Array.from(demoIpHourly.keys());
-    for (let i = 0; i < keys.length; i++) {
-      const entry = demoIpHourly.get(keys[i]);
-      if (entry && cutoff >= entry.reset) demoIpHourly.delete(keys[i]);
-    }
-    // Also clean up demo session message counters
     demoSessionMessages.clear();
   }, 1800000);
 
