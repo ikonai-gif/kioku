@@ -9,6 +9,7 @@
  */
 
 import { pool } from "./storage";
+import { getOpenAIBreakerState } from "./lib/openai-client";
 
 function log(msg: string, source = "monitor") {
   const t = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
@@ -160,6 +161,7 @@ export function getMonitorSummary() {
     rssMB:           Math.round(mem.rss       / 1024 / 1024),
     uptimeSeconds:   Math.floor(process.uptime()),
     staleMigrations: state.staleMigrations,  // Item 2: expose in /health/monitor output
+    openaiBreaker:   getOpenAIBreakerState(), // W5 Item 1 / R3 Q8: ops visibility
   };
 }
 
