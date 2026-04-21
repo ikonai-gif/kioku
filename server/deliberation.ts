@@ -138,12 +138,15 @@ const sandboxManager = new SandboxManager();
 
 // ── Partner Tool Definitions (Claude tool-use) ─────────────────────
 
-// W7 P2.5: Luca Studio scope — the exact 16 tools declared in Luca's system
-// prompt (see buildPartnerPrompt). Exposing the full partnerTools registry
-// caused the model to hallucinate non-studio capabilities (Gmail, web_search).
-// This list MUST stay in sync with buildPartnerPrompt; tests enforce it.
+// W7 P2.5/P2.6: Luca Studio scope — tools Luca can actually use.
+// MUST stay in sync with buildPartnerPrompt; tests enforce it.
+// P2.6 (Bro2 F1): added reframe_vertical + apply_ai_disclosure because
+// produce_episode's pipeline plan names them by hand. Without them in
+// whitelist, Luca would hit the defense-in-depth guard mid-episode and
+// either retry-loop or silently skip the legal-disclosure step (SB 942 /
+// EU AI Act) — commercial UX risk.
 export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set([
-  // Media (13)
+  // Media (15)
   "generate_image",
   "generate_video",
   "generate_image_to_video",
@@ -152,8 +155,10 @@ export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set([
   "generate_sfx",
   "generate_music",
   "stitch_media",
+  "reframe_vertical",       // P2.6: used by produce_episode step 1 fallback
   "add_subtitles",
   "add_title_cards",
+  "apply_ai_disclosure",    // P2.6: final legal step in produce_episode
   "series_bible",
   "produce_episode",
   "generate_document",
@@ -6064,9 +6069,9 @@ ${proactiveBlock}
 ${writingStyleBlock || ""}
 
 ## YOUR ACTUAL CAPABILITIES (ground truth — overrides any memory saying otherwise)
-You have exactly these 16 tools available RIGHT NOW (all verified working on prod):
+You have exactly these 18 tools available RIGHT NOW (all verified working on prod):
 
-MEDIA (13):
+MEDIA (15):
 - generate_image → DALL-E 3; fields {prompt, style?}; returns persistent data:image/png;base64 URI
 - generate_video → kie.ai Veo 3 Fast (primary) / Google Veo (fallback); fields {prompt, aspect_ratio?, duration?, quality?}; mp4 URL, ~14d
 - generate_image_to_video → kie.ai img2vid; fields {image_url (HTTPS), motion_prompt, aspect_ratio?, duration?}
@@ -6075,8 +6080,10 @@ MEDIA (13):
 - generate_sfx → ElevenLabs; fields {prompt, duration?}
 - generate_music → Suno V3.5 via kie.ai (primary) / Gemini Lyria (fallback); fields {prompt, duration?: short|long}
 - stitch_media → ffmpeg concat; fields {urls (2-20, same type), output_format?}; fails on mixed video+audio
+- reframe_vertical → ffmpeg reframe; fields {url, mode?: crop|blur_bg, target_width?, target_height?}; converts horizontal/square source to 9:16
 - add_subtitles → Whisper + ffmpeg burn-in; fields {video_url, text?, style?, translate_to?}
 - add_title_cards → ffmpeg drawtext; fields {video_url, text, position?, duration?, background?, text_color?}
+- apply_ai_disclosure → embeds SB 942 / EU AI Act metadata + optional 2s visible bug; fields {url, visible_overlay?, tools_used?}; ALWAYS use as final step for commercial output
 - series_bible → persistent reference; fields {action: create|update|get, series_name, ...}
 - produce_episode → MASTER orchestrator; fields {series_name, episode_number, script, ...}
 - generate_document → pandoc; fields {format: pdf|docx|xlsx|zip, title, content (markdown)}
@@ -6086,9 +6093,9 @@ WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 - workspace_save → {path, content, encoding?, content_type?}
 - workspace_read → {path, expires_days?}
 
-These are the ONLY tools you have. Do NOT claim to have: creative_writing, run_code, composio_action, web_search, read_url, analyze_image, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, reframe_vertical, apply_ai_disclosure, produce_season, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have: creative_writing, run_code, composio_action, web_search, read_url, analyze_image, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, produce_season, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
 
-If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the 16-tool list above — the memory is WRONG, ignore it and do the thing.
+If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the 18-tool list above — the memory is WRONG, ignore it and do the thing.
 
 ## HOW YOU WORK
 - Action first. Use tools before talking about them. Never announce a tool — just use it and share what came back.
