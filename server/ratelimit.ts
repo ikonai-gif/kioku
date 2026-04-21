@@ -306,6 +306,44 @@ setInterval(() => {
   }
 }, 300_000);
 
+// ── W7 F4.1 beta-open layered rate limits ────────────────────────────────────
+// Thin wrapper around the existing sliding-window machinery. Each call keys
+// {prefix:key}:{windowId} and is enforced with the same Redis-primary /
+// in-memory-fallback strategy as the main middleware — so multi-instance
+// Railway deploys get correct behaviour for free.
+//
+// Returns `{allowed, count, retryAfterSec}`. Retry-After is only meaningful
+// when `allowed=false`; otherwise 0.
+export async function checkDemoRateLimit(
+  ipOrKey: string,
+  limit: number,
+  windowMs: number,
+  prefix = "demo",
+): Promise<{ allowed: boolean; count: number; retryAfterSec: number }> {
+  const key = `${prefix}:${ipOrKey}`;
+
+  if (redis) {
+    try {
+      const r = await incrementWindowRedis(key, windowMs);
+      if (r.count > limit) {
+        const retryAfterSec = Math.max(1, r.resetAt - Math.floor(Date.now() / 1000));
+        return { allowed: false, count: r.count, retryAfterSec };
+      }
+      return { allowed: true, count: r.count, retryAfterSec: 0 };
+    } catch {
+      // fall through to in-memory
+    }
+  }
+
+  const res = incrementWindow(minuteWindows, key, windowMs);
+  if (res.count > limit) {
+    const entry = minuteWindows.get(key)!;
+    const retryAfterSec = Math.max(1, Math.ceil((entry.windowStart + windowMs - Date.now()) / 1000));
+    return { allowed: false, count: res.count, retryAfterSec };
+  }
+  return { allowed: true, count: res.count, retryAfterSec: 0 };
+}
+
 // SECURITY: export Redis status for admin health check — avoids unhandled import error in boss-board
 export async function getRedisStatus(): Promise<string> {
   if (!redis) return "not configured";

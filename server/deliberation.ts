@@ -5634,11 +5634,15 @@ export async function triggerAgentResponses(
             degraded: true,
             retryAfterMs: 30_000,
           } as any);
+          // W7 F4.5 PII audit: agentName is user-chosen free text — slice to
+          // 40 chars in the log so runaway nicknames / emails / PII can't
+          // land in full in our log store. agentId is the stable identifier
+          // for investigation.
           logger.warn({
             component: "deliberation",
             event: "degraded_agent_notice_broadcast",
             agentId: agent.id,
-            agentName: displayName,
+            agentName: typeof displayName === "string" ? displayName.slice(0, 40) : undefined,
             roomId,
           }, "[deliberation] sent degradation notice to room");
         }
