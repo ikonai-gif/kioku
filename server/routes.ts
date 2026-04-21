@@ -14,6 +14,7 @@ import { registerBilling } from "./billing";
 import { registerPrivacyRoutes } from "./privacy";
 import { registerMeetingRoutes } from "./routes/meetings";
 import { requireFlag } from "./feature-flags";
+import { PRIVATE_MODE, isEmailAllowed, getPrivateModeStatus } from "./lib/private-mode";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
   exchangeGoogleCode, exchangeDropboxCode,
@@ -776,6 +777,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (email && !checkAuthRateLimit(`magic:${email}`, 15, 3600000)) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
     }
+    // Private mode gate: silently 200 for non-allowlisted emails to avoid enumeration.
+    if (!isEmailAllowed(email)) {
+      logger.info({ source: "private-mode", event: "magic_link_denied", email }, "denied: not in allowlist");
+      return res.json({ ok: true, message: "If this email is allowed, a magic link has been sent." });
+    }
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
     const token = await storage.createMagicToken(email);
@@ -806,6 +812,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { email, name, company } = validateBody(magicLinkSchema, req.body);
     if (email && !checkAuthRateLimit(`magic:${email}`, 15, 3600000)) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
+    }
+    // Private mode gate (same as /api/auth/magic-link).
+    if (!isEmailAllowed(email)) {
+      logger.info({ source: "private-mode", event: "request_magic_link_denied", email }, "denied: not in allowlist");
+      return res.json({ ok: true, message: "If this email is allowed, a magic link has been sent." });
     }
     let user = await storage.getUserByEmail(email);
     if (!user) user = await storage.createUser({ email, name: name || email.split("@")[0], company });
@@ -855,6 +866,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   app.post("/api/auth/demo", asyncHandler(async (req, res) => {
+    // Private mode: demo user creation disabled.
+    if (PRIVATE_MODE) return res.status(404).json({ error: "not_found" });
     let user = await storage.getUserByEmail("demo@kioku.ai");
     if (!user) user = await storage.createUser({ email: "demo@kioku.ai", name: "Demo User", plan: "dev" });
     const sessionToken = createSessionToken(user.id);
@@ -4575,6 +4588,8 @@ Do NOT:
 - Say anything negative about competitors`;
 
   app.post("/api/demo/chat", asyncHandler(async (req, res) => {
+    // Private mode: demo chat disabled.
+    if (PRIVATE_MODE) return res.status(404).json({ error: "not_found" });
     const { message, sessionId } = req.body || {};
     if (!message || typeof message !== "string" || !sessionId || typeof sessionId !== "string") {
       return res.status(400).json({ error: "message and sessionId are required" });

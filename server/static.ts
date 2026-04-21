@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
+import { PRIVATE_MODE } from "./lib/private-mode";
 
 export function serveStatic(app: Express) {
   // In CJS bundle __dirname = dist/, so public = dist/public
@@ -17,6 +18,13 @@ export function serveStatic(app: Express) {
 
   // Root → landing page (MUST be before express.static so index.html doesn't win)
   app.get("/", (_req: Request, res: Response) => {
+    // Private mode: serve invite-only gate page instead of public marketing landing.
+    if (PRIVATE_MODE) {
+      const privateGate = path.resolve(distPath, "private-beta.html");
+      if (fs.existsSync(privateGate)) {
+        return res.sendFile(privateGate);
+      }
+    }
     res.sendFile(path.resolve(distPath, "landing.html"));
   });
 
