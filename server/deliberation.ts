@@ -6070,9 +6070,9 @@ async function checkMemoryConsent(userId: number, namespace: string): Promise<bo
 async function extractPassivePreferences(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
   if (!(await checkMemoryConsent(userId, '_preferences'))) return;
   try {
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6089,7 +6089,14 @@ Return ONLY valid JSON. No explanation.`,
       ],
       max_tokens: 500,
       temperature: 0.3,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "passive_degraded", fn: "extractPassivePreferences", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+        return;
+      }
+      throw err;
+    }
     const text = response.choices[0]?.message?.content?.trim() || "[]";
     let prefs: any[];
     try {
@@ -6122,9 +6129,9 @@ Return ONLY valid JSON. No explanation.`,
 async function trackConversationInsight(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
   if (!(await checkMemoryConsent(userId, '_conversation_insights'))) return;
   try {
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6145,7 +6152,14 @@ Return ONLY valid JSON.`,
       ],
       max_tokens: 300,
       temperature: 0.3,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "insight_degraded", fn: "trackConversationInsight", agentId, userId }, "[deliberation] skip background task: upstream breaker open");
+        return;
+      }
+      throw err;
+    }
     const text = response.choices[0]?.message?.content?.trim() || "{}";
     let parsed: any;
     try {
@@ -6199,9 +6213,9 @@ async function summarizeConversation(userId: number, agentId: number, roomId: nu
       `${m.agentName || 'User'}: ${m.content}`
     ).join('\n');
 
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6224,7 +6238,14 @@ Write 3-5 sentences. No bullet points. No JSON.`,
       ],
       max_tokens: 400,
       temperature: 0.3,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "summary_degraded", fn: "summarizeConversation", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+        return;
+      }
+      throw err;
+    }
 
     const summary = response.choices[0]?.message?.content?.trim();
     if (!summary) return;
@@ -6295,9 +6316,9 @@ export async function generateProactiveMessage(
       episodeMems.length > 0 ? `Recent conversations:\n${episodeMems.join('\n')}` : '',
     ].filter(Boolean).join('\n\n');
 
-    const OAI = (await import("openai")).default;
-    const oaiClient = new OAI();
-    const response = await oaiClient.chat.completions.create({
+    let response;
+    try {
+      response = await withOpenAIBreaker((oaiClient) => oaiClient.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
         {
@@ -6321,7 +6342,14 @@ ${memoryContext}`,
       ],
       max_tokens: 200,
       temperature: 0.8,
-    });
+      }));
+    } catch (err: any) {
+      if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
+        logger.debug({ component: "deliberation", event: "proactive_degraded", fn: "generateProactiveMessage", agentId, userId, roomId }, "[deliberation] skip background task: upstream breaker open");
+        return null;
+      }
+      throw err;
+    }
 
     const text = response.choices[0]?.message?.content?.trim();
     if (!text || text === 'NO_MESSAGE' || text.includes('NO_MESSAGE')) return null;
