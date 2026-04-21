@@ -241,6 +241,10 @@ async function runInitLoop(): Promise<void> {
 
   if (await tryInit()) return;
 
+  // JITTER NOTE: jitter applied once per instance to desync co-starting
+  // Railway replicas — NOT re-applied per retry. setInterval evaluates delay
+  // once at registration. For per-retry re-jitter, switch to recursive
+  // setTimeout pattern. One-time is sufficient for the desync goal.
   const loop = setInterval(async () => {
     if (isDbReady()) { clearInterval(loop); return; }
     const ok = await tryInit();
