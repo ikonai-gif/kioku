@@ -1251,7 +1251,7 @@ export async function executePartnerTool(
         } catch (err: any) {
           if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "analyze_image" }, "[deliberation] breaker open");
-            return "Knowledge query temporarily unavailable — answer from memory if possible.";
+            return "Image analysis temporarily unavailable.";
           }
           throw err;
         }
@@ -1287,7 +1287,7 @@ export async function executePartnerTool(
         } catch (err: any) {
           if (err instanceof CircuitOpenError || err?.name === "CircuitOpenError" || err?.code === "CIRCUIT_OPEN") {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "creative_writing" }, "[deliberation] breaker open");
-            return "Knowledge query temporarily unavailable — answer from memory if possible.";
+            return "Writing assistance temporarily unavailable.";
           }
           throw err;
         }
