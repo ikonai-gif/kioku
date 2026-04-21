@@ -60,6 +60,51 @@ describe("classifyLLMError", () => {
   it("defaults unknown errors to retryable", () => {
     expect(classifyLLMError({ message: "something weird happened" }).category).toBe("RETRYABLE");
   });
+
+  // W7 Item 1d F1
+  it("classifies CircuitOpenError as permanent via code", () => {
+    const err: any = new Error("openai circuit OPEN");
+    err.code = "CIRCUIT_OPEN";
+    const classified = classifyLLMError(err);
+    expect(classified.category).toBe("PERMANENT");
+    expect(classified.statusCode).toBe(503);
+  });
+
+  it("classifies CircuitOpenError as permanent via name", () => {
+    const err: any = new Error("circuit tripped");
+    err.name = "CircuitOpenError";
+    const classified = classifyLLMError(err);
+    expect(classified.category).toBe("PERMANENT");
+    expect(classified.statusCode).toBe(503);
+  });
+});
+
+// W7 Item 1d F1 — withRetry must stop after 1 attempt on CircuitOpenError
+describe("withRetry on CircuitOpenError (W7 1d F1)", () => {
+  it("performs exactly 1 attempt, zero backoff sleeps", async () => {
+    const err: any = new Error("circuit OPEN");
+    err.code = "CIRCUIT_OPEN";
+    err.name = "CircuitOpenError";
+    const fn = vi.fn().mockRejectedValue(err);
+
+    // Spy a sleep signal: if backoffMs fires, real time would elapse.
+    const start = Date.now();
+    const result = await withRetry(fn, {
+      maxRetries: 2,
+      backoffMs: [1000, 3000],
+      classifier: classifyLLMError,
+    });
+    const elapsed = Date.now() - start;
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.attempts).toBe(1);
+    expect(result.error?.category).toBe("PERMANENT");
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].willRetry).toBe(false);
+    // No backoff sleep should have fired — allow generous CI budget.
+    expect(elapsed).toBeLessThan(500);
+  });
 });
 
 describe("classifyWebhookError", () => {
