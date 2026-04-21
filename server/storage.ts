@@ -46,6 +46,28 @@ pool.on('error', (err) => {
 
 export const db = drizzle(pool);
 
+// ── DB readiness flag (Item 3) ──────────────────────────────────────────────────
+// Set to true by runInitLoop() in index.ts after initDb() + initDemoUser() succeed.
+// Read by the readiness gate middleware to gate /api, /mcp, /v1 paths.
+let _dbReady = false;
+
+/** Returns true once initDb() has completed successfully at least once. */
+export function isDbReady(): boolean { return _dbReady; }
+
+/** Called by runInitLoop() once DB init succeeds. */
+export function markDbReady(): void { _dbReady = true; }
+
+/**
+ * Q8.4: Test-only hook to control DB readiness in integration tests.
+ * Throws if called outside of NODE_ENV=test to prevent accidental prod use.
+ */
+export function __setDbReadyForTest(v: boolean): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("__setDbReadyForTest is test-only");
+  }
+  _dbReady = v;
+}
+
 // ── Migration guard ─────────────────────────────────────────────────────────
 /**
  * Atomically claims and runs a named migration.

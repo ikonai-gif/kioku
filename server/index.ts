@@ -14,7 +14,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import crypto from "crypto";
-import { initDb, initDemoUser, storage } from "./storage";
+import { initDb, initDemoUser, storage, isDbReady, markDbReady } from "./storage";
 import { rateLimitMiddleware } from "./ratelimit";
 import { applySecurityMiddleware } from "./security";
 import { registerHealthRoutes } from "./health";
@@ -168,51 +168,93 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── R2: Register health routes SYNCHRONOUSLY before any async work ────────────
+// Must respond before initDb starts — if initDb hangs (slow DNS, 30s pg pool
+// timeout), /health would return 404 → Railway kills the instance → restart loop.
+registerHealthRoutes(app);
+
+// Alias: /api/health → /health (monitoring tools expect /api prefix)
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.redirect(307, "/health");
+});
+
+// Monitor status endpoint — master key protected (sync registration)
+app.get("/health/monitor", (req: Request, res: Response) => {
+  const masterKey = process.env.KIOKU_MASTER_KEY;
+  if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  res.json(getMonitorSummary());
+});
+
+// Admin request logs endpoint — master key protected (sync registration)
+app.get("/api/admin/logs", async (req: Request, res: Response) => {
+  const masterKey = process.env.KIOKU_MASTER_KEY;
+  if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const offset = parseInt(req.query.offset as string) || 0;
+  const startDate = req.query.start ? parseInt(req.query.start as string) : undefined;
+  const endDate = req.query.end ? parseInt(req.query.end as string) : undefined;
+  const apiKeyId = req.query.key as string | undefined;
+  const statusCode = req.query.status ? parseInt(req.query.status as string) : undefined;
+  const result = await storage.getRequestLogs({ limit, offset, startDate, endDate, apiKeyId, statusCode });
+  res.json(result);
+});
+
+// Item 3: readiness gate middleware — AFTER /health/*, BEFORE /api
+// R5: whitelist regex covers /health/*, /ready, /metrics
+// Q2: gate /api, /mcp, /v1 symmetrically
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (/^\/(health|ready|metrics)/.test(req.path)) return next();
+  // Only gate API paths — let static assets, Vite dev, etc. through
+  if (!/^\/(api|mcp|v1)/.test(req.path)) return next();
+  if (isDbReady()) return next();
+  res.setHeader("Retry-After", "2");
+  return res.status(503).json({ error: "server initializing", retry_after_s: 2 });
+});
+
+/**
+ * R2: Fire-and-forget DB init loop. Runs initDb + initDemoUser with fixed
+ * 10s + ±2s jitter retries until success, then marks DB ready.
+ * Uses setInterval().unref() so SIGTERM can still drain cleanly.
+ */
+async function runInitLoop(): Promise<void> {
+  const TRY_INTERVAL_MS = 10_000;
+  const JITTER_MS = 2_000; // Q3: ±2s jitter
+  let attempt = 0;
+
+  const tryInit = async (): Promise<boolean> => {
+    attempt++;
+    try {
+      await initDb();
+      await initDemoUser();
+      markDbReady();
+      logger.info({ source: "db", attempt }, "initialized");
+      return true;
+    } catch (err) {
+      logger.error({ source: "db", attempt, err }, "initDb failed — will retry");
+      return false;
+    }
+  };
+
+  if (await tryInit()) return;
+
+  const loop = setInterval(async () => {
+    if (isDbReady()) { clearInterval(loop); return; }
+    const ok = await tryInit();
+    if (ok) clearInterval(loop);
+  }, TRY_INTERVAL_MS + (Math.random() - 0.5) * 2 * JITTER_MS);
+  loop.unref(); // don't block SIGTERM
+}
+
+// Fire-and-forget: init loop runs independently of main route setup
+void runInitLoop();
+
 (async () => {
   // Log feature flag state at startup
   logFlags(logger);
-
-  // Init DB — non-fatal: server starts even if DB is unreachable
-  try {
-    await initDb();
-    await initDemoUser();
-    logger.info({ source: "db" }, "initialized");
-  } catch (err) {
-    logger.error({ source: "db", err }, "init failed (will retry on first request)");
-  }
-
-  // Health routes (registered before main routes so /health is never rate-limited)
-  registerHealthRoutes(app);
-
-  // Alias: /api/health → same as /health (monitoring tools expect /api prefix)
-  app.get("/api/health", (_req: Request, res: Response) => {
-    res.redirect(307, "/health");
-  });
-
-  // Monitor status endpoint — master key protected
-  app.get("/health/monitor", (req: Request, res: Response) => {
-    const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
-      return res.status(403).json({ error: "Admin access required" });
-    }
-    res.json(getMonitorSummary());
-  });
-
-  // Admin request logs endpoint — master key protected
-  app.get("/api/admin/logs", async (req: Request, res: Response) => {
-    const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (!masterKey || !safeCompare(req.headers["x-master-key"] as string || '', masterKey)) {
-      return res.status(403).json({ error: "Admin access required" });
-    }
-    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
-    const offset = parseInt(req.query.offset as string) || 0;
-    const startDate = req.query.start ? parseInt(req.query.start as string) : undefined;
-    const endDate = req.query.end ? parseInt(req.query.end as string) : undefined;
-    const apiKeyId = req.query.key as string | undefined;
-    const statusCode = req.query.status ? parseInt(req.query.status as string) : undefined;
-    const result = await storage.getRequestLogs({ limit, offset, startDate, endDate, apiKeyId, statusCode });
-    res.json(result);
-  });
 
   await registerRoutes(httpServer, app);
 
