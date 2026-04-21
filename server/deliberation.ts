@@ -4992,13 +4992,34 @@ function getOpenAIClient(agent: { llmApiKey?: string | null; llmProvider?: strin
   return openai;
 }
 
-/** Get Gemini API key for a given agent — uses per-agent key if set, else shared */
+/**
+ * Get Gemini API key for a given agent.
+ *
+ * Resolution order (W7 P2.3 canonical):
+ *   1. Per-agent `llmApiKey` IFF `llmProvider === "gemini"`
+ *   2. Shared `GEMINI_API_KEY` env var
+ *
+ * Returns null when neither is available — caller must handle.
+ */
 function getGeminiKey(agent: { llmApiKey?: string | null; llmProvider?: string | null }): string | null {
   if (agent.llmApiKey && agent.llmProvider === "gemini") return agent.llmApiKey;
   return GEMINI_API_KEY;
 }
 
-/** Get Anthropic client for a given agent — uses per-agent key if set, else shared */
+/**
+ * Get Anthropic client for a given agent.
+ *
+ * Resolution order (W7 P2.3 canonical):
+ *   1. Per-agent `llmApiKey` IFF `llmProvider === "anthropic"`
+ *   2. Shared `ANTHROPIC_API_KEY` env var
+ *
+ * Returns null when neither is available — caller falls back to OpenAI path.
+ * Note: a Claude-named `llmModel` (e.g. "claude-sonnet-4-6") still uses the
+ * shared env key when the agent's `llmProvider` is some other value (e.g. left
+ * as "openai" from a half-migrated legacy row). This is intentional — the
+ * `llmModel` field is the model-selection source of truth, `llmProvider` only
+ * gates the per-agent key override.
+ */
 function getAnthropicClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): Anthropic | null {
   if (agent.llmApiKey && agent.llmProvider === "anthropic") return new Anthropic({ apiKey: agent.llmApiKey });
   if (ANTHROPIC_API_KEY) return new Anthropic({ apiKey: ANTHROPIC_API_KEY });
@@ -5298,9 +5319,12 @@ export async function triggerAgentResponses(
       }
 
       try {
-        // Determine model & provider: prefer per-agent llmModel, then agent.model, then default
+        // W7 P2.3 — canonical model source is `llmModel` (the `model` column
+        // is sunset; see migration 0002_unify_agent_model_fields.sql). Legacy
+        // rows where `model` was set but `llmModel` was null are fixed in
+        // that migration's UP step (COPY model → llm_model WHERE llm_model IS NULL).
         const defaultModel = "gpt-4.1-mini";
-        const chatModel = (agent as any).llmModel || (agent as any).model || defaultModel;
+        const chatModel = (agent as any).llmModel || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
 
@@ -5758,7 +5782,7 @@ export async function triggerAgentResponses(
           agentName: agent.name,
           agentColor: agent.color,
           operation: "deliberation-error",
-          detail: `Model: ${(agent as any).llmModel || (agent as any).model || (isPartnerChat ? 'gpt-5-mini' : 'gpt-4.1-mini')} Error: ${err?.message || String(err)}`.slice(0, 500),
+          detail: `Model: ${(agent as any).llmModel || (isPartnerChat ? 'gpt-5-mini' : 'gpt-4.1-mini')} Error: ${err?.message || String(err)}`.slice(0, 500),
           latencyMs: null,
         }).catch(() => {});
         // Send fallback error message so user isn't left hanging
