@@ -475,11 +475,34 @@ export function registerMeetingRoutes(
             [id, agent_id, userId, participation_mode],
           );
           await client.query("COMMIT");
+          logger.info(
+            {
+              component: "meetings",
+              userId,
+              meetingId: id,
+              action: "add_participant",
+              agentId: agent_id,
+              result: "ok",
+            },
+            "[meetings] participant added",
+          );
           return res.status(201).json(inserted[0]);
         } catch (err: any) {
           await client.query("ROLLBACK");
           if (err?.code === "23505") {
             // uniq_mp_active violation — active participant already exists.
+            logger.warn(
+              {
+                component: "meetings",
+                userId,
+                meetingId: id,
+                action: "add_participant",
+                agentId: agent_id,
+                result: "error",
+                errorCode: "participant_exists",
+              },
+              "[meetings] participant already active",
+            );
             return res.status(409).json({ error: "participant_exists" });
           }
           throw err;
@@ -582,6 +605,17 @@ export function registerMeetingRoutes(
           ],
         );
         await client.query("COMMIT");
+        logger.info(
+          {
+            component: "meetings",
+            userId,
+            meetingId: id,
+            action: "append_context",
+            sequenceNumber: nextSeq,
+            result: "ok",
+          },
+          "[meetings] context appended",
+        );
         return res.status(201).json(inserted[0]);
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
