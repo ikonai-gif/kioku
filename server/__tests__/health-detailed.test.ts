@@ -177,6 +177,22 @@ describe("GET /health/detailed", () => {
     expect(["degraded", "down"]).toContain(res.body.status);
   });
 
+  // 4d: when no RAILWAY_MEMORY_LIMIT_MB is set, memory check reports ok with
+  // limit_unknown=true so local/self-hosted deployments aren't flagged degraded
+  // via a V8-heap heuristic that misrepresents healthy processes.
+  it("memory reports ok + limit_unknown when no limit env var set", async () => {
+    delete process.env.RAILWAY_MEMORY_LIMIT_MB;
+
+    const app = makeApp();
+    const res = await request(app).get("/health/detailed");
+
+    expect(res.status).toBe(200);
+    expect(res.body.checks.memory.status).toBe("ok");
+    expect(res.body.checks.memory.limit_unknown).toBe(true);
+    expect(res.body.checks.memory.limit_mb).toBeNull();
+    expect(res.body.checks.memory).not.toHaveProperty("usage_pct");
+  });
+
   it("status=down when database check fails", async () => {
     poolMock.connect.mockRejectedValue(new Error("connection refused"));
     poolMock.query.mockRejectedValue(new Error("connection refused"));

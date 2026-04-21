@@ -419,4 +419,109 @@ describe("CircuitBreaker — 14 cases", () => {
     // Circuit should still be CLOSED (only 2 consecutive, threshold is 5)
     expect(cb.getState()).toBe("CLOSED");
   });
+
+  // Case 15 (F1/SF1 — new): HALF_OPEN→CLOSED preserves cumulative totals.
+  it("15 (F1/SF1): cumulative totalCalls/totalFailures preserved across HALF_OPEN→CLOSED", async () => {
+    vi.useFakeTimers();
+    try {
+      const cb = new CircuitBreaker({
+        name: "test-15-counter-preservation",
+        failureThreshold: 2,
+        cooldownMs: 500,
+      });
+
+      // 2 failures → OPEN. totalCalls=2, totalFailures=2.
+      await expect(cb.exec(fail("f1"))).rejects.toThrow();
+      await expect(cb.exec(fail("f2"))).rejects.toThrow();
+      expect(cb.getState()).toBe("OPEN");
+      expect(cb.getStats().totalCalls).toBe(2);
+      expect(cb.getStats().totalFailures).toBe(2);
+      const lastFailureAt = cb.getStats().lastFailureAt;
+      expect(lastFailureAt).not.toBeNull();
+
+      vi.advanceTimersByTime(600);
+
+      // Probe success → HALF_OPEN→CLOSED. totalCalls=3, totalFailures=2 preserved.
+      await cb.exec(succeed("ok"));
+      expect(cb.getState()).toBe("CLOSED");
+
+      const stats = cb.getStats();
+      expect(stats.totalCalls).toBe(3);
+      expect(stats.totalFailures).toBe(2);
+      expect(stats.lastFailureAt).toBe(lastFailureAt); // preserved
+      // Transient counters cleared
+      expect(stats.consecutiveFailures).toBe(0);
+      expect(stats.consecutiveSuccesses).toBe(0);
+      expect(stats.openedAt).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Case 16 (F1 — new): stale consecutiveSuccesses cannot falsely close a
+  // re-opened circuit. With successThreshold=2, if a probe succeeds once
+  // then the next probe fails, the circuit must re-open and the prior
+  // success must NOT carry over into the next HALF_OPEN window.
+  it("16 (F1): HALF_OPEN→OPEN zeros consecutiveSuccesses so stale probe wins don't re-close", async () => {
+    vi.useFakeTimers();
+    try {
+      const cb = new CircuitBreaker({
+        name: "test-16-f1",
+        failureThreshold: 1,
+        cooldownMs: 500,
+        successThreshold: 2,
+      });
+
+      // 1 failure → OPEN
+      await expect(cb.exec(fail("initial"))).rejects.toThrow();
+      expect(cb.getState()).toBe("OPEN");
+
+      // Cooldown elapses → HALF_OPEN probe 1 succeeds (but threshold=2, stays HALF_OPEN).
+      vi.advanceTimersByTime(600);
+      await cb.exec(succeed("probe1"));
+      expect(cb.getState()).toBe("HALF_OPEN");
+      expect(cb.getStats().consecutiveSuccesses).toBe(1);
+
+      // Probe 2 fails → HALF_OPEN→OPEN. consecutiveSuccesses must reset.
+      await expect(cb.exec(fail("probe2"))).rejects.toThrow();
+      expect(cb.getState()).toBe("OPEN");
+      expect(cb.getStats().consecutiveSuccesses).toBe(0);
+
+      // Cooldown elapses → HALF_OPEN probe 3 succeeds (threshold still 2;
+      // we need TWO fresh successes, not one stale + one fresh).
+      vi.advanceTimersByTime(600);
+      await cb.exec(succeed("probe3"));
+      expect(cb.getState()).toBe("HALF_OPEN");
+      expect(cb.getStats().consecutiveSuccesses).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Case 17 (new): reset() still zeroes everything — explicit manual recovery.
+  it("17: reset() still zeroes totalCalls/totalFailures (manual recovery)", async () => {
+    const cb = new CircuitBreaker({
+      name: "test-17-reset-all",
+      failureThreshold: 3,
+      cooldownMs: 5000,
+    });
+
+    await expect(cb.exec(fail())).rejects.toThrow();
+    await expect(cb.exec(fail())).rejects.toThrow();
+    await cb.exec(succeed("ok"));
+    expect(cb.getStats().totalCalls).toBe(3);
+    expect(cb.getStats().totalFailures).toBe(2);
+    expect(cb.getStats().lastFailureAt).not.toBeNull();
+
+    cb.reset();
+
+    const stats = cb.getStats();
+    expect(stats.state).toBe("CLOSED");
+    expect(stats.totalCalls).toBe(0);
+    expect(stats.totalFailures).toBe(0);
+    expect(stats.lastFailureAt).toBeNull();
+    expect(stats.openedAt).toBeNull();
+    expect(stats.consecutiveFailures).toBe(0);
+    expect(stats.consecutiveSuccesses).toBe(0);
+  });
 });

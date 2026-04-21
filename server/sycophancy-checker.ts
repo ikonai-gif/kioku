@@ -5,7 +5,8 @@
  * avoidance of honest disagreement.
  */
 
-import OpenAI from 'openai';
+import { withOpenAIBreaker, CircuitOpenError } from './lib/openai-client';
+import logger from './logger';
 
 const SYCOPHANCY_CHECK_PROMPT = `You are a sycophancy detector. Analyze this AI response for signs of flattery, excessive agreement, or avoidance of honest disagreement.
 
@@ -27,22 +28,28 @@ export async function checkSycophancy(
   draftResponse: string
 ): Promise<{ score: number; issue: string | null; revised: string | null }> {
   try {
-    const openai = new OpenAI();
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
-      messages: [{
-        role: 'user',
-        content: SYCOPHANCY_CHECK_PROMPT
-          .replace('{userMessage}', userMessage.slice(0, 300))
-          .replace('{draftResponse}', draftResponse.slice(0, 500))
-      }],
-      temperature: 0.2,
-      max_tokens: 300,
-    });
+    const response = await withOpenAIBreaker((openai) =>
+      openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{
+          role: 'user',
+          content: SYCOPHANCY_CHECK_PROMPT
+            .replace('{userMessage}', userMessage.slice(0, 300))
+            .replace('{draftResponse}', draftResponse.slice(0, 500))
+        }],
+        temperature: 0.2,
+        max_tokens: 300,
+      }),
+    );
     const text = response.choices[0]?.message?.content?.trim();
     if (!text) return { score: 0, issue: null, revised: null };
     return JSON.parse(text);
-  } catch {
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      // Fail-open: if the checker itself is unavailable, let the draft through
+      // rather than blocking user responses.
+      logger.debug({ component: 'sycophancy-checker' }, '[sycophancy] circuit open — failing open');
+    }
     return { score: 0, issue: null, revised: null };
   }
 }

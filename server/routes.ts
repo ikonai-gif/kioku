@@ -12,6 +12,8 @@ import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
 import { registerPrivacyRoutes } from "./privacy";
+import { registerMeetingRoutes } from "./routes/meetings";
+import { requireFlag } from "./feature-flags";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
   exchangeGoogleCode, exchangeDropboxCode,
@@ -290,6 +292,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerMcp(app);
   registerBilling(app);
   registerPrivacyRoutes(app, getUser);
+
+  // ── Meeting Room API (behind MEETING_ROOM_ENABLED flag) ──────
+  app.use("/api/meetings", requireFlag("MEETING_ROOM_ENABLED"));
+  registerMeetingRoutes(app, getUser);
 
   // ── Auth ──────────────────────────────────────────────────────
   // ── Debug — env var check (master key only) ──────────────────

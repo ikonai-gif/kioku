@@ -4,7 +4,8 @@
  * emotion label mapping, and slow reflection for agent emotional architecture.
  */
 
-import OpenAI from 'openai';
+import { withOpenAIBreaker, CircuitOpenError } from './lib/openai-client';
+import logger from './logger';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -215,7 +216,6 @@ export async function slowReflection(
       .map((m: any) => m.content.slice(0, 100))
       .join('; ');
 
-    const openai = new OpenAI();
     const prompt = SLOW_REFLECTION_PROMPT
       .replace('{baseP}', (state.baselinePleasure || 0.1).toFixed(2))
       .replace('{baseA}', (state.baselineArousal || 0.0).toFixed(2))
@@ -226,12 +226,14 @@ export async function slowReflection(
       .replace('{emotion}', state.emotionLabel)
       .replace('{events}', recentImportant || 'No recent significant events');
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.4,
-      max_tokens: 150,
-    });
+    const response = await withOpenAIBreaker((openai) =>
+      openai.chat.completions.create({
+        model: 'gpt-4.1-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.4,
+        max_tokens: 150,
+      }),
+    );
 
     const text = response.choices[0]?.message?.content?.trim();
     if (!text) return;
@@ -263,7 +265,10 @@ export async function slowReflection(
         namespace: '_reflections',
       });
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      logger.debug({ component: 'slow-reflection' }, '[slow-reflection] circuit open — keeping current decayed state');
+    }
     // Silent fail — slow reflection is non-critical
   }
 }

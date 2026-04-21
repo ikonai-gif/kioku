@@ -21,6 +21,33 @@ export type Check = {
   [k: string]: unknown;
 };
 
+// ── timedDbPing ───────────────────────────────────────────────────────────────
+
+/**
+ * SF3: Run `SELECT 1` against a pool client with a hard timeout.
+ *
+ * Races the query against a `setTimeout(timeoutMs)` — if the timer wins, we
+ * reject with a `timeout` error. The in-flight query is NOT cancelled here
+ * (pg clients don't cancel mid-query without a separate pg_cancel_backend
+ * call); the caller is expected to release the client and move on.
+ */
+export async function timedDbPing(
+  client: { query: (sql: string) => Promise<unknown> },
+  timeoutMs: number,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      client.query("SELECT 1"),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ── checkDatabase ─────────────────────────────────────────────────────────────
 
 /**
@@ -39,8 +66,11 @@ export async function checkDatabase(signal?: AbortSignal): Promise<Check> {
       client.release();
       return { status: "down", error: "timeout", latency_ms: Date.now() - t0 };
     }
-    await client.query("SELECT 1");
-    client.release();
+    try {
+      await timedDbPing(client, 2000);
+    } finally {
+      client.release();
+    }
     return { status: "ok", latency_ms: Date.now() - t0 };
   } catch (err: any) {
     return { status: "down", latency_ms: Date.now() - t0, error: err.message };
@@ -151,8 +181,11 @@ export function checkQueues(): Check {
 /**
  * Report process memory usage.
  *
- * Q8.2 / O1: Uses RSS + RAILWAY_MEMORY_LIMIT_MB when available.
- * Falls back to V8 heap% when no limit is configured.
+ * Q8.2 / O1: When RAILWAY_MEMORY_LIMIT_MB is set we report rss/limit % and
+ * use the 80/95 threshold. When no limit is configured (e.g. local dev,
+ * self-hosted) we report `status: "ok"` with `limit_unknown: true` — we
+ * cannot meaningfully threshold without a ceiling, and V8 heap% turned out
+ * to flag healthy processes as degraded (W4 retro).
  */
 export function checkMemory(): Check {
   const mem = process.memoryUsage();
@@ -160,9 +193,18 @@ export function checkMemory(): Check {
   const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
   const limitMB =
     parseInt(process.env.RAILWAY_MEMORY_LIMIT_MB || "0", 10) || null;
-  const pct = limitMB
-    ? Math.round((rssMB / limitMB) * 100)
-    : Math.round((mem.heapUsed / mem.heapTotal) * 100);
+
+  if (!limitMB) {
+    return {
+      status: "ok",
+      rss_mb: rssMB,
+      heap_mb: heapUsedMB,
+      limit_mb: null,
+      limit_unknown: true,
+    };
+  }
+
+  const pct = Math.round((rssMB / limitMB) * 100);
   const status: Check["status"] =
     pct > 95 ? "down" : pct > 80 ? "degraded" : "ok";
 

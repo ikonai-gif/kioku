@@ -188,4 +188,17 @@ describe("getMonitorSummary exposes staleMigrations", () => {
     expect(summary).toHaveProperty("staleMigrations");
     expect(typeof summary.staleMigrations).toBe("number");
   });
+
+  // F2: /health/monitor must surface the process-wide OpenAI breaker state
+  // so ops can see CLOSED/OPEN/HALF_OPEN and the associated counters.
+  it("openaiBreaker field is present with expected shape", () => {
+    const summary = getMonitorSummary() as any;
+    expect(summary).toHaveProperty("openaiBreaker");
+    const br = summary.openaiBreaker;
+    expect(br).toBeTruthy();
+    expect(["CLOSED", "OPEN", "HALF_OPEN"]).toContain(br.state);
+    expect(typeof br.consecutiveFailures).toBe("number");
+    expect(typeof br.totalCalls).toBe("number");
+    expect(typeof br.totalFailures).toBe("number");
+  });
 });

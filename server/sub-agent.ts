@@ -1,4 +1,5 @@
-import OpenAI from "openai";
+import type OpenAI from "openai";
+import { withOpenAIBreaker } from "./lib/openai-client";
 
 interface SubAgentTask {
   objective: string;
@@ -57,8 +58,6 @@ Rules:
     { role: "user", content: task.objective },
   ];
 
-  const openai = new OpenAI();
-
   const oaiTools: OpenAI.Chat.ChatCompletionTool[] = filteredTools.map(t => ({
     type: "function" as const,
     function: {
@@ -69,13 +68,16 @@ Rules:
   }));
 
   for (let i = 0; i < maxIter; i++) {
-    const completion = await openai.chat.completions.create({
-      model,
-      max_tokens: 1500,
-      temperature: 0.3,
-      messages,
-      ...(oaiTools.length > 0 ? { tools: oaiTools } : {}),
-    });
+    // CircuitOpenError bubbles up — HTTP handlers should translate to 503 + Retry-After.
+    const completion = await withOpenAIBreaker((openai) =>
+      openai.chat.completions.create({
+        model,
+        max_tokens: 1500,
+        temperature: 0.3,
+        messages,
+        ...(oaiTools.length > 0 ? { tools: oaiTools } : {}),
+      }),
+    );
 
     const msg = completion.choices[0]?.message;
     if (!msg?.tool_calls || msg.tool_calls.length === 0) {
@@ -94,10 +96,12 @@ Rules:
   }
 
   // Exhausted iterations — do one final call without tools to get a summary
-  const final = await openai.chat.completions.create({
-    model,
-    max_tokens: 1500,
-    messages,
-  });
+  const final = await withOpenAIBreaker((openai) =>
+    openai.chat.completions.create({
+      model,
+      max_tokens: 1500,
+      messages,
+    }),
+  );
   return { success: true, result: final.choices[0]?.message?.content?.trim() || "", toolsUsed, iterations: maxIter };
 }
