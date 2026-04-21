@@ -42,6 +42,7 @@ export interface CircuitBreakerOptions {
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 export class CircuitOpenError extends Error {
+  readonly code = "CIRCUIT_OPEN" as const;
   readonly retryAfterMs: number;
   readonly circuitName: string;
   readonly lastError?: Error; // Q5

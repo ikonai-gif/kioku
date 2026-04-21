@@ -31,6 +31,20 @@ import logger from "../logger";
 // Re-export so consumers only need to import from this module.
 export { CircuitOpenError } from "./circuit-breaker";
 
+/**
+ * Shared failure predicate: 4xx (other than 429) = caller error, not a backend
+ * failure; 429 / 5xx / network / timeouts all count. Exported so per-agent
+ * breakers can use the same policy (W6 N7).
+ */
+export function isOpenAIFailure(err: unknown): boolean {
+  const status = (err as { status?: unknown; statusCode?: unknown })?.status
+    ?? (err as { status?: unknown; statusCode?: unknown })?.statusCode;
+  if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) {
+    return false;
+  }
+  return true;
+}
+
 // Single process-wide breaker. Thresholds documented in the W5 plan Item 1.
 const openaiBreaker = new CircuitBreaker({
   name: "openai",
@@ -38,15 +52,7 @@ const openaiBreaker = new CircuitBreaker({
   cooldownMs: 30_000,
   successThreshold: 2,
   timeoutMs: 30_000,
-  isFailure: (err: any) => {
-    // 4xx (other than 429) = permanent caller error — don't count as a
-    // backend failure. 429, 5xx, network, timeouts all count.
-    const status = err?.status ?? err?.statusCode;
-    if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) {
-      return false;
-    }
-    return true;
-  },
+  isFailure: isOpenAIFailure,
   onStateChange: (from, to, reason) => {
     logger.warn(
       { component: "circuit:openai", from, to, reason },
