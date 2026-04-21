@@ -137,6 +137,32 @@ class SandboxManager {
 const sandboxManager = new SandboxManager();
 
 // ── Partner Tool Definitions (Claude tool-use) ─────────────────────
+
+// W7 P2.5: Luca Studio scope — the exact 16 tools declared in Luca's system
+// prompt (see buildPartnerPrompt). Exposing the full partnerTools registry
+// caused the model to hallucinate non-studio capabilities (Gmail, web_search).
+// This list MUST stay in sync with buildPartnerPrompt; tests enforce it.
+export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // Media (13)
+  "generate_image",
+  "generate_video",
+  "generate_image_to_video",
+  "generate_speech",
+  "clone_voice",
+  "generate_sfx",
+  "generate_music",
+  "stitch_media",
+  "add_subtitles",
+  "add_title_cards",
+  "series_bible",
+  "produce_episode",
+  "generate_document",
+  // Workspace (3)
+  "workspace_list",
+  "workspace_save",
+  "workspace_read",
+]);
+
 const partnerTools: Anthropic.Messages.Tool[] = [
   {
     name: "generate_image",
@@ -1036,6 +1062,20 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
 ];
 
+/**
+ * Return the tool set appropriate for a given partner agent.
+ * W7 P2.5: Luca is scoped to her Studio surface (16 tools) so the Anthropic/OpenAI
+ * schema matches what buildPartnerPrompt advertises. Other partner agents get the
+ * full registry. This resolves the prompt-vs-schema contradiction that caused the
+ * Gmail/web_search hallucination after P2.4.
+ */
+export function getPartnerToolsForAgent(agent: { name?: string | null } | null | undefined): Anthropic.Messages.Tool[] {
+  if (agent?.name === "Luca") {
+    return partnerTools.filter(t => LUCA_STUDIO_TOOL_NAMES.has(t.name));
+  }
+  return partnerTools;
+}
+
 /** Execute a partner tool by name — routes to the correct internal handler */
 /**
  * Produce a short human-readable description of a tool call for the activity timeline.
@@ -1117,6 +1157,20 @@ export async function executePartnerTool(
   agentId: number,
   roomId?: number
 ): Promise<string> {
+  // W7 P2.5 defense-in-depth: if Luca somehow invokes a non-Studio tool (e.g.
+  // via an in-flight Anthropic session that saw the old schema, or via a
+  // future prompt-injection attempt), refuse cleanly instead of executing
+  // real side effects (Gmail send, Stripe call, GitHub write, etc.).
+  try {
+    const __agent = await storage.getAgent(agentId);
+    if (__agent?.name === "Luca" && !LUCA_STUDIO_TOOL_NAMES.has(toolName)) {
+      logger.warn(
+        { component: "deliberation", event: "luca_out_of_scope_tool_blocked", agentId, tool: toolName },
+        "[deliberation] blocked Luca non-studio tool call"
+      );
+      return `Tool '${toolName}' is not part of Luca Studio. Available tools: ${Array.from(LUCA_STUDIO_TOOL_NAMES).join(", ")}.`;
+    }
+  } catch { /* best-effort guard — never break real tool execution if storage hiccups */ }
   const __activityStarted = Date.now();
   // Stable identifier for this specific tool call. Lets live chunks
   // (e.g. sandbox_shell stdout lines) attach to the correct step in the
@@ -5399,7 +5453,7 @@ export async function triggerAgentResponses(
                   max_tokens: claudeMaxTokens,
                   system: systemPrompt,
                   messages: claudeMessages,
-                  ...(isPartnerChat ? { tools: partnerTools, ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
+                  ...(isPartnerChat ? { tools: getPartnerToolsForAgent(agent as any), ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
                 }));
               } catch (err: any) {
                 if (isCircuitOpenError(err)) {
@@ -5504,7 +5558,7 @@ export async function triggerAgentResponses(
                 ...(isNewModel ? {} : { temperature: isPartnerChat ? 0.85 : 0.75 }),
                 messages: oaiMessages,
                 ...(isPartnerChat ? {
-                  tools: partnerTools.map(t => ({
+                  tools: getPartnerToolsForAgent(agent as any).map(t => ({
                     type: "function" as const,
                     function: {
                       name: t.name,
