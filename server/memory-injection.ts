@@ -61,18 +61,40 @@ export async function fetchRelevantMemories(
   const topicLower = topic.toLowerCase();
   const topicWords = topicLower.split(/\s+/).filter((w) => w.length > 3);
 
-  // Always-inject: identity memories are loaded regardless of topic relevance
-  const alwaysInject: InjectedMemory[] = candidateMemories
+  // Always-inject: identity memories are loaded regardless of topic relevance.
+  // W7 P2.3 — hard cap at IDENTITY_TOKEN_CAP characters (~chars/4 tokens). When
+  // over cap, keep highest-importance first, ties broken by recency (newest
+  // first). This prevents runaway identity-blob growth from silently blowing
+  // context on agents with many identity entries (e.g. Luca's 20+ rows).
+  const IDENTITY_TOKEN_CAP = 2500; // tokens
+  const IDENTITY_CHAR_CAP = IDENTITY_TOKEN_CAP * 4;
+  const identityCandidates = candidateMemories
     .filter((m: any) => m.namespace === '_identity' || m.type === 'identity')
-    .map((m: any) => ({
+    .sort((a: any, b: any) => {
+      const impA = typeof a.importance === 'number' ? a.importance : 0.5;
+      const impB = typeof b.importance === 'number' ? b.importance : 0.5;
+      if (impA !== impB) return impB - impA;
+      const tsA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tsB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tsB - tsA;
+    });
+
+  const alwaysInject: InjectedMemory[] = [];
+  let identityCharUsed = 0;
+  for (const m of identityCandidates) {
+    const content = (m as any).content ?? "";
+    if (identityCharUsed + content.length > IDENTITY_CHAR_CAP && alwaysInject.length > 0) break;
+    alwaysInject.push({
       id: m.id,
-      content: m.content,
-      type: m.type,
+      content,
+      type: (m as any).type,
       confidence: 1.0,
-      expiresAt: m.expiresAt,
-      emotionVector: m.emotionVector ?? null,
-      namespace: m.namespace ?? null,
-    }));
+      expiresAt: (m as any).expiresAt,
+      emotionVector: (m as any).emotionVector ?? null,
+      namespace: (m as any).namespace ?? null,
+    });
+    identityCharUsed += content.length;
+  }
 
   // Always-inject: 3 most recent episode summaries regardless of keyword match
   const episodeSummaries: InjectedMemory[] = candidateMemories
@@ -323,11 +345,17 @@ export function formatMemoryContext(memories: InjectedMemory[], links?: MemoryLi
     }
   }
 
-  // Separate identity, episode summaries, and topic-relevant memories
-  const identityMems = memories.filter(m => m.type === 'identity');
-  const episodeMems = memories.filter(m => m.namespace === '_episode_summaries');
+  // Separate identity, episode summaries, and topic-relevant memories.
+  // W7 P2.3 — classify identity by namespace OR type so memories authored
+  // with only one of the two tags still render in the "WHO YOU ARE" block.
+  // Without this, Luca-style rows (namespace=_identity, type=semantic) fell
+  // into "Your Memories" with a confidence score, buried under topic RAG hits.
+  const isIdentity = (m: InjectedMemory) => m.type === 'identity' || m.namespace === '_identity';
+  const identityMems = memories.filter(isIdentity);
+  const identityIds = new Set(identityMems.map(m => m.id));
+  const episodeMems = memories.filter(m => m.namespace === '_episode_summaries' && !identityIds.has(m.id));
   const episodeIds = new Set(episodeMems.map(m => m.id));
-  const topicMems = memories.filter(m => m.type !== 'identity' && !episodeIds.has(m.id));
+  const topicMems = memories.filter(m => !isIdentity(m) && !episodeIds.has(m.id));
 
   let output = "";
 

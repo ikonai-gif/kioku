@@ -989,16 +989,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const agentId = Number(req.params.id);
+    // W7 P2.3 — the legacy `model` column is sunset; writes must go through
+    // `llmModel`. We still accept `model` in the request body for one release
+    // as a compat shim (maps onto llmModel if llmModel is absent), then drop.
     const { name, description, color, model, role, llmProvider, llmApiKey, llmModel, agentType, webhookUrl, webhookSecret } = validateBody(updateAgentSchema, req.body);
     const updates: Record<string, any> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (color !== undefined) updates.color = color;
-    if (model !== undefined) updates.model = model;
     if (role !== undefined) updates.role = role;
     if (llmProvider !== undefined) updates.llmProvider = llmProvider;
     if (llmApiKey !== undefined) updates.llmApiKey = llmApiKey;
+    // llmModel wins; legacy `model` body field is a compat shim only.
     if (llmModel !== undefined) updates.llmModel = llmModel;
+    else if (model !== undefined) updates.llmModel = model;
     if (agentType !== undefined) updates.agentType = agentType;
     if (webhookUrl !== undefined) updates.webhookUrl = webhookUrl;
     if (webhookSecret !== undefined) updates.webhookSecret = webhookSecret;

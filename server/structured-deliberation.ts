@@ -658,7 +658,7 @@ export async function runDeliberation(
     await postSystemMessage(roomId, `✅ Deliberation complete. Consensus confidence: ${(consensus.confidence * 100).toFixed(0)}%`);
 
     // Collect unique models used
-    session.modelsUsed = Array.from(new Set(agents.map((a) => a.llmModel || a.model || fallbackModel)));
+    session.modelsUsed = Array.from(new Set(agents.map((a) => a.llmModel || fallbackModel)));
     session.status = "completed";
     session.completedAt = Date.now();
     await persistSession(session, userId);
@@ -779,8 +779,10 @@ async function collectPositions(
       relationship
     );
 
-    // Per-agent model: prefer llmModel > model > fallback
-    const agentModel = agent.llmModel || agent.model || fallbackModel;
+    // W7 P2.3 — canonical model is `llmModel`. Legacy `model` column was
+    // backfilled into `llmModel` by migration 0002_unify_agent_model_fields.sql;
+    // reads no longer fall back to `model`.
+    const agentModel = agent.llmModel || fallbackModel;
 
     // Route based on agent type: internal (LLM), webhook, or polling
     const effectiveType = agent.agentType || "internal";
