@@ -72,10 +72,14 @@ async function seedOwner(pool: Pool): Promise<{ userId: number; roomId: number; 
     [userId, "Integration Room", now],
   );
   const roomId = rRows[0].id as number;
+  // agents table has no updated_at column in migrations 0000/0001 — only created_at.
+  // Pre-existing bug from Week 6 Item 3 (#5), hidden for weeks because paths-filter
+  // skipped this test unless migrations/** or schema.ts changed. Surfaced on W7 P2.3
+  // because migration 0002 triggers the filter. Fix: drop updated_at from INSERT.
   const { rows: aRows } = await pool.query(
-    `INSERT INTO agents (user_id, name, created_at, updated_at)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [userId, "Integration Agent", now, now],
+    `INSERT INTO agents (user_id, name, created_at)
+     VALUES ($1, $2, $3) RETURNING id`,
+    [userId, "Integration Agent", now],
   );
   const agentId = aRows[0].id as number;
   return { userId, roomId, agentId };
