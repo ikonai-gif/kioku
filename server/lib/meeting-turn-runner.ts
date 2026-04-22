@@ -211,8 +211,9 @@ export async function runTurn(
       throw new TurnStateMismatchError("already_running", "another turn in flight for this idempotency key");
     }
     // 'new' falls through — claim the slot when we start T1. checkIdempotency
-    // has already SET the pending marker with DEFAULT_PENDING_TTL, so a parallel
-    // retry sees 'in_progress' until we either store the final result or time out.
+    // has already SET the pending marker with MEETING_TURN_PENDING_TTL_SEC, so a
+    // parallel retry sees 'in_progress' until we either store the final result
+    // or time out.
   }
 
   // ── T1: reserve ────────────────────────────────────────────────────────────
@@ -260,7 +261,7 @@ export async function runTurn(
     await t2Fail(pool, args.meetingId, turnId, previousState, reason, eventBus);
     // Intentionally do NOT store a cached failure result here: we want a later
     // retry with the same client idempotency key to be able to run (once the
-    // Redis pending marker expires after DEFAULT_PENDING_TTL seconds). Caching
+    // Redis pending marker expires after MEETING_TURN_PENDING_TTL_SEC). Caching
     // the error would require the caller to mint a fresh key to unblock retry,
     // which is user-hostile for transient LLM failures.
     if (err instanceof CircuitOpenError) throw new TurnBreakerOpenError();
@@ -686,42 +687,11 @@ async function currentModeRequiresApproval(
  * `getPartnerToolsForAgent(agent)` which we call here.
  */
 async function loadPartnerToolsForAgent(input: TurnInput): Promise<Anthropic.Messages.Tool[]> {
+  // W10 M2: `agentName` is now carried on TurnInput directly by MCM
+  // (sourced from `agents.name`). No regex over systemPrompt — the tripwire
+  // test (Bro2 F2) is obsolete and was deleted together with this function.
   const mod = await import("../deliberation");
-  return mod.getPartnerToolsForAgent({ name: extractAgentNameFromSystemPrompt(input) });
-}
-
-/**
- * Extract agent name from `buildSystemPrompt` output. Parses the canonical
- * "You are <name>, …" prefix. Exported for a tripwire test (Bro2 F2) that
- * fails loudly if buildSystemPrompt changes shape (e.g. voice-PR adds a
- * preamble) and would otherwise silently route to the empty-tool-list fallback.
- *
- * On fallback, logs a `warn` with agentId + first 80 chars of the system
- * prompt so prod diverges visibly in logs BEFORE users see broken behavior.
- *
- * W10 follow-up: carry `agentName` through TurnInput directly and delete this.
- */
-export function extractAgentNameFromSystemPrompt(input: {
-  systemPrompt: string;
-  agentId: number;
-}): string {
-  // Canonical buildSystemPrompt shape:
-  //   "You are <name> participating in a KIOKU Meeting Room.\n\n..."
-  // Or, when adopted in prior partner-chat shapes:
-  //   "You are <name>, <description>..."
-  //   "You are <name>. <rest>"
-  // The pattern below captures the agent name up to the FIRST of:
-  //   comma, period, or " participating" landmark.
-  const m = input.systemPrompt.match(/^You are ([^,.\n]+?)(?:,|\.|\s+participating\b)/);
-  if (m) return m[1].trim();
-  logger.warn(
-    {
-      agentId: input.agentId,
-      promptPrefix: input.systemPrompt.slice(0, 80),
-    },
-    "extractAgentNameFromSystemPrompt: regex fallback — buildSystemPrompt prefix may have changed",
-  );
-  return `agent_${input.agentId}`;
+  return mod.getPartnerToolsForAgent({ name: input.agentName });
 }
 
 function classifyError(err: unknown): string {

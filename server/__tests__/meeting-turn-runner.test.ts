@@ -121,7 +121,6 @@ import {
   TurnStateMismatchError,
   TurnBreakerOpenError,
   TurnTimeoutError,
-  extractAgentNameFromSystemPrompt,
   type LlmCaller,
   type MeetingStateDb,
 } from "../lib/meeting-turn-runner";
@@ -1254,50 +1253,10 @@ describe("runTurn — F1 retry at timeout boundary hits cached done", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 23. Bro2 F2 — extractAgentNameFromSystemPrompt tripwire for canonical
-//     buildSystemPrompt shape. If buildSystemPrompt changes prefix, this test
-//     breaks BEFORE prod silently falls back to empty tool list.
+// 23. (removed W10 M2) — extractAgentNameFromSystemPrompt was deleted and the
+//     agent name is now carried through TurnInput.agentName directly from the
+//     agents table. No regex over systemPrompt → no tripwire needed.
 // ═════════════════════════════════════════════════════════════════════════════
-
-describe("extractAgentNameFromSystemPrompt — F2 tripwire", () => {
-  it("parses 'Luca' from canonical buildSystemPrompt output", () => {
-    const systemPrompt = buildSystemPrompt({
-      agentName: "Luca",
-      agentDescription: "KIOKU companion",
-      autonomyLevel: "propose",
-      allowedTopics: ["design"],
-      blockedTopics: [],
-    });
-    // Sanity: the canonical prefix is "You are Luca participating in a KIOKU Meeting Room."
-    expect(systemPrompt.startsWith("You are Luca participating in")).toBe(true);
-    const name = extractAgentNameFromSystemPrompt({ systemPrompt, agentId: 101 });
-    expect(name).toBe("Luca");
-  });
-
-  it("parses name from legacy comma-after-name shape", () => {
-    const name = extractAgentNameFromSystemPrompt({
-      systemPrompt: "You are Bro2, reviewer agent.\n\nDetails…",
-      agentId: 102,
-    });
-    expect(name).toBe("Bro2");
-  });
-
-  it("parses name from period-after-name shape", () => {
-    const name = extractAgentNameFromSystemPrompt({
-      systemPrompt: "You are Eva. Helpful assistant.",
-      agentId: 103,
-    });
-    expect(name).toBe("Eva");
-  });
-
-  it("falls back to agent_<id> when prefix is unexpected", () => {
-    const name = extractAgentNameFromSystemPrompt({
-      systemPrompt: "SYSTEM: role=agent name=Ghost\n\nrest…",
-      agentId: 77,
-    });
-    expect(name).toBe("agent_77");
-  });
-});
 
 // ═════════════════════════════════════════════════════════════════════════════
 // 24. Bro2 SF3 — storeIdempotencyResult fires BEFORE eventBus.emit.
