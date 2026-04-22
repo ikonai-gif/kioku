@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { MEETING_SUMMARY_NAMESPACE_PREFIX } from './lib/meeting-artifact';
 
 /**
  * Memory consolidation merges highly similar memories for the same user.
@@ -8,10 +9,23 @@ import { Pool } from 'pg';
  * - Boosts importance and strength of kept memory
  *
  * Designed to run as a background maintenance task.
+ *
+ * W9 Item 5 — Meeting-summary isolation (R1):
+ *   Memories inserted by the meeting end path live under the reserved
+ *   namespace `_meeting_summary_{meetingId}` (see
+ *   `lib/meeting-artifact.ts`). These rows MUST NOT be touched by
+ *   consolidation — they are per-meeting opt-in artifacts, not general
+ *   memories, and merging two meeting summaries together would cross
+ *   meeting boundaries in a way that violates the privacy invariant.
+ *
+ *   The WHERE clause below excludes any row whose namespace starts with
+ *   the prefix. Bro2 N1: leading underscore is escaped so the pattern
+ *   does not accidentally match e.g. `Xmeeting_summary_abc` (no-leading
+ *   underscore) via LIKE's single-char `_` wildcard.
  */
 
 export async function consolidateMemories(pool: Pool, userId: number): Promise<{ merged: number; kept: number }> {
-  // Find pairs of very similar memories
+  // Find pairs of very similar memories (excluding meeting-summary namespace on BOTH sides).
   const pairs = await pool.query(`
     SELECT m1.id as id1, m2.id as id2,
            m1.content as content1, m2.content as content2,
@@ -26,9 +40,11 @@ export async function consolidateMemories(pool: Pool, userId: number): Promise<{
       AND m2.embedding_vec IS NOT NULL
     WHERE m1.user_id = $1
       AND 1 - (m1.embedding_vec <=> m2.embedding_vec) > 0.92
+      AND (m1.namespace IS NULL OR m1.namespace NOT LIKE $2 ESCAPE '\\')
+      AND (m2.namespace IS NULL OR m2.namespace NOT LIKE $2 ESCAPE '\\')
     ORDER BY similarity DESC
     LIMIT 50
-  `, [userId]);
+  `, [userId, `${MEETING_SUMMARY_NAMESPACE_PREFIX.replace(/_/g, '\\_')}%`]);
 
   if (pairs.rows.length === 0) return { merged: 0, kept: 0 };
 
