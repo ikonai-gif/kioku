@@ -336,19 +336,30 @@ export type AestheticPreference = typeof aestheticPreferences.$inferSelect;
 //   fromUnixMs(ms) = new Date(ms)
 // Utility helpers to be added to storage.ts in Week 2. Legacy tables stay BIGINT (migration cost not justified for MVP).
 
-// Meetings — top-level meeting entity linked to a room
+// Meetings — top-level meeting entity linked to a room.
+// state ∈ pending | active | turn_in_progress | waiting_for_turn |
+//       waiting_for_approval | completed | aborted   (CHECK enforced by migration 0001+0004)
+// next_participant_id: atomic round-robin pointer (W9 Item 2). NULL at
+//   creation, end-of-round, or when waiting on approval with no next.
+// current_turn_id: the active turn_records row id. Set in T1, cleared in T2
+//   commit or reaper abort. Indexed via partial index on non-NULL rows.
 export const meetings = pgTable("meetings", {
-  id:            uuid("id").primaryKey().defaultRandom(),
-  roomId:        integer("room_id").notNull(),  // FK → rooms.id (INTEGER SERIAL in prod)
-  creatorUserId: integer("creator_user_id").notNull(),
-  state:         varchar("state", { length: 30 }).notNull().default("pending"),
-  createdAt:     timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  endedAt:       timestamp("ended_at", { withTimezone: true }),
-  metadata:      jsonb("metadata").default({}),
+  id:                 uuid("id").primaryKey().defaultRandom(),
+  roomId:             integer("room_id").notNull(),  // FK → rooms.id (INTEGER SERIAL in prod)
+  creatorUserId:      integer("creator_user_id").notNull(),
+  state:              varchar("state", { length: 30 }).notNull().default("pending"),
+  nextParticipantId:  uuid("next_participant_id"),  // FK → meeting_participants.id, ON DELETE SET NULL
+  currentTurnId:      uuid("current_turn_id"),      // FK-less pointer to turn_records.id (see turnRecords)
+  createdAt:          timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  endedAt:            timestamp("ended_at", { withTimezone: true }),
+  metadata:           jsonb("metadata").default({}),
 }, (t) => [
   index("idx_meetings_room_id").on(t.roomId),
   index("idx_meetings_creator").on(t.creatorUserId),
   index("idx_meetings_state").on(t.state),
+  // idx_meetings_current_turn is partial (WHERE current_turn_id IS NOT NULL)
+  // and is created in raw SQL in migration 0004 — Drizzle cannot express
+  // partial indexes in the schema builder.
 ]);
 
 export const insertMeetingSchema = createInsertSchema(meetings).omit({ id: true, createdAt: true });
@@ -411,6 +422,33 @@ export const meetingContext = pgTable("meeting_context", {
 
 export const insertMeetingContextSchema = createInsertSchema(meetingContext).omit({ id: true, createdAt: true });
 export type InsertMeetingContext = z.infer<typeof insertMeetingContextSchema>;
+
+// Turn Records (W9 Item 2) — one row per turn attempt. Two-tx runner inserts
+// with state='running' in T1, updates to 'completed' (or 'failed') in T2 /
+// T2-fail. Reaper flips 'running' rows older than 120s to 'failed' with
+// error='turn_timeout'. `sequence_fence` captures the global MAX(sequence_number)
+// at T1 time — stored for AUDIT / FORENSIC purposes only (what was the
+// meeting's sequence when T1 fired?). It is NOT part of the idempotency key;
+// that key is derived from {meetingId, participantId, clientKey}. The state
+// machine itself (meetings.state + current_turn_id) serialises concurrent
+// turns through `FOR UPDATE` row locks.
+export const turnRecords = pgTable("turn_records", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  meetingId:      uuid("meeting_id").notNull(),
+  participantId:  uuid("participant_id").notNull(),
+  sequenceFence:  bigint("sequence_fence", { mode: "number" }).notNull(),
+  state:          varchar("state", { length: 20 }).notNull().default("running"),
+  startedAt:      timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt:    timestamp("completed_at", { withTimezone: true }),
+  error:          text("error"),
+}, (t) => [
+  index("idx_tr_meeting_state").on(t.meetingId, t.state),
+  // idx_tr_started_at_running is partial (WHERE state = 'running') — raw SQL in migration 0004.
+]);
+
+export const insertTurnRecordSchema = createInsertSchema(turnRecords).omit({ id: true, startedAt: true });
+export type InsertTurnRecord = z.infer<typeof insertTurnRecordSchema>;
+export type TurnRecord = typeof turnRecords.$inferSelect;
 export type MeetingContext = typeof meetingContext.$inferSelect;
 
 // Meeting Artifacts — versioned documents/decisions produced during a meeting

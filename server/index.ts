@@ -28,6 +28,7 @@ import { logFlags } from "./feature-flags";
 import { closeQueues } from "./queue";
 import { closeRedisClient } from "./lib/redis";
 import { getWss } from "./ws";
+import { startMeetingReaper, type ReaperHandle } from "./lib/meeting-reaper";
 
 // SECURITY: Constant-time string comparison to prevent timing attacks on secrets
 export function safeCompare(a: string, b: string): boolean {
@@ -401,6 +402,18 @@ void runInitLoop();
     },
   );
 
+  // ── Meeting Room reaper (W9 Item 2) ────────────────────────────────────────
+  // Gated on MEETING_ROOM_ENABLED inside startMeetingReaper itself — when the
+  // flag is off, this is a no-op (logs once and returns a no-op handle).
+  // The handle's interval is unref'd so it never holds the event loop open.
+  let meetingReaper: ReaperHandle | null = null;
+  try {
+    const { pool } = await import("./storage");
+    meetingReaper = startMeetingReaper({ pool });
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, "failed to start meeting reaper");
+  }
+
   // ── Graceful shutdown ────────────────────────────────────────────────────
   let isShuttingDown = false;
 
@@ -441,6 +454,13 @@ void runInitLoop();
       logger.info('[shutdown] redis client closed');
     } catch (err) {
       logger.warn({ err: (err as Error).message }, '[shutdown] redis close error');
+    }
+
+    // 3c. Stop meeting reaper (no-op if flag was off)
+    try {
+      meetingReaper?.stop();
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] meeting reaper stop error');
     }
 
     // 4. Close Postgres pool (the `pool` export from storage.ts)
