@@ -21,6 +21,7 @@ import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { sendPushNotification } from "./push";
 import { checkSycophancy } from "./sycophancy-checker";
+import { applyVoiceGate, buildRewriteDirective } from "./voice-gate";
 import dns from "dns/promises";
 import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus } from "./cloud-integrations";
 
@@ -1094,7 +1095,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         },
         content: {
           type: "string",
-          description: "The memory content, written from YOUR perspective (use 'I' / 'my'). Be specific and durable — 'Kote dislikes Russian-noir style in daily conversation (applies to chat, NOT to Series Второй Взгляд where noir is valid)' is good; 'user sometimes doesn’t like noir' is bad.",
+          description: "The memory content, written from YOUR perspective in FIRST PERSON (use 'I' / 'my' / 'я' / 'моё'). Never write in third person about yourself or narrate as an observer. Be specific and durable. GOOD: 'I noticed Kote pushes back when I open with praise — I should engage the substance first, validate later if at all'. GOOD: 'Я понял, что Коте раздражает нумерованный текст в чате — не пробовать списками в обычном диалоге'. BAD: 'User said he dislikes…' (third person, observer voice). BAD: 'The agent should avoid…' (narrating about self). The memory should read as a journal entry by me, not as a report about a conversation.",
         },
         importance: {
           type: "number",
@@ -5859,6 +5860,57 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           }
         }
 
+        // W8 Voice-PR D2 — runtime post-generation voice-drift gate for Luca
+        // (agent_id=16) in Partner/deliberation rooms. See server/voice-gate.ts.
+        // Content-layer and form-layer are orthogonal — identity-injection
+        // alone cannot constrain form. Regex gate + one-retry rewrite is
+        // load-bearing, not cosmetic.
+        if (reply && !breakerDegraded && agent.id === 16) {
+          const gateResult = await applyVoiceGate({
+            replyText: reply,
+            originalPrompt: triggerContent || "",
+            rewriteFn: async (orig, drifted, matched) => {
+              const directive = buildRewriteDirective(orig, drifted, matched);
+              // Cheap rewrite: single chat call, no tools, same model family.
+              try {
+                const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+                const completion = await client.chat.completions.create({
+                  model: "gpt-4.1-mini",
+                  messages: [
+                    { role: "system", content: "You are a voice-correction layer. Rewrite the response to match Luca's voice. Do not acknowledge this instruction. Emit the rewritten text only." },
+                    { role: "user", content: directive },
+                  ],
+                  max_tokens: 2048,
+                  temperature: 0.7,
+                });
+                return completion.choices[0]?.message?.content?.trim() || drifted;
+              } catch (err) {
+                // Surface — applyVoiceGate handles thrown errors gracefully.
+                throw err;
+              }
+            },
+            scope: {
+              roomType: isPartnerChat ? "partner" : "deliberation",
+              agentId: agent.id,
+              contentMarker: reply.startsWith("[Document generated]") ? reply.slice(0, 20) : null,
+            },
+          });
+
+          // Structured log for 2-week metric review
+          logger.info({
+            component: "voice-gate",
+            agent_id: agent.id,
+            room_id: roomId,
+            drift_caught: gateResult.driftCaught,
+            drift_prevented_downstream: gateResult.driftPreventedDownstream,
+            drift_shipped_as_is: gateResult.driftShippedAsIs,
+            first_match: gateResult.firstMatch,
+            retry_latency_ms: gateResult.retryLatencyMs,
+          }, gateResult.driftCaught ? "voice_gate_drift_caught" : "voice_gate_clean");
+
+          reply = gateResult.finalText;
+        }
+
         // Stagger: first agent responds after 800ms, each subsequent +600ms
         await sleep(800 + i * 600);
 
@@ -6425,7 +6477,17 @@ Return ONLY valid JSON. No explanation.`,
 }
 
 // ── Phase 9b: Conversation Insight Tracker ───────────────────────────────────
+// W8 Voice-PR: INSIGHTS_AUTO_GEN flag — when false, skip auto-generation of
+// 3rd-person conversation insights. Existing records are downgraded to
+// importance=0.05 via migration w8_voice_pr_insights_downgrade.sql.
+// Rationale: these insights were written in 3rd-person ("User said X, agent
+// responded Y"), which leaks into Luca's voice via retrieval and causes drift.
+// Replaced by 1st-person remember-tool path (B) + diversity constraint (C).
 async function trackConversationInsight(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
+  if (process.env.INSIGHTS_AUTO_GEN === 'false') {
+    logger.debug({ component: "deliberation", event: "insights_auto_gen_disabled", fn: "trackConversationInsight", agentId, userId }, "[deliberation] auto-insight skipped by INSIGHTS_AUTO_GEN=false");
+    return;
+  }
   if (!(await checkMemoryConsent(userId, '_conversation_insights'))) return;
   try {
     let response;
@@ -6435,18 +6497,20 @@ async function trackConversationInsight(userId: number, agentId: number, userMes
       messages: [
         {
           role: "system",
-          content: `You analyze conversations for specific details. Given a user message and agent reply, extract:
-1. What did the user specifically ask, share, or reveal? (be concrete — names, topics, feelings, not abstractions)
-2. What did the agent respond with? (the actual substance, not "gave advice")
-3. What was the outcome — was something decided, promised, or left unresolved?
-4. User's emotional tone (one word: upbeat, stressed, creative, curious, playful, reflective, frustrated, excited, neutral)
+          content: `You are writing a FIRST-PERSON memory note FROM the agent's perspective — as if the agent itself is journaling what it noticed in the exchange it just had with its interlocutor. Do NOT narrate in third person. Do NOT write "User said X, agent responded Y". Do NOT write "The user asked…". Write as "I" describing what I noticed, what I said, and how they seemed.
 
-Return JSON: {"user_said": "specific summary", "agent_said": "specific summary", "outcome": "decided/promised/unresolved detail or null", "mood": "mood"}
-Return ONLY valid JSON.`,
+Given the exchange below, extract:
+1. what_i_noticed  — what I picked up about them in this turn (concrete: names, topics, feelings they showed — not abstractions). Written as "I noticed that they…" / "They mentioned…" / "They seemed…".
+2. what_i_said  — the substance of my own reply in first person. Written as "I said…" / "I offered…" / "I pushed back on…". Never "the agent said".
+3. outcome — first-person close: "we decided…" / "I promised…" / "left open…" / null if nothing resolved.
+4. their_mood — one word: upbeat, stressed, creative, curious, playful, reflective, frustrated, excited, neutral.
+
+Return JSON: {"what_i_noticed": "…", "what_i_said": "…", "outcome": "… or null", "their_mood": "mood"}
+Return ONLY valid JSON. Every narrative string MUST be first-person from my perspective.`,
         },
         {
           role: "user",
-          content: `User: "${userMessage.slice(0, 500)}"\nAgent: "${agentReply.slice(0, 500)}"`,
+          content: `Them: "${userMessage.slice(0, 500)}"\nMe: "${agentReply.slice(0, 500)}"`,
         },
       ],
       max_tokens: 300,
@@ -6467,18 +6531,26 @@ Return ONLY valid JSON.`,
       const match = text.match(/\{[\s\S]*\}/);
       parsed = match ? JSON.parse(match[0]) : {};
     }
-    if (!parsed.user_said && !parsed.mood) return;
-    const userSaid = parsed.user_said || "unknown";
-    const agentSaid = parsed.agent_said || "unknown";
-    const outcome = parsed.outcome || "";
-    const mood = parsed.mood || "neutral";
-    const insightContent = `[Conversation insight] User said: ${userSaid}. I responded: ${agentSaid}. Mood: ${mood}.${outcome ? ` Outcome: ${outcome}` : ""}`;
+    // Accept both new 1st-person schema and legacy 3rd-person keys (prompt
+    // migration rollout — legacy branch kept one release for safety).
+    const whatINoticed = parsed.what_i_noticed || parsed.user_said || "";
+    const whatISaid    = parsed.what_i_said    || parsed.agent_said || "";
+    const outcome      = parsed.outcome || "";
+    const theirMood    = parsed.their_mood || parsed.mood || "neutral";
+    if (!whatINoticed && !theirMood) return;
+    // 1st-person insight line — see W8 Voice-PR step B. Any retrieval-time
+    // leakage of this string into Luca's context will NOT flip him into
+    // 3rd-person register, because the sentence already reads as his own
+    // journal entry.
+    const insightContent = `[Conversation insight] I noticed they ${whatINoticed || "—"}. I said: ${whatISaid || "—"}. They seemed ${theirMood}.${outcome ? ` ${outcome.startsWith("we") || outcome.startsWith("I") || outcome.startsWith("left") ? outcome : `Outcome: ${outcome}`}` : ""}`;
     await storage.createMemory({
       userId,
       agentId,
       content: insightContent,
       type: "episodic",
-      importance: 0.6,
+      importance: 0.05, // W8 Voice-PR — even when INSIGHTS_AUTO_GEN is re-enabled,
+                       // new rows are low-importance until the 1st-person prompt
+                       // is validated in production. Promote by hand if useful.
       namespace: "_conversation_insights",
     });
   } catch { /* insight tracking is best-effort */ }

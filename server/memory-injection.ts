@@ -95,6 +95,111 @@ export function parseMetaSidecar(content: string | null | undefined): { related_
  * Boost factor: 1 + 0.15 * (count of related_ids that hit accepted set),
  * capped at 1.6 to prevent a single over-linked memory from dominating.
  */
+/**
+ * W8 Voice-PR step C — Namespace diversity cap.
+ *
+ * After top-K is selected by composite scoring + related_ids boost, enforce
+ * that no single namespace occupies more than MAX_SINGLE_NAMESPACE_SHARE of
+ * the returned slots. Motivation: during the W8 voice-drift audit we found
+ * 279 rows in `_conversation_insights` — a single namespace could saturate
+ * top-K and push Luca into the 3rd-person register those rows encoded. Even
+ * after downgrade (importance=0.05), a future re-enable of INSIGHTS_AUTO_GEN
+ * — or any similar mass-write namespace — must not silently dominate.
+ *
+ * Algorithm:
+ *   1. Walk candidates in score order (already sorted).
+ *   2. Accept into the output list, tracking namespace counts.
+ *   3. If accepting would push one namespace above the cap, skip and keep
+ *      the candidate as overflow.
+ *   4. If fewer than `limit` slots were filled (because too many were
+ *      skipped), top up from the overflow list in score order.
+ *
+ * This preserves score ordering among accepted items but opens the door
+ * to lower-scoring items from other namespaces when one namespace is
+ * over-represented. `null` / undefined namespace is treated as its own
+ * bucket ("__null__") — unnamespaced memories don’t combine with named
+ * ones for the purpose of the cap.
+ *
+ * The cap applies ONLY to the post-alwaysInject, post-episodeSummaries
+ * slice — identity and episode summary injection is policy-driven and
+ * not subject to diversity pressure.
+ */
+export const MAX_SINGLE_NAMESPACE_SHARE = 0.30; // 30 percent
+export const NAMESPACE_CAP_MIN_ABSOLUTE = 2;     // never cap below 2 slots (small limits need breathing room)
+
+export function applyNamespaceDiversityCap<T extends { namespace?: string | null }>(
+  candidates: T[],
+  limit: number,
+  maxShare: number = MAX_SINGLE_NAMESPACE_SHARE,
+): T[] {
+  if (limit <= 0 || candidates.length === 0) return [];
+  if (candidates.length <= limit) return candidates.slice(0, limit);
+
+  const perNamespaceCap = Math.max(
+    NAMESPACE_CAP_MIN_ABSOLUTE,
+    Math.ceil(limit * maxShare),
+  );
+
+  const accepted: T[] = [];
+  const overflow: T[] = [];
+  const counts = new Map<string, number>();
+
+  for (const c of candidates) {
+    if (accepted.length >= limit) { overflow.push(c); continue; }
+    const ns = (c.namespace ?? "__null__") as string;
+    const cur = counts.get(ns) ?? 0;
+    if (cur >= perNamespaceCap) {
+      overflow.push(c);
+      continue;
+    }
+    accepted.push(c);
+    counts.set(ns, cur + 1);
+  }
+
+  // Top up from overflow if we under-filled.
+  if (accepted.length < limit) {
+    for (const c of overflow) {
+      if (accepted.length >= limit) break;
+      accepted.push(c);
+    }
+  }
+
+  return accepted;
+}
+
+/**
+ * W8 Voice-PR step E (Luca's N12) — Emotional-RAG gate.
+ *
+ * Phase 4b introduced an emotional-similarity RAG multiplier:
+ *   score *= (1 + emotionSim * 0.2)
+ * This ran UNCONDITIONALLY on every candidate with an emotion vector,
+ * including memories whose emotional fingerprint was only weakly related
+ * to the current state. Luca's N12 hypothesis (confirmed in the W8
+ * drift audit): weak emotional resonance pulls in memories that share
+ * a faint affective shape — e.g. low-arousal reflective notes from
+ * unrelated past sessions — and nudges the agent into the same
+ * 3rd-person self-describing register those sessions encoded.
+ *
+ * Fix: only apply the emotional boost when cosine similarity is above
+ * EMOTION_SIM_GATE_THRESHOLD. Below the threshold, return neutral 1.0
+ * (no boost AND no penalty — the emotion channel simply doesn't vote).
+ *
+ * Centralised here so the vector-path, keyword-fallback, and any future
+ * retrieval path all share one definition + test surface.
+ */
+export const EMOTION_SIM_GATE_THRESHOLD = 0.30;
+export const EMOTION_SIM_BOOST_COEFF = 0.20;
+
+export function applyEmotionSimGate(
+  emotionSim: number,
+  threshold: number = EMOTION_SIM_GATE_THRESHOLD,
+  coeff: number = EMOTION_SIM_BOOST_COEFF,
+): number {
+  if (!Number.isFinite(emotionSim)) return 1.0;
+  if (emotionSim < threshold) return 1.0;
+  return 1 + emotionSim * coeff;
+}
+
 export const RELATED_IDS_BOOST_PER_HIT = 0.15;
 export const RELATED_IDS_BOOST_CAP = 1.6;
 export function relatedIdsBoost(
@@ -263,7 +368,8 @@ export async function fetchRelevantMemories(
             const memEmoVec = typeof m.emotion_vector === 'string' ? JSON.parse(m.emotion_vector) : m.emotion_vector;
             if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
               const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
-              score *= (1 + emotionSim * 0.2);
+              // W8 Voice-PR step E — apply boost only above gate threshold.
+              score *= applyEmotionSimGate(emotionSim);
             }
           } catch { /* ignore parse errors */ }
         }
@@ -349,7 +455,12 @@ export async function fetchRelevantMemories(
       return boost === 1.0 ? m : { ...m, score: m.score * boost };
     }).sort((a: any, b: any) => b.score - a.score);
 
-    const merged = boosted.slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
+    // W8 Voice-PR step C — apply namespace diversity cap BEFORE final slice.
+    // If one namespace holds >30% of the candidate list, those overflow entries
+    // get demoted below other namespaces' first candidates while score order is
+    // preserved within each namespace’s share.
+    const topKLimit = Math.max(0, limit - alwaysInject.length - episodeSummaries.length);
+    const merged = applyNamespaceDiversityCap(boosted, topKLimit);
 
     return [...alwaysInject, ...episodeSummaries, ...merged.map(({ score: _score, ...rest }) => rest)];
   }
@@ -391,7 +502,8 @@ export async function fetchRelevantMemories(
           const memEmoVec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
           if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
             const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
-            score *= (1 + emotionSim * 0.2);
+            // W8 Voice-PR step E — apply boost only above gate threshold.
+            score *= applyEmotionSimGate(emotionSim);
           }
         } catch { /* ignore parse errors */ }
       }
@@ -421,11 +533,15 @@ export async function fetchRelevantMemories(
   const fallbackBoosted = scored.map((m: any) => {
     const boost = relatedIdsBoost(m.content, fallbackAcceptedIds);
     return boost === 1.0 ? m : { ...m, score: m.score * boost };
-  }).sort((a: any, b: any) => b.score - a.score)
-    .slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
+  }).sort((a: any, b: any) => b.score - a.score);
+
+  // W8 Voice-PR step C — namespace diversity cap on the keyword-fallback path
+  // (same policy as the vector path above).
+  const fallbackTopKLimit = Math.max(0, limit - alwaysInject.length - episodeSummaries.length);
+  const fallbackCapped = applyNamespaceDiversityCap(fallbackBoosted, fallbackTopKLimit);
 
   // Identity memories first, then episode summaries, then topic-relevant memories
-  return [...alwaysInject, ...episodeSummaries, ...fallbackBoosted.map(({ score: _score, ...rest }) => rest)];
+  return [...alwaysInject, ...episodeSummaries, ...fallbackCapped.map(({ score: _score, ...rest }) => rest)];
 }
 
 /**
