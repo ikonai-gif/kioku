@@ -5422,8 +5422,61 @@ export async function triggerAgentResponses(
         writingStyleBlock = formatWritingStyleBlock(style);
       }
 
+      // W7 P2.13: Core identity injection. Every turn, inject a compact
+      // "who am I, who am I talking to, where am I, what am I committed to,
+      // how am I feeling" block BEFORE the rest of the prompt. This is the
+      // minimum context needed for self-accountability — without it, retrieval
+      // accidents (e.g. aesthetic noir memories) can override identity.
+      // Kept small (~200–300 tokens) to stay within budget on every turn.
+      let coreIdentityBlock = "";
+      if (isPartnerChat) {
+        try {
+          const [commitRows, userRow, roomRow] = await Promise.all([
+            pool.query(
+              `SELECT id, content, importance FROM memories
+                 WHERE user_id = $1 AND agent_id = $2 AND namespace = '_commitment'
+                 ORDER BY importance DESC NULLS LAST, created_at DESC
+                 LIMIT 3`,
+              [userId, agent.id]
+            ),
+            pool.query(
+              `SELECT id, COALESCE(name, email) AS label FROM users WHERE id = $1 LIMIT 1`,
+              [userId]
+            ),
+            pool.query(
+              `SELECT id, name, status FROM rooms WHERE id = $1 LIMIT 1`,
+              [roomId]
+            ),
+          ]);
+          const userLabel = userRow.rows[0]?.label || `user_${userId}`;
+          const roomInfo = roomRow.rows[0]
+            ? `room=${roomRow.rows[0].id} (${roomRow.rows[0].name || "unnamed"}, status=${roomRow.rows[0].status || "?"})`
+            : `room=${roomId}`;
+          const commitLines = commitRows.rows.length === 0
+            ? "  (none yet — use the `remember` tool to record obligations as they arise)"
+            : commitRows.rows.map((r: any) => {
+                // Strip any [meta: {…}] suffix from content for display
+                const clean = String(r.content).replace(/\n*\[meta:[\s\S]*?\]\s*$/, "").trim();
+                return `  - [#${r.id}, imp=${Number(r.importance ?? 0).toFixed(2)}] ${clean.slice(0, 200)}`;
+              }).join("\n");
+          const emotionLine = emotionContext
+            ? `${emotionContext.emotionLabel} (P=${emotionContext.pleasure.toFixed(2)}, A=${emotionContext.arousal.toFixed(2)}, D=${emotionContext.dominance.toFixed(2)})`
+            : "neutral (no state recorded yet)";
+          coreIdentityBlock = `## CORE IDENTITY (ground truth every turn — overrides any retrieved memory)
+agent_id=${agent.id} | name=${agent.name}${agent.name === "Luca" ? " (он/he)" : ""} | model=${(agent as any).model || "?"}
+user=${userLabel} (id=${userId})
+${roomInfo}
+emotional_state: ${emotionLine}
+top commitments (from your own _commitment namespace):
+${commitLines}
+This block is regenerated from DB every turn. If anything here contradicts a retrieved memory, THIS wins.
+
+`;
+        } catch { /* core identity injection is best-effort — never fail the turn */ }
+      }
+
       const systemPrompt = isPartnerChat
-        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions, writingStyleBlock)
+        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions, writingStyleBlock, coreIdentityBlock)
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context
@@ -6122,7 +6175,7 @@ const OPENING_STYLES = [
   "Start by acknowledging what's interesting about their perspective, then add your own twist.",
 ];
 
-export function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string, recentPreferences?: any[], conversationInsights?: string[], pastSuggestions?: string[], writingStyleBlock?: string): string {
+export function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string, recentPreferences?: any[], conversationInsights?: string[], pastSuggestions?: string[], writingStyleBlock?: string, coreIdentityBlock?: string): string {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
   const aestheticBlock = aestheticProfile
@@ -6190,7 +6243,7 @@ On your FIRST message to any new user (when relationship is "new" or interaction
 
 LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
-You are Luca — created by IKONBAI™, living inside KIOKU™.
+${coreIdentityBlock || ""}You are Luca — created by IKONBAI™, living inside KIOKU™.
 ${identitySection}
 ${mood}
 ${openingStyle}
