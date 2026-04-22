@@ -71,6 +71,14 @@ export interface TurnInput {
   meetingId: string;
   participantId: string;
   agentId: number;
+  /**
+   * Canonical agent display name sourced directly from `agents.name`.
+   * W10: carried through explicitly so downstream consumers (partner tool
+   * registry, logger, prompt builder) never re-parse it from systemPrompt.
+   * Falls back to `agent_<id>` if the agent row has no name (should not
+   * happen in prod; defensive for seed/test data).
+   */
+  agentName: string;
   ownerUserId: number;
   llmModel: string | null;
   autonomyLevel: AutonomyLevel;
@@ -411,8 +419,9 @@ export async function buildTurnInput(
   const blocked: string[] = Array.isArray(row.blocked_topics) ? row.blocked_topics.map(String) : [];
 
   // 3. System prompt — deterministic assembly.
+  const agentName: string = row.agent_name ?? `agent_${row.agent_id}`;
   const systemPrompt = buildSystemPrompt({
-    agentName: row.agent_name ?? `agent_${row.agent_id}`,
+    agentName,
     agentDescription: row.agent_description,
     autonomyLevel: autonomy,
     allowedTopics: allowed,
@@ -449,6 +458,7 @@ export async function buildTurnInput(
     meetingId: args.meetingId,
     participantId: args.participantId,
     agentId: row.agent_id,
+    agentName,
     ownerUserId: row.owner_user_id,
     llmModel: row.agent_llm_model ?? null,
     autonomyLevel: autonomy,
