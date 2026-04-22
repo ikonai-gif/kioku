@@ -77,7 +77,7 @@ export async function dispatchLucaTool(
   ctx: RunCodeContext,
 ): Promise<unknown> {
   switch (toolName) {
-    case "run_code":
+    case "luca_run_code":
       return runCodeHandler(toolInput, ctx);
     // Day 3-5: analyze_image, web_search, read_url, memory, files
     default:

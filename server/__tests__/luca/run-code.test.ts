@@ -168,6 +168,16 @@ describe("computeCodeSha (SF3)", () => {
     );
   });
 
+  it("null inputs treated same as undefined (defensive — Bro2 Day 2 N1)", () => {
+    // If a V2 caller bypasses TS and passes `null` (e.g. `inputs: null as any`),
+    // `inputs ?? {}` coerces null → {} just like undefined. Lock behavior so
+    // future refactor from `??` to `||` (or removal of the default arg)
+    // doesn't silently change hash semantics.
+    expect(computeCodeSha("print(1)", null as unknown as undefined)).toBe(
+      computeCodeSha("print(1)", undefined),
+    );
+  });
+
   it("differs when inputs differ (V2 forward compat)", () => {
     const a = computeCodeSha("print(x)", { file: "a.csv" });
     const b = computeCodeSha("print(x)", { file: "b.csv" });
@@ -177,7 +187,7 @@ describe("computeCodeSha (SF3)", () => {
 
 describe("runCodeTool (Anthropic spec)", () => {
   it("has required fields and matches registry flag name", () => {
-    expect(runCodeTool.name).toBe("run_code");
+    expect(runCodeTool.name).toBe("luca_run_code");
     expect(runCodeTool.description.length).toBeGreaterThan(50);
     expect(runCodeTool.input_schema.required).toContain("code");
     expect(Object.keys(runCodeTool.input_schema.properties ?? {})).toEqual(
@@ -243,7 +253,7 @@ describe("runCodeHandler — tool_runs forensic insert", () => {
     const [pending, terminal] = insertedRows;
 
     expect(pending.status).toBe("pending");
-    expect(pending.tool).toBe("run_code");
+    expect(pending.tool).toBe("luca_run_code");
     expect(pending.userId).toBe(10);
     expect(pending.agentId).toBe(42);
     expect(pending.ctxKey).toBe("meeting_abc_turn_1");
@@ -421,7 +431,7 @@ describe("getLucaTools registry", () => {
     allOn();
     const tools = getLucaTools();
     expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe("run_code");
+    expect(tools[0].name).toBe("luca_run_code");
   });
 
   it("omits run_code when per-tool flag off", () => {
@@ -454,18 +464,18 @@ describe("getLucaTools registry", () => {
   it("__getAllLucaToolSpecsForTests ignores flags", () => {
     setFlags({}); // all off
     const all = __getAllLucaToolSpecsForTests();
-    expect(all.map((t) => t.name)).toContain("run_code");
+    expect(all.map((t) => t.name)).toContain("luca_run_code");
   });
 });
 
 describe("dispatchLucaTool", () => {
-  it("routes run_code to its handler", async () => {
+  it("routes luca_run_code to its handler", async () => {
     const runner = new MockPyodideRunner();
     runner.register("print(1)", { stdout: "1\n" });
     __setPyodideRunnerForTests(runner);
 
     const r = (await dispatchLucaTool(
-      "run_code",
+      "luca_run_code",
       { code: "print(1)" },
       ctx(),
     )) as { status: string; stdout: string };

@@ -49,6 +49,16 @@ CREATE TABLE IF NOT EXISTS tool_runs (
   code_sha           VARCHAR(64) NOT NULL,
   status             VARCHAR(32) NOT NULL
                      CHECK (status IN ('pending','ok','error','timeout','memory_exceeded','disabled')),
+  -- Pending ↔ terminal correlation (Bro2 Day 2 Q3):
+  --   V1a assumption: Luca's turn-runner executes exactly ONE tool_use
+  --   block per LLM step (Anthropic standard, sequential). So the tuple
+  --   (turn_id, ctx_key, code_sha) + order by created_at uniquely pairs
+  --   pending ↔ terminal rows. No correlation_id column needed at V1a.
+  --
+  --   If V2 ever adds parallel tool execution within a single turn, YOU
+  --   MUST add a `correlation_id UUID NOT NULL` column here and generate
+  --   it in runCodeHandler, shared between pending + terminal inserts.
+  --   Order-by-created_at is NOT safe under concurrent inserts.
   input              JSONB NOT NULL,
   output             JSONB,
   error_detail       TEXT,

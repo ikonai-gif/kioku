@@ -18,9 +18,11 @@
  * absolute ceiling — this layer enforces the tighter tool-level cap.
  *
  * SF3 — `code_sha = sha256(code + JSON.stringify(inputs ?? {}))`.
- * V1 `inputs` is always undefined → JSON.stringify(undefined)="undefined"
- * which hashes stably. V2 file_upload (post-V1a) will pass file metadata
- * so same code + different file → different sha → no retry collision.
+ * V1 `inputs` is always undefined; `undefined ?? {}` coerces to `{}`, so
+ * JSON.stringify produces the stable string `"{}"`. Same sha as explicit
+ * empty `{}` (V2 callers can pass inputs=undefined or inputs={} interchangeably).
+ * V2 file_upload (post-V1a) will pass file metadata so same code + different
+ * file → different sha → no retry collision.
  *
  * Forensic log rows:
  *   - "pending" inserted BEFORE runner.run() — captures input + ctxKey
@@ -60,13 +62,21 @@ export const RUN_CODE_MAX_TIMEOUT_MS = 20_000;
  * `run_code` tool (which is Daytona-backed, persistent, supports JS) — this
  * one is Pyodide-only, per-turn sandbox, tool_runs-logged.
  *
+ * Named `luca_run_code` (NOT `run_code`) to avoid collision with
+ * partner-chat's `run_code` in deliberation.ts. The two tools have
+ * different input schemas and different backends — if they ever ended up
+ * in the same LLM tool list (bug, refactor), Anthropic SDK would reject
+ * duplicate names or silently last-write-wins. Explicit distinct names
+ * make the collision impossible. Golden test in
+ * `luca/registry-collision.test.ts` enforces this (Bro2 Day 2 M2).
+ *
  * Not registered in `partner-chat` flow. Only loaded via Luca's own tool
  * registry (`luca-tools/registry.ts`).
  */
 export const runCodeTool: Anthropic.Messages.Tool = {
-  name: "run_code",
+  name: "luca_run_code",
   description:
-    "Run a short Python snippet in a per-turn Pyodide sandbox. Use for " +
+    "Run a short Python snippet in a per-turn Pyodide sandbox (Luca V1a). Use for " +
     "arithmetic, data analysis, small simulations, plot generation. " +
     "Globals DO NOT persist across calls by default — call with " +
     "`keep_globals: true` if you need REPL-style state within the same " +
@@ -173,7 +183,7 @@ export async function insertPendingRun(
     meetingId: ctx.meetingId ?? null,
     turnId: ctx.turnId ?? null,
     ctxKey: ctx.ctxKey,
-    tool: "run_code",
+    tool: "luca_run_code",
     codeSha,
     status: "pending",
     input: input as unknown as Record<string, unknown>,
@@ -199,7 +209,7 @@ export async function insertTerminalRun(
     meetingId: ctx.meetingId ?? null,
     turnId: ctx.turnId ?? null,
     ctxKey: ctx.ctxKey,
-    tool: "run_code",
+    tool: "luca_run_code",
     codeSha,
     status: result.status,
     input: input as unknown as Record<string, unknown>,
