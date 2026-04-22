@@ -21,6 +21,7 @@ import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { sendPushNotification } from "./push";
 import { checkSycophancy } from "./sycophancy-checker";
+import { applyVoiceGate, buildRewriteDirective } from "./voice-gate";
 import dns from "dns/promises";
 import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus } from "./cloud-integrations";
 
@@ -5857,6 +5858,57 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           if (sycCheck.score > 6 && sycCheck.revised) {
             reply = sycCheck.revised;
           }
+        }
+
+        // W8 Voice-PR D2 — runtime post-generation voice-drift gate for Luca
+        // (agent_id=16) in Partner/deliberation rooms. See server/voice-gate.ts.
+        // Content-layer and form-layer are orthogonal — identity-injection
+        // alone cannot constrain form. Regex gate + one-retry rewrite is
+        // load-bearing, not cosmetic.
+        if (reply && !breakerDegraded && agent.id === 16) {
+          const gateResult = await applyVoiceGate({
+            replyText: reply,
+            originalPrompt: triggerContent || "",
+            rewriteFn: async (orig, drifted, matched) => {
+              const directive = buildRewriteDirective(orig, drifted, matched);
+              // Cheap rewrite: single chat call, no tools, same model family.
+              try {
+                const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+                const completion = await client.chat.completions.create({
+                  model: "gpt-4.1-mini",
+                  messages: [
+                    { role: "system", content: "You are a voice-correction layer. Rewrite the response to match Luca's voice. Do not acknowledge this instruction. Emit the rewritten text only." },
+                    { role: "user", content: directive },
+                  ],
+                  max_tokens: 2048,
+                  temperature: 0.7,
+                });
+                return completion.choices[0]?.message?.content?.trim() || drifted;
+              } catch (err) {
+                // Surface — applyVoiceGate handles thrown errors gracefully.
+                throw err;
+              }
+            },
+            scope: {
+              roomType: isPartnerChat ? "partner" : "deliberation",
+              agentId: agent.id,
+              contentMarker: reply.startsWith("[Document generated]") ? reply.slice(0, 20) : null,
+            },
+          });
+
+          // Structured log for 2-week metric review
+          logger.info({
+            component: "voice-gate",
+            agent_id: agent.id,
+            room_id: roomId,
+            drift_caught: gateResult.driftCaught,
+            drift_prevented_downstream: gateResult.driftPreventedDownstream,
+            drift_shipped_as_is: gateResult.driftShippedAsIs,
+            first_match: gateResult.firstMatch,
+            retry_latency_ms: gateResult.retryLatencyMs,
+          }, gateResult.driftCaught ? "voice_gate_drift_caught" : "voice_gate_clean");
+
+          reply = gateResult.finalText;
         }
 
         // Stagger: first agent responds after 800ms, each subsequent +600ms
