@@ -2,12 +2,13 @@ import { describe, it, expect } from "vitest";
 import { getPartnerToolsForAgent, LUCA_STUDIO_TOOL_NAMES, buildPartnerPrompt } from "../../server/deliberation.js";
 
 describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
-  it("returns exactly 18 tools for Luca (15 media + 3 workspace)", () => {
+  it("returns exactly 19 tools for Luca (15 media + 3 workspace + 1 self-accountability)", () => {
     // P2.6: bumped from 16 to 18 — added reframe_vertical + apply_ai_disclosure
-    // because produce_episode pipeline plan names them by hand. Without them
-    // Luca's episode pipeline would silently skip legal disclosure (Bro2 F1).
+    //       because produce_episode plan names them by hand (Bro2 F1).
+    // P2.12: bumped from 18 to 19 — added `remember` for Luca self-write memory
+    //        (self-accountability MVP). Scoped to (userId, agentId) on write.
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
   });
 
   it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
@@ -62,7 +63,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     }
   });
 
-  it("all 16 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
+  it("all 19 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     for (const t of tools) {
       expect(typeof t.name).toBe("string");
