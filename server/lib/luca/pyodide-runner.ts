@@ -64,6 +64,23 @@ export function toSandboxKey(s: string): SandboxKey {
   return s as SandboxKey;
 }
 
+/**
+ * Construct a deterministic SandboxKey for a meeting-scoped turn.
+ *
+ * Pattern: `m_<meetingId-no-dashes>_t_<turnId-no-dashes>`. UUIDs are 36 chars
+ * with 4 dashes → 32 hex chars each → total key length 2 + 32 + 3 + 32 = 69,
+ * well under the 128-char regex limit. First char `m` is alphanumeric so
+ * leading-dash hardening (Bro2 Day 1 N1) holds.
+ *
+ * Use this helper instead of hand-constructing ctxKey strings so B1 globals
+ * isolation and SF2 per-ctxKey filesystem cleanup both see the same naming.
+ */
+export function sandboxKeyForTurn(meetingId: string, turnId: string): SandboxKey {
+  const mid = meetingId.replace(/-/g, "");
+  const tid = turnId.replace(/-/g, "");
+  return toSandboxKey(`m_${mid}_t_${tid}`);
+}
+
 export interface RunCodeInput {
   /** Sandbox scope. Globals are isolated per-ctxKey (B1). */
   ctxKey: SandboxKey;

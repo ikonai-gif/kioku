@@ -275,6 +275,15 @@ export async function runCodeHandler(
     };
   }
 
+  // TODO Day 5 (plan §B2): insert `turnStateStore.isLocked(ctx.turnId)` check
+  // here AFTER flag gate, BEFORE parseRunCodeInput. If locked → return
+  // {status: "disabled", error: "turn_locked_untrusted_content"} without
+  // inserting tool_runs rows. Belt-and-braces — the tool-set filter in
+  // getLucaTools() should already strip run_code from Luca's offered tools
+  // when the turn is locked, so this handler path shouldn't fire; this is
+  // defense-in-depth against forged tool_use blocks / future refactor bugs.
+  // TurnStateStore already shipped Day -1 (server/lib/luca/turn-state-store.ts).
+
   const input = parseRunCodeInput(raw);
   const codeSha = computeCodeSha(input.code);
 
