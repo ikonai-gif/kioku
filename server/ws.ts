@@ -1,7 +1,14 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { type Server } from "http";
 import jwt from "jsonwebtoken";
-import { storage } from "./storage";
+import { storage, pool } from "./storage";
+import { verifyMeetingAccess } from "./lib/meeting-acl";
+import type {
+  MeetingEventBus,
+  MeetingEventName,
+  MeetingEventPayload,
+} from "./lib/meeting-event-bus";
+import logger from "./logger";
 // @ts-ignore — cookie has no bundled types
 import cookie from "cookie";
 
@@ -9,6 +16,18 @@ const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'producti
 
 // Room subscriptions: roomId → Set of WebSocket clients
 const roomClients = new Map<number, Set<WebSocket>>();
+
+// Meeting topic subscriptions (W9 Item 3-4): meetingId (uuid) → Set<WebSocket>.
+// Separate namespace from `roomClients` (which is keyed by numeric roomId) so
+// WS clients can be subscribed to both a partner-chat room AND a meeting.
+const meetingClients = new Map<string, Set<WebSocket>>();
+
+// Per-meeting send throttle (W9 Item 3-4): max 2 events/sec/meeting. We keep
+// a rolling window of recent send timestamps and drop emissions that exceed
+// the cap — the meeting_context rows are durable, so a dropped event is a UX
+// miss, not a correctness bug. Kept in-memory; reset on process restart.
+const MEETING_EVENT_RATE_LIMIT = 2; // per second per meetingId
+const meetingEmitHistory = new Map<string, number[]>();
 
 // Track authenticated userId per WebSocket
 const wsUserMap = new WeakMap<WebSocket, number>();
@@ -88,12 +107,16 @@ export function setupWebSocket(httpServer: Server) {
     wsUserMap.set(ws, userId);
 
     let subscribedRoom: number | null = null;
+    // Multiple meeting subscriptions allowed per WS connection (UI can open
+    // more than one meeting tab on the same socket). Set also tolerates a
+    // client spamming subscribe for the same meetingId (idempotent Set.add).
+    const subscribedMeetings = new Set<string>();
 
     ws.on("message", async (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
 
-        // Client subscribes to a room
+        // Client subscribes to a room (partner chat — numeric id)
         if (msg.type === "subscribe" && typeof msg.roomId === "number") {
           // Verify room belongs to authenticated user
           const room = await storage.getRoom(msg.roomId, userId);
@@ -113,23 +136,76 @@ export function setupWebSocket(httpServer: Server) {
           }
           roomClients.get(rid)!.add(ws);
           ws.send(JSON.stringify({ type: "subscribed", roomId: rid }));
+          return;
+        }
+
+        // Client subscribes to a meeting topic (W9 Item 3-4 — uuid id)
+        if (
+          msg.type === "subscribe" &&
+          msg.topic === "meeting" &&
+          typeof msg.meetingId === "string"
+        ) {
+          // ACL: re-use verifyMeetingAccess. No recovery if DB is down — we
+          // reply with an error and the client retries.
+          let allowed = false;
+          try {
+            allowed = await verifyMeetingAccess(pool, userId, msg.meetingId);
+          } catch (err) {
+            logger.warn(
+              { err: (err as Error).message, meetingId: msg.meetingId, userId },
+              "[ws] meeting subscribe ACL check failed",
+            );
+          }
+          if (!allowed) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                topic: "meeting",
+                meetingId: msg.meetingId,
+                message: "Meeting not found",
+              }),
+            );
+            return;
+          }
+          const mid = msg.meetingId;
+          if (!meetingClients.has(mid)) meetingClients.set(mid, new Set());
+          meetingClients.get(mid)!.add(ws);
+          subscribedMeetings.add(mid);
+          ws.send(JSON.stringify({ type: "subscribed", topic: "meeting", meetingId: mid }));
+          return;
+        }
+
+        // Explicit unsubscribe from a meeting topic
+        if (
+          msg.type === "unsubscribe" &&
+          msg.topic === "meeting" &&
+          typeof msg.meetingId === "string"
+        ) {
+          meetingClients.get(msg.meetingId)?.delete(ws);
+          subscribedMeetings.delete(msg.meetingId);
+          ws.send(
+            JSON.stringify({ type: "unsubscribed", topic: "meeting", meetingId: msg.meetingId }),
+          );
+          return;
         }
       } catch {
         // ignore invalid messages
       }
     });
 
-    ws.on("close", () => {
+    const cleanup = () => {
       if (subscribedRoom !== null) {
         roomClients.get(subscribedRoom)?.delete(ws);
       }
-    });
+      for (const mid of subscribedMeetings) {
+        meetingClients.get(mid)?.delete(ws);
+      }
+      subscribedMeetings.clear();
+    };
 
-    ws.on("error", () => {
-      if (subscribedRoom !== null) {
-        roomClients.get(subscribedRoom)?.delete(ws);
-      }
-    });
+    ws.on("close", cleanup);
+
+    ws.on("error", cleanup);
   });
 
   return wss;
@@ -292,4 +368,97 @@ export function broadcastHumanTurn(roomId: number, payload: {
       client.send(data);
     }
   });
+}
+
+// ── Meeting Room event bus (W9 Item 3-4) ────────────────────────────────────
+
+/**
+ * Per-meeting rate limiter. Keeps a rolling 1-second window of send timestamps
+ * per meetingId; if the window already contains `MEETING_EVENT_RATE_LIMIT`
+ * entries, the emission is dropped. The history array is compacted on each
+ * call so memory per meeting is O(limit).
+ */
+function shouldEmitMeetingEvent(meetingId: string, nowMs: number): boolean {
+  const cutoff = nowMs - 1000;
+  const history = meetingEmitHistory.get(meetingId) ?? [];
+  // Drop entries older than the window.
+  let i = 0;
+  while (i < history.length && history[i] < cutoff) i++;
+  const fresh = i === 0 ? history : history.slice(i);
+  if (fresh.length >= MEETING_EVENT_RATE_LIMIT) {
+    // Write back compacted history even on drop so we don't accumulate stale
+    // entries forever if emissions burst then die off.
+    meetingEmitHistory.set(meetingId, fresh);
+    return false;
+  }
+  fresh.push(nowMs);
+  meetingEmitHistory.set(meetingId, fresh);
+  return true;
+}
+
+/**
+ * Broadcast a meeting event to all WS clients subscribed to this meeting's
+ * topic. Metadata-only (F1) — no `content` or `contentPreview` fields, full
+ * stop. Subscribers fetch bodies via GET /api/meetings/:id/context which
+ * re-applies visibility ACL per-viewer.
+ */
+function broadcastToMeeting(
+  meetingId: string,
+  event: MeetingEventName,
+  payload: MeetingEventPayload,
+): number {
+  const clients = meetingClients.get(meetingId);
+  if (!clients || clients.size === 0) return 0;
+  if (!shouldEmitMeetingEvent(meetingId, Date.now())) {
+    logger.debug(
+      { meetingId, event, dropped: true },
+      "[ws] meeting event dropped (rate-limited)",
+    );
+    return 0;
+  }
+  // Assemble the wire payload. We spread `payload` last so a future
+  // additional metadata field shows up automatically — but F1 is enforced
+  // structurally: MeetingEventPayload has no content/contentPreview.
+  const data = JSON.stringify({ type: "meeting_event", event, ...payload });
+  let delivered = 0;
+  for (const client of Array.from(clients)) {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(data);
+        delivered++;
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+  return delivered;
+}
+
+/**
+ * Production MeetingEventBus. Fire-and-forget; always resolves — emission
+ * errors are logged, not raised, so the turn runner's durable commit is
+ * never rolled back by a WS hiccup.
+ */
+export class WsMeetingEventBus implements MeetingEventBus {
+  async emit(event: MeetingEventName, payload: MeetingEventPayload): Promise<void> {
+    try {
+      broadcastToMeeting(payload.meetingId, event, payload);
+    } catch (err) {
+      logger.warn(
+        { err: (err as Error).message, event, meetingId: payload.meetingId },
+        "[ws] WsMeetingEventBus emit failed (swallowed)",
+      );
+    }
+  }
+}
+
+/** Test helpers — NOT exported to app code. */
+export function _resetMeetingWsStateForTests(): void {
+  for (const set of meetingClients.values()) set.clear();
+  meetingClients.clear();
+  meetingEmitHistory.clear();
+}
+
+export function _getMeetingSubscriberCountForTests(meetingId: string): number {
+  return meetingClients.get(meetingId)?.size ?? 0;
 }

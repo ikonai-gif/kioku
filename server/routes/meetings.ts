@@ -15,6 +15,17 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { pool } from "../storage";
 import logger from "../logger";
+import {
+  runTurn,
+  TurnStateMismatchError,
+  TurnBreakerOpenError,
+  TurnTimeoutError,
+  type LlmCaller,
+} from "../lib/meeting-turn-runner";
+import type { MeetingEventBus } from "../lib/meeting-event-bus";
+import { NoopMeetingEventBus } from "../lib/meeting-event-bus";
+import { verifyTurnParticipantOwnership } from "../lib/meeting-acl";
+import { makeMeetingLlmCaller } from "../lib/meeting-llm-caller";
 
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -115,10 +126,23 @@ async function userCanReadMeeting(userId: number, meetingId: string): Promise<bo
 
 // ── Registration ─────────────────────────────────────────────────────────────
 
+/**
+ * Registration options (W9 Item 3-4). `eventBus` is injected so production
+ * wires `WsMeetingEventBus` while tests can pass a `RecordingMeetingEventBus`.
+ * `llmFactory` lets tests stub LLM without instantiating Anthropic.
+ */
+export interface MeetingRoutesOptions {
+  eventBus?: MeetingEventBus;
+  llmFactory?: (agentId: number) => Promise<LlmCaller>;
+}
+
 export function registerMeetingRoutes(
   app: Express,
   getUser: (req: any) => Promise<number | null>,
+  opts: MeetingRoutesOptions = {},
 ) {
+  const eventBus = opts.eventBus ?? new NoopMeetingEventBus();
+  const llmFactory = opts.llmFactory ?? makeMeetingLlmCaller;
   // ── POST /api/meetings ─────────────────────────────────────────────────────
   app.post(
     "/api/meetings",
@@ -698,6 +722,186 @@ export function registerMeetingRoutes(
          LIMIT $${params.length}`;
       const { rows } = await pool.query(sql, params);
       return res.json({ context: rows, limit });
+    }),
+  );
+
+  // ── POST /api/meetings/:id/turn ────────────────────────────────────────────
+  // Advance the meeting by one turn. Caller owns the acting participant
+  // (either explicit `participant_id` in body, or meeting.next_participant_id).
+  // Headers: `X-Idempotency-Key` optional — forwarded to the runner so client
+  // retries collapse to one LLM call.
+  app.post(
+    "/api/meetings/:id/turn",
+    asyncHandler(async (req, res) => {
+      const userId = await getUser(req);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const id = String(req.params.id ?? "");
+      if (!isValidUuid(id)) return res.status(400).json({ error: "invalid_id" });
+
+      const body = z
+        .object({ participant_id: z.string().uuid().optional() })
+        .safeParse(req.body ?? {});
+      if (!body.success) {
+        return res.status(400).json({ error: "invalid_request", issues: body.error.issues });
+      }
+
+      // ACL: resolve participant, verify ownership.
+      const acl = await verifyTurnParticipantOwnership(
+        pool,
+        userId,
+        id,
+        body.data.participant_id ?? null,
+      );
+      if (!acl.ok) {
+        const map: Record<typeof acl.reason, number> = {
+          meeting_not_found: 404,
+          no_next_participant: 409,
+          participant_not_owned: 403,
+          participant_inactive: 409,
+        };
+        return res.status(map[acl.reason]).json({ error: acl.reason });
+      }
+
+      const idemHeader = req.header("x-idempotency-key");
+      const idempotencyKey = idemHeader && idemHeader.length > 0 ? idemHeader : undefined;
+
+      // LLM caller resolved per-call so each turn picks up the current agent
+      // credentials (rotation, degraded-agent disable, etc.).
+      let llm: LlmCaller;
+      try {
+        llm = await llmFactory(acl.agentId);
+      } catch (err: any) {
+        if (err?.message === "no_llm_provider") {
+          return res.status(503).json({ error: "no_llm_provider" });
+        }
+        throw err;
+      }
+
+      try {
+        const result = await runTurn(pool, {
+          meetingId: id,
+          participantId: acl.participantId,
+          idempotencyKey,
+          llm,
+          eventBus,
+        });
+        return res.status(200).json(result);
+      } catch (err: any) {
+        if (err instanceof TurnStateMismatchError) {
+          return res.status(409).json({ error: err.code });
+        }
+        if (err instanceof TurnBreakerOpenError) {
+          return res.status(503).json({ error: "llm_breaker_open" });
+        }
+        if (err instanceof TurnTimeoutError) {
+          return res.status(504).json({ error: "llm_timeout" });
+        }
+        throw err;
+      }
+    }),
+  );
+
+  // ── POST /api/meetings/:id/turn/approve ────────────────────────────────────
+  // Human-in-the-loop approval step for scoped / approval-gated content.
+  // Caller must be the creator OR own an approve-mode participant in the
+  // meeting. Transitions waiting_for_approval → active and flips the stored
+  // context row's approval metadata.
+  const approveSchema = z.object({
+    context_entry_id: z.string().uuid(),
+    approved: z.boolean(),
+  });
+
+  app.post(
+    "/api/meetings/:id/turn/approve",
+    asyncHandler(async (req, res) => {
+      const userId = await getUser(req);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const id = String(req.params.id ?? "");
+      if (!isValidUuid(id)) return res.status(400).json({ error: "invalid_id" });
+
+      const parsed = approveSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+      }
+      const { context_entry_id, approved } = parsed.data;
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        const { rows: meetingRows } = await client.query(
+          `SELECT creator_user_id, state FROM meetings WHERE id = $1 FOR UPDATE`,
+          [id],
+        );
+        const meeting = meetingRows[0];
+        if (!meeting) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "meeting_not_found" });
+        }
+
+        // Approver must be creator OR own an approve-mode participant.
+        const isCreator = meeting.creator_user_id === userId;
+        let canApprove = isCreator;
+        if (!canApprove) {
+          const { rows } = await client.query(
+            `SELECT 1 FROM meeting_participants
+              WHERE meeting_id = $1 AND owner_user_id = $2
+                AND participation_mode = 'approve' AND left_at IS NULL
+              LIMIT 1`,
+            [id, userId],
+          );
+          canApprove = rows.length > 0;
+        }
+        if (!canApprove) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "not_authorized" });
+        }
+
+        if (meeting.state !== "waiting_for_approval") {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "not_awaiting_approval", state: meeting.state });
+        }
+
+        // Verify the context entry belongs to this meeting.
+        const { rows: ctxRows } = await client.query(
+          `SELECT id FROM meeting_context WHERE id = $1 AND meeting_id = $2`,
+          [context_entry_id, id],
+        );
+        if (ctxRows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "context_entry_not_found" });
+        }
+
+        const newState = approved ? "active" : "aborted";
+        await client.query(`UPDATE meetings SET state = $1, updated_at = NOW() WHERE id = $2`, [
+          newState,
+          id,
+        ]);
+        await client.query("COMMIT");
+
+        // Emit state change OUTSIDE the transaction — fire and forget.
+        eventBus
+          .emit("meeting.state.changed", {
+            meetingId: id,
+            state: newState,
+            previousState: "waiting_for_approval",
+            reason: approved ? "approved" : "rejected",
+          })
+          .catch(() => {});
+
+        logger.info(
+          { component: "meetings", userId, meetingId: id, action: "approve", approved, result: "ok" },
+          "[meetings] turn approval",
+        );
+        return res.status(200).json({ meeting_id: id, state: newState, approved });
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
     }),
   );
 }

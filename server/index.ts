@@ -29,6 +29,7 @@ import { closeQueues } from "./queue";
 import { closeRedisClient } from "./lib/redis";
 import { getWss } from "./ws";
 import { startMeetingReaper, type ReaperHandle } from "./lib/meeting-reaper";
+import { getMeetingEventBus } from "./lib/meeting-event-bus-registry";
 
 // SECURITY: Constant-time string comparison to prevent timing attacks on secrets
 export function safeCompare(a: string, b: string): boolean {
@@ -409,7 +410,7 @@ void runInitLoop();
   let meetingReaper: ReaperHandle | null = null;
   try {
     const { pool } = await import("./storage");
-    meetingReaper = startMeetingReaper({ pool });
+    meetingReaper = startMeetingReaper({ pool, eventBus: getMeetingEventBus() });
   } catch (err) {
     logger.error({ err: (err as Error).message }, "failed to start meeting reaper");
   }

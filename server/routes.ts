@@ -4,7 +4,12 @@ import { storage, pool, getToolActivityForMessage } from "./storage";
 import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
-import { setupWebSocket, broadcastToRoom, getActiveWsConnectionCount } from "./ws";
+import {
+  setupWebSocket,
+  broadcastToRoom,
+  getActiveWsConnectionCount,
+  WsMeetingEventBus,
+} from "./ws";
 import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, abortRoomTurn, isRoomTurnActive } from "./deliberation";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import * as provenanceModule from "./provenance";
@@ -26,6 +31,8 @@ import {
 } from "./cloud-integrations";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
+import { getMeetingEventBus, setMeetingEventBus } from "./lib/meeting-event-bus-registry";
+import { drainMeetings } from "./lib/meeting-drain";
 import { checkRegistrationLimit, checkAuthRateLimit, checkDemoRateLimit } from "./ratelimit";
 import { getLimits, AI_QUOTAS, getUsageLimits } from "./limits";
 import { consolidateMemories } from "./memory-consolidation";
@@ -297,8 +304,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerPrivacyRoutes(app, getUser);
 
   // ── Meeting Room API (behind MEETING_ROOM_ENABLED flag) ──────
+  // Install the production WS event bus into the singleton registry. Must
+  // happen AFTER setupWebSocket above so the WS server is ready to accept
+  // subscriptions by the time the first event fires.
+  setMeetingEventBus(new WsMeetingEventBus());
   app.use("/api/meetings", requireFlag("MEETING_ROOM_ENABLED"));
-  registerMeetingRoutes(app, getUser);
+  registerMeetingRoutes(app, getUser, {
+    eventBus: getMeetingEventBus(),
+  });
+
+  // ── Admin: drain non-terminal meetings (master-key gated) ────
+  // Bro2 SF4 — supports `?dry_run=true` to preview what would be drained
+  // without writing. Default (dry_run missing/false) performs the drain so
+  // the rollback DoD runbook stays one call. MEETING_ROOM_ENABLED flag is
+  // NOT checked here intentionally — drain is the escape hatch for a
+  // flipped-off feature, it must run even when the flag is off.
+  app.post("/api/admin/meetings/drain", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+
+    const dryRun = String(req.query.dry_run ?? "").toLowerCase() === "true";
+    const { pool } = await import("./storage");
+    const result = await drainMeetings(pool, getMeetingEventBus(), { dryRun });
+    if (result.dryRun) {
+      return res.json({ would_drain: result.ids, count: result.count, dry_run: true });
+    }
+    return res.json({ drained: result.ids, count: result.count });
+  }));
 
   // ── Auth ──────────────────────────────────────────────────────
   // ── Debug — env var check (master key only) ──────────────────
