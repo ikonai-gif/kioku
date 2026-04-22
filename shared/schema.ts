@@ -478,13 +478,13 @@ export type MeetingArtifact = typeof meetingArtifacts.$inferSelect;
 // analysis AND reproduce exactly what Luca tried for any turn.
 //
 // SF3: `code_sha = sha256(code + JSON.stringify(inputs ?? {}))` — V1
-// run_code has inputs=undefined so semantically unchanged, but forward-
+// luca_run_code has inputs=undefined so semantically unchanged, but forward-
 // compat for V2 file_upload where same code against different file inputs
 // must NOT collide on retry-grouping lookups.
 export const toolRuns = pgTable("tool_runs", {
   id:               uuid("id").primaryKey().defaultRandom(),
-  // Scope — exactly one of meetingId/turnId is set for meeting-room runs;
-  // standalone calls (future) may have both null.
+  // Scope — both meetingId and turnId are set for meeting-room runs;
+  // standalone calls (future) may leave both null. `userId` is always set.
   userId:           integer("user_id").notNull(),
   agentId:          integer("agent_id"),
   meetingId:        uuid("meeting_id"),

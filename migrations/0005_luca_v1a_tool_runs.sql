@@ -1,8 +1,9 @@
 -- ────────────────────────────────────────────────────────────────────────────
 -- 0005_luca_v1a_tool_runs.sql — Luca V1a Day 2: tool_runs forensic log
--- Description: Append-only audit log for every Luca tool invocation (run_code
---              lands Day 2; analyze_image / search / memory / file wiring
---              on Day 3-5). Rows are never UPDATEd in place; a pending row
+-- Description: Append-only audit log for every Luca tool invocation
+--              (luca_run_code lands Day 2; analyze_image / search /
+--              memory / file wiring on Day 3-5). Rows are never UPDATEd
+--              in place; a pending row
 --              at start + a terminal row at end gives us latency diffs and
 --              a bulletproof reproduction log.
 --
@@ -13,9 +14,14 @@
 --     during dev.
 --   - ctxKey: SandboxKey the pyodide runner was invoked with. Matches regex
 --     /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/ (Day 1 N1 hardening).
---   - tool: "run_code" (Day 2), later "analyze_image" | "search" |
---     "read_memory" | "write_memory" | "read_file" | "upload_file".
---   - codeSha: SF3 — sha256(code + JSON.stringify(inputs ?? {})). V1 run_code
+--   - tool: "luca_run_code" (Day 2; name is luca-prefixed to avoid
+--     collision with partner-chat's own `run_code` tool in
+--     server/deliberation.ts:216 — see registry-collision.test.ts).
+--     Later "luca_analyze_image" | "luca_search" | "luca_read_url" |
+--     "luca_read_memory" | "luca_write_memory" | "luca_read_file" |
+--     "luca_upload_file". All Luca tools SHOULD carry the `luca_`
+--     prefix for the same collision-avoidance reason.
+--   - codeSha: SF3 — sha256(code + JSON.stringify(inputs ?? {})). V1 luca_run_code
 --     has inputs=undefined → JSON.stringify(undefined)="undefined" which
 --     hashes stably. V2 file_upload (not in V1a) will pass file metadata
 --     so same code + different file → different sha → no retry collision.
@@ -31,7 +37,7 @@
 --   - idx_tr_meeting_created: meeting-wide timeline
 --   - idx_tr_user_created: Kote's personal activity feed
 --   - idx_tr_code_sha: SF3 retry grouping — find prior runs of same code
---   - idx_tr_tool_status: error-rate telemetry "run_code error rate last hour"
+--   - idx_tr_tool_status: error-rate telemetry "luca_run_code error rate last hour"
 --
 -- Rollback: see 0005_luca_v1a_tool_runs_down.sql. Drops table + indexes.
 -- No data migration needed — tool_runs is additive and V1a master flag
