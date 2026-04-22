@@ -43,13 +43,25 @@ export interface TurnStateStore {
   /**
    * Mark a turn as untrusted — locks out memory-write tools for the rest of
    * this turn. Idempotent: calling twice is safe and keeps the first reason.
+   *
+   * **Error contract (Bro2 Day -1 M1)**: Unlike `isLocked` which fail-opens,
+   * `markUntrusted` may THROW on Redis failure. Callers MUST treat a throw
+   * from this method as equivalent to a successful lock — i.e. abort the
+   * turn's memory-write path, do NOT proceed on the assumption that "lock
+   * didn't take". Rationale: this method is invoked when we already know
+   * the turn is poisoned (attack-sig, canary mismatch); swallowing the
+   * error would silently downgrade the security posture.
    */
   markUntrusted(turnId: string, reason: string): Promise<void>;
 
   /**
-   * Check whether a turn is locked. Returns `{locked: false, reason: null}`
-   * if never marked, if Redis is unavailable, or if the key has expired.
-   * Callers MUST fail-open on this signal (see module docstring).
+   * Check whether a turn is locked. **Write-gate signal** — this is the
+   * authoritative check before any memory-write tool runs.
+   *
+   * Returns `{locked: false, reason: null}` if never marked, if Redis is
+   * unavailable, or if the key has expired. Callers MUST fail-open on this
+   * signal (see module docstring) — the authoritative gate is TRUST in the
+   * tool handler, not this store.
    */
   isLocked(turnId: string): Promise<TurnLockInfo>;
 
@@ -57,12 +69,17 @@ export interface TurnStateStore {
    * Explicit trust state setter. `trusted` is the default when nothing is
    * stored — this exists so TRUST can be attested positively (e.g. after a
    * canary verification passed).
+   *
+   * NOT exposed to the LLM tool surface — only TRUST verifiers + the
+   * turn-runner call this. See Bro2 sticky-lock analysis (Day -1 Q2).
    */
   setTrust(turnId: string, state: TrustState): Promise<void>;
 
   /**
-   * Read current trust state. Returns `"trusted"` when nothing is stored
-   * (fail-open).
+   * Read current trust state. **Read-side signal** — useful for logging,
+   * telemetry, UI hints. Do NOT gate memory writes on this alone (use
+   * `isLocked` which is the sticky write-gate). Returns `"trusted"` when
+   * nothing is stored (fail-open).
    */
   getTrust(turnId: string): Promise<TrustState>;
 
