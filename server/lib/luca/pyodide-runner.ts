@@ -24,6 +24,16 @@
  * via mock so the real impl on Day 1.5 has concrete contract tests to pass.
  * That's why this PR is "interface + mock + behavioral tests" — we lock the
  * semantics before the external dep lands.
+ *
+ * Bro2 Day 1 review (M1): The 25 mock tests do NOT literally transfer —
+ * ~20 of them exercise `MockPyodideRunner.register()`, which is a mock-only
+ * fixture hook not present on the `PyodideRunner` interface. What IS stable
+ * across Day 1 → Day 1.5 are the **behavioral invariants**: B1 globals
+ * isolation, SF2 eviction, `maxTimeoutMs` cap, `RunCodeStatus` surface
+ * (ok|error|timeout|memory_exceeded|disabled), flag-gate double defense.
+ * Day 1.5 must ship an analogous real-Python test suite that asserts these
+ * same invariants against `RealPyodideRunner` — plus an N=10 ctxKeys
+ * property-based test for namespace isolation (Bro2 N3).
  */
 import { LucaFeatureDisabledError, isLucaEnabled } from "./env";
 import logger from "../../logger";
@@ -39,10 +49,16 @@ import logger from "../../logger";
  */
 export type SandboxKey = string & { readonly __brand: "SandboxKey" };
 
+/**
+ * SandboxKey validator. First char MUST be alphanumeric — leading `-` is
+ * rejected so `rm -rf /tmp/sandbox/<key>/` on Day 1.5 can't ever have its
+ * key argument interpreted as a CLI flag (belt-and-braces — absolute paths
+ * already protect us, but zero-cost hardening per Bro2 Day 1 N1).
+ */
 export function toSandboxKey(s: string): SandboxKey {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(s)) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(s)) {
     throw new Error(
-      `pyodide.invalid_ctx_key: must match /^[A-Za-z0-9_-]{1,128}$/, got: ${JSON.stringify(s)}`,
+      `pyodide.invalid_ctx_key: must match /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/, got: ${JSON.stringify(s)}`,
     );
   }
   return s as SandboxKey;
@@ -103,6 +119,13 @@ export interface PyodideRunner {
    * failure — returns `status: "error"` with traceback. May throw on
    * runner-infrastructure failure (e.g. WASM load) — callers handle that
    * separately (tool-handler maps to `run_code_infrastructure_error`).
+   *
+   * **Flag gate (Bro2 Day 1 M2)**: when `LUCA_V1A_ENABLED=false`, this
+   * method returns `{ status: "disabled", ... }` rather than throwing.
+   * Tool-handler code SHOULD prefer {@link runCode} (the wrapper), which
+   * throws `LucaFeatureDisabledError` — easier to enforce at call sites
+   * that expect success-or-throw. Calling `run()` directly is supported
+   * but you MUST branch on `status === "disabled"` in that path.
    */
   run(input: RunCodeInput): Promise<RunCodeResult>;
 
@@ -168,6 +191,14 @@ export class MockPyodideRunner implements PyodideRunner {
   private readonly scripts = new Map<string, MockScript>();
   private readonly sandboxes = new Map<SandboxKey, SandboxState>();
 
+  /**
+   * @param defaultTimeoutMs default per-call timeout; override via RunCodeInput.
+   * @param maxTimeoutMs hard ceiling; caller-supplied timeouts are capped to
+   *   this value. Hardcoded at 60s per Bro2 Day 1 Q3 — promote to an env
+   *   var (`LUCA_RUN_CODE_MAX_TIMEOUT_MS`) only if prod observability shows
+   *   real workloads legitimately needing more than 60s.
+   * @param now clock injection for deterministic `elapsedMs` in tests.
+   */
   constructor(
     private readonly defaultTimeoutMs: number = 30_000,
     private readonly maxTimeoutMs: number = 60_000,
@@ -310,7 +341,15 @@ export class MockPyodideRunner implements PyodideRunner {
     );
   }
 
-  /** Test helper: enumerate live ctxKeys. */
+  /**
+   * Test helper: enumerate live ctxKeys.
+   *
+   * MOCK-ONLY (Bro2 Day 1 N2): this method is NOT on the `PyodideRunner`
+   * interface. `RealPyodideRunner` on Day 1.5 has no cheap in-process
+   * enumeration because sandbox state lives in `/tmp/sandbox/` + Pyodide
+   * heap. If you need "is this key live?" in production code, use
+   * {@link hasSandbox}, which IS on the interface.
+   */
   liveSandboxKeys(): SandboxKey[] {
     return Array.from(this.sandboxes.keys());
   }

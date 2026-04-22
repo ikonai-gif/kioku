@@ -83,6 +83,15 @@ describe("toSandboxKey", () => {
     expect(() => toSandboxKey("a b")).toThrow(/pyodide\.invalid_ctx_key/);
     expect(() => toSandboxKey("ключ")).toThrow(/pyodide\.invalid_ctx_key/);
   });
+
+  it("rejects leading dash or underscore (Bro2 N1: rm -rf safety)", () => {
+    expect(() => toSandboxKey("-abc")).toThrow(/pyodide\.invalid_ctx_key/);
+    expect(() => toSandboxKey("_abc")).toThrow(/pyodide\.invalid_ctx_key/);
+    // allowed: dash/underscore AFTER first char
+    expect(toSandboxKey("a-b_c")).toBe("a-b_c");
+    expect(toSandboxKey("a_")).toBe("a_");
+    expect(toSandboxKey("a-")).toBe("a-");
+  });
 });
 
 describe("MockPyodideRunner.run — happy path", () => {
