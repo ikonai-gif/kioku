@@ -2839,12 +2839,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    // Find user's first agent (Agent O / primary partner)
+    // W8 P3.1: canonical resolver (was: `.find(...) || agents[0]`).
     const agents = await storage.getAgents(userId);
-    const primaryAgent = agents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || agents[0];
+    const primaryAgent = resolvePrimaryAgent(agents);
 
     if (!primaryAgent) {
       return res.json({
@@ -3119,11 +3116,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     // Find primary agent for memory storage
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    const primaryAgent = resolvePrimaryAgent(userAgents);
 
     if (primaryAgent) {
       await storage.createMemory({
@@ -3193,11 +3188,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     // Find primary agent for memory storage
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    const primaryAgent = resolvePrimaryAgent(userAgents);
 
     if (primaryAgent) {
       await storage.createMemory({
@@ -3265,12 +3258,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
-  // Resolve the primary agent ID for a user — used by the workspace UI so
-  // the list matches exactly what the agent (Luca/Agent O) sees.
+  // W8 P3.1 — Canonical primary-agent resolver.
+  //
+  // History: 12 routes.ts sites used variants of
+  //   `userAgents.find(a => /agent o|partner/i.test(a.name)) || userAgents[0]`
+  // or, worse, bare `agents[0]`. The `|| [0]` fallback caused severe persona
+  // drift (BOSS/BRO2 answering as Partner Luca) when Luca was not the first
+  // row. P2.10 fixed POST /api/rooms; P3.1 extends the same pattern here.
+  //
+  // Resolution cascade (all case-insensitive, owner-scoped):
+  //   1. Exact name match `luca`    — canonical identity
+  //   2. Canonical agent id=16       — explicit DB fallback (matches P2.10)
+  //   3. Substring match on "agent o" or "partner" (legacy back-compat)
+  //   4. null (callers MUST handle — NEVER silently pick a random agent)
+  //
+  // NB: the old regex `/luca|agent o|partner/i` is kept in step 3 purely for
+  // pre-P2.10 agent naming; step 1 + step 2 short-circuit in practice.
+  function resolvePrimaryAgent(agents: any[]): any | null {
+    if (!Array.isArray(agents) || agents.length === 0) return null;
+    return (
+      agents.find((a: any) => a?.name?.toLowerCase?.() === "luca") ||
+      agents.find((a: any) => a?.id === 16) ||
+      agents.find((a: any) => /agent o|partner/i.test(a?.name ?? "")) ||
+      null
+    );
+  }
+
   async function primaryAgentIdFor(userId: number): Promise<number | null> {
     try {
       const agents = await storage.getAgents(userId);
-      const primary = agents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || agents[0];
+      const primary = resolvePrimaryAgent(agents);
       return primary ? primary.id : null;
     } catch { return null; }
   }
@@ -3391,8 +3408,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!tool || typeof tool !== "string") return res.status(400).json({ error: "tool required" });
     const safeInput = (input && typeof input === "object") ? input : {};
     // Find primary agent for memory-writing tools
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primary = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
+    const primary = resolvePrimaryAgent(userAgents);
     const started = Date.now();
     try {
       const result = await executePartnerTool(tool, safeInput, userId, primary?.id || 0);
@@ -3456,11 +3474,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const data = validateBody(savePreferenceSchema, req.body);
 
     // Find primary agent
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    const primaryAgent = resolvePrimaryAgent(userAgents);
 
     if (!primaryAgent) return res.status(400).json({ error: "No agent found" });
 
@@ -3539,8 +3555,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         // Cache the summary
         if (summary) {
+          // W8 P3.1: canonical resolver (was bare `userAgents[0]` — the only
+          // site in routes.ts with no `find()` predicate at all).
           const userAgents = await storage.getAgents(userId);
-          const primaryAgent = userAgents[0];
+          const primaryAgent = resolvePrimaryAgent(userAgents);
           await storage.createMemory({
             userId,
             agentId: primaryAgent?.id || null,
@@ -3591,11 +3609,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     // Find primary agent
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    const primaryAgent = resolvePrimaryAgent(userAgents);
 
     if (!primaryAgent) return res.status(400).json({ error: "No agent found" });
 
@@ -3661,11 +3677,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const result = await runCreativeDeliberation(data.content, data.type, data.question);
 
     // Store deliberation result as memory
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    const primaryAgent = resolvePrimaryAgent(userAgents);
 
     if (primaryAgent) {
       await storage.createMemory({
@@ -3804,11 +3818,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ status: "loading", message: "Knowledge is being processed" });
 
     // Find primary agent for memory storage
+    // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    const primaryAgent = resolvePrimaryAgent(userAgents);
 
     // Process in background
     (async () => {
@@ -3919,11 +3931,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // Load generated content as chunks (capped to remaining memory quota)
         const genRemaining = genLimits.memories - genCounts.memories;
         const textChunks = splitIntoChunks(generatedContent, 500).slice(0, genRemaining);
+        // W8 P3.1: canonical resolver (was: `.find(...) || userAgents[0]`).
         const userAgents = await storage.getAgents(userId);
-        const primaryAgent = userAgents.find((a: any) =>
-          a.name.toLowerCase().includes("agent o") ||
-          a.name.toLowerCase().includes("partner")
-        ) || userAgents[0];
+        const primaryAgent = resolvePrimaryAgent(userAgents);
 
         let loaded = 0;
         for (const chunk of textChunks) {
@@ -4577,12 +4587,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (title.length > 200) return res.status(400).json({ error: "title too long (max 200 chars)" });
     const VALID_TASK_TYPES = ["one_time", "recurring", "reminder"];
     if (!VALID_TASK_TYPES.includes(taskType)) return res.status(400).json({ error: "Invalid taskType" });
-    // Resolve agentId — use the first agent if not provided
+    // Resolve agentId — W8 P3.1 CRITICAL fix.
+    // Scheduled tasks are DURABLE: the resolved agentId is written to the
+    // DB and used at execution time to send messages. A bare `agents[0].id`
+    // fallback was the worst instance of the P2.10 class of bugs: if the
+    // task action is `message` into a Partner room, the wrong agent would
+    // respond at trigger time and the user wouldn't notice until a task
+    // fires in production.
     let resolvedAgentId = agentId;
     if (!resolvedAgentId) {
       const agents = await storage.getAgents(userId);
       if (agents.length === 0) return res.status(400).json({ error: "No agents found. Create an agent first." });
-      resolvedAgentId = agents[0].id;
+      const primary = resolvePrimaryAgent(agents);
+      if (!primary) return res.status(400).json({ error: "Cannot resolve primary agent. Pass agentId explicitly." });
+      resolvedAgentId = primary.id;
     }
     let nextRunAt = scheduledAt || null;
     if (taskType === "recurring" && cronExpression) {
