@@ -436,3 +436,82 @@ describe("reaper — race with external abort", () => {
     expect(world.meetings.find((m) => m.id === meetingId)!.state).toBe("aborted");
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 6. Meeting aborted BETWEEN step 1 (turn_records UPDATE) and step 2 (meetings
+//    UPDATE) of the sweep — DURING-abort race. Step 1 already flipped the
+//    turn_record to 'failed'; before step 2 fires, an external path aborts
+//    the meeting. The meetings UPDATE predicate `state='turn_in_progress'`
+//    filters it out → stuckTurnsAborted=0, no double event, no overwrite of
+//    the external abort_reason.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("reaper — DURING-abort race (between step 1 and step 2)", () => {
+  it("external abort lands between UPDATE turn_records and UPDATE meetings → meeting UPDATE is a no-op, no event", async () => {
+    const world = newWorld();
+    const { meetingId, turnId } = seedStuckTurn(world, 200_000);
+    const pool = new FakePool(world);
+
+    // Patch connect() so the single client returned by sweepStuckTurns injects
+    // an external abort between the two UPDATEs (both live in the same tx in
+    // real code; the FakePool models the side effects we need to assert).
+    const originalConnect = pool.connect.bind(pool);
+    (pool as any).connect = async () => {
+      const client = await originalConnect();
+      const origQuery = client.query.bind(client);
+      let sawTurnRecordsUpdate = false;
+      client.query = (async (text: string, params: any[] = []) => {
+        const sql = text.trim();
+        // After step 1 commits the turn_records flip (RETURNING rows), flip the
+        // meeting to 'aborted' via direct world mutation — simulating an
+        // external path (e.g. a parallel t2Fail or a human-triggered abort)
+        // that landed before step 2 can act.
+        if (
+          sql.startsWith("UPDATE meetings") &&
+          sql.includes("current_turn_id = ANY($2::uuid[])") &&
+          sawTurnRecordsUpdate
+        ) {
+          const m = world.meetings.find((r) => r.id === meetingId);
+          if (m && m.state === "turn_in_progress") {
+            m.state = "aborted";
+            m.current_turn_id = null;
+            m.metadata = {
+              ...(m.metadata ?? {}),
+              abort_reason: "external_abort",
+              aborted_at: new Date().toISOString(),
+            };
+          }
+        }
+        const result = await origQuery(sql, params);
+        if (
+          sql.startsWith("UPDATE turn_records") &&
+          sql.includes("SET state = 'failed'") &&
+          sql.includes("started_at <")
+        ) {
+          sawTurnRecordsUpdate = true;
+        }
+        return result;
+      }) as any;
+      return client;
+    };
+
+    const bus = new RecordingMeetingEventBus();
+    const stats = await runReaperSweep({ pool: pool as any, eventBus: bus });
+
+    // Turn record still flipped by step 1 (that's fine — the record was
+    // genuinely stuck; marking it failed is correct even if the meeting was
+    // already aborted by someone else).
+    expect(world.turn_records[0].state).toBe("failed");
+    expect(world.turn_records[0].error).toBe("turn_timeout");
+    expect(world.turn_records[0].id).toBe(turnId);
+
+    // Meeting UPDATE was a no-op — predicate filtered out the already-aborted row.
+    expect(stats.stuckTurnsAborted).toBe(0);
+    expect(bus.events).toHaveLength(0);
+
+    // External abort_reason preserved (reaper did NOT overwrite it).
+    const m = world.meetings.find((r) => r.id === meetingId)!;
+    expect(m.state).toBe("aborted");
+    expect(m.metadata.abort_reason).toBe("external_abort");
+  });
+});

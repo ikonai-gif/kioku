@@ -427,8 +427,11 @@ export type InsertMeetingContext = z.infer<typeof insertMeetingContextSchema>;
 // with state='running' in T1, updates to 'completed' (or 'failed') in T2 /
 // T2-fail. Reaper flips 'running' rows older than 120s to 'failed' with
 // error='turn_timeout'. `sequence_fence` captures the global MAX(sequence_number)
-// at T1 time — used only for idempotency-key composition; the state
-// machine itself serialises turns through `meetings.current_turn_id`.
+// at T1 time — stored for AUDIT / FORENSIC purposes only (what was the
+// meeting's sequence when T1 fired?). It is NOT part of the idempotency key;
+// that key is derived from {meetingId, participantId, clientKey}. The state
+// machine itself (meetings.state + current_turn_id) serialises concurrent
+// turns through `FOR UPDATE` row locks.
 export const turnRecords = pgTable("turn_records", {
   id:             uuid("id").primaryKey().defaultRandom(),
   meetingId:      uuid("meeting_id").notNull(),

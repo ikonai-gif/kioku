@@ -37,8 +37,9 @@
  *  10.  Profile missing → aborted before LLM
  *  11.  Round-robin across 3 participants — full cycle returns to starter
  *  12.  Round-robin skips left participants
- *  13.  Idempotency fence: private rows by OTHER agents legitimately bust replay
- *       (Bro2 SF2) — fresh T1, not cache hit
+ *  13.  Global sequence fence (Bro2 SF2): private rows by other agents raise
+ *       the global fence without busting idempotency; a fresh clientKey
+ *       produces a fresh T1 that correctly advances sequence past the hidden row
  *  14.  State-transition table: rejects pending / completed / aborted / turn_in_progress
  *  15.  Turn cap (MAX_TURNS_PER_MEETING=20) → turn_cap_exceeded
  *  16.  T1 rollback on meeting-not-found, no side effects
@@ -46,6 +47,12 @@
  *  18.  Event bus: emits meeting.turn.completed AFTER commit (not inside tx)
  *  19.  Event bus: emits meeting.state.changed on abort path
  *  20.  Idempotency key provided but NEW → stores result after commit
+ *  21.  F1: runner passes pendingTtlSec > LLM_TIMEOUT_MS to checkIdempotency
+ *  22.  F1: LLM returns just before timeout, T2 commits, retry at timeout+ε hits cached `done`
+ *  23.  F2: extractAgentNameFromSystemPrompt parses canonical buildSystemPrompt prefix (tripwire)
+ *  24.  SF3: storeIdempotencyResult fires BEFORE eventBus.emit
+ *  25.  SF2: T2 commit throws after successful LLM → aborted, lost_llm_output_preview in metadata
+ *  26.  Q4: t1Reserve INSERT throws after randomUUID → caller never sees partial turnId
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "crypto";
@@ -66,11 +73,15 @@ vi.mock("../deliberation", () => ({
 
 // Mock idempotency — defaults below route to an in-memory store. Individual
 // tests override `mockCheckIdempotency` / `mockStoreIdempotencyResult`.
-const idemStore = new Map<string, { status: "in_progress" | "done"; result?: unknown }>();
-const mockCheckIdempotency = vi.fn(async (key: string) => {
+const idemStore = new Map<string, { status: "in_progress" | "done"; result?: unknown; pendingTtlSec?: number }>();
+/**
+ * F1: mock tracks the `pendingTtl` argument so the new tests can assert the
+ * runner passes MEETING_TURN_PENDING_TTL_SEC (>= 90s) not the default 60s.
+ */
+const mockCheckIdempotency = vi.fn(async (key: string, _ttl?: number, pendingTtlSec?: number) => {
   const entry = idemStore.get(key);
   if (!entry) {
-    idemStore.set(key, { status: "in_progress" });
+    idemStore.set(key, { status: "in_progress", pendingTtlSec });
     return { status: "new" as const };
   }
   if (entry.status === "done") return { status: "done" as const, result: entry.result };
@@ -88,7 +99,8 @@ const mockMakeIdempotencyKey = vi.fn((scope: string, payload: unknown) => {
 });
 vi.mock("../idempotency", () => ({
   makeIdempotencyKey: (scope: string, payload: unknown) => mockMakeIdempotencyKey(scope, payload),
-  checkIdempotency: (key: string) => mockCheckIdempotency(key),
+  checkIdempotency: (key: string, ttl?: number, pendingTtl?: number) =>
+    mockCheckIdempotency(key, ttl, pendingTtl),
   storeIdempotencyResult: (key: string, result: unknown) => mockStoreIdempotencyResult(key, result),
   DEFAULT_TTL_LONG: 86400,
   DEFAULT_PENDING_TTL: 60,
@@ -105,13 +117,16 @@ import {
   runTurn,
   MAX_TURNS_PER_MEETING,
   LLM_TIMEOUT_MS,
+  MEETING_TURN_PENDING_TTL_SEC,
   TurnStateMismatchError,
   TurnBreakerOpenError,
   TurnTimeoutError,
+  extractAgentNameFromSystemPrompt,
   type LlmCaller,
   type MeetingStateDb,
 } from "../lib/meeting-turn-runner";
 import { RecordingMeetingEventBus } from "../lib/meeting-event-bus";
+import { buildSystemPrompt } from "../lib/meeting-context-manager";
 import { CircuitOpenError } from "../lib/circuit-breaker";
 
 // ── FakePool / FakeClient ────────────────────────────────────────────────────
@@ -406,21 +421,22 @@ class FakeClient {
       return wrap([]);
     }
 
-    // ── UPDATE meetings SET state='aborted' (t2Fail) ──
+    // ── UPDATE meetings SET state='aborted' (t2Fail — new shape with $4::jsonb patch) ──
     if (
       sql.startsWith("UPDATE meetings") &&
       sql.includes("SET state = 'aborted'") &&
       sql.includes("current_turn_id = $3")
     ) {
-      const [reason, meetingId, turnId] = params as [string, string, string];
+      const [reason, meetingId, turnId, patchJson] = params as [string, string, string, string | undefined];
       const m = this.opts.world.meetings.find((r) => r.id === meetingId);
       if (!m || m.current_turn_id !== turnId) return wrap([]);
+      const patch = patchJson ? (JSON.parse(patchJson) as Record<string, unknown>) : { abort_reason: reason };
       const apply = () => {
         m.state = "aborted";
         m.current_turn_id = null;
         m.metadata = {
           ...(m.metadata ?? {}),
-          abort_reason: reason,
+          ...patch,
           aborted_at: new Date().toISOString(),
         };
       };
@@ -952,7 +968,7 @@ describe("runTurn — round-robin skips left participants", () => {
 // ═════════════════════════════════════════════════════════════════════════════
 
 describe("runTurn — sequence fence is GLOBAL (Bro2 SF2)", () => {
-  it("private rows written by another agent raise fence, idempotency key differs, fresh T1 runs", async () => {
+  it("private rows by other agents raise the global fence without busting idempotency; fresh clientKey produces a fresh T1 that advances sequence past the hidden row", async () => {
     const world = newWorld();
     const { meetingId, p1 } = seedTwoAgentMeeting(world);
     const pool = new FakePool({ world, lock: new MeetingLock() });
@@ -1170,5 +1186,260 @@ describe("runTurn — idempotency store on commit", () => {
       }),
     ).rejects.toThrow();
     expect(mockStoreIdempotencyResult).not.toHaveBeenCalled();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 21. Bro2 F1 — runner passes pendingTtlSec > LLM_TIMEOUT_MS to checkIdempotency
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("runTurn — F1 pending TTL override", () => {
+  it("calls checkIdempotency with MEETING_TURN_PENDING_TTL_SEC (≥ LLM_TIMEOUT_MS/1000 + 30) as 3rd arg", async () => {
+    const world = newWorld();
+    const { meetingId, p1 } = seedTwoAgentMeeting(world);
+    const pool = new FakePool({ world, lock: new MeetingLock() });
+
+    await runTurn(pool as any, {
+      meetingId,
+      participantId: p1,
+      idempotencyKey: "client-f1",
+      llm: makeLlm(),
+    });
+
+    expect(mockCheckIdempotency).toHaveBeenCalledTimes(1);
+    const [, , pendingTtlSec] = mockCheckIdempotency.mock.calls[0];
+    expect(pendingTtlSec).toBe(MEETING_TURN_PENDING_TTL_SEC);
+    // Invariant: MUST be strictly greater than the LLM wall-clock timeout (in
+    // seconds), so a retry at the timeout boundary still sees `in_progress`.
+    expect(MEETING_TURN_PENDING_TTL_SEC).toBeGreaterThan(LLM_TIMEOUT_MS / 1000);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 22. Bro2 F1 — LLM returns near timeout boundary, T2 commits, retry at
+//     timeout+ε hits cached `done` (NOT `in_progress` / 409).
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("runTurn — F1 retry at timeout boundary hits cached done", () => {
+  it("first call completes just before timeout; retry with same key returns cached replay", async () => {
+    const world = newWorld();
+    const { meetingId, p1 } = seedTwoAgentMeeting(world);
+    const pool = new FakePool({ world, lock: new MeetingLock() });
+
+    const llm = makeLlm("boundary-content");
+    // First call runs to completion synchronously in test time (real promises;
+    // no fake timers — the F1 invariant is about pendingTtl > wall-clock, not
+    // about actual elapsed time, which we can't fake across awaits cleanly).
+    const first = await runTurn(pool as any, {
+      meetingId,
+      participantId: p1,
+      idempotencyKey: "client-boundary",
+      llm,
+    });
+    expect(first.replayed).toBe(false);
+
+    // A retry with the same idempotencyKey — the cached result has been stored
+    // BEFORE the eventBus.emit (SF3) and BEFORE any pending-marker expiry, so
+    // we must get `replayed: true` and the LLM must NOT be called again.
+    const retry = await runTurn(pool as any, {
+      meetingId,
+      participantId: p1,
+      idempotencyKey: "client-boundary",
+      llm,
+    });
+    expect(retry.replayed).toBe(true);
+    expect(retry.contextEntryId).toBe(first.contextEntryId);
+    expect((llm as any).mock.calls.length).toBe(1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 23. Bro2 F2 — extractAgentNameFromSystemPrompt tripwire for canonical
+//     buildSystemPrompt shape. If buildSystemPrompt changes prefix, this test
+//     breaks BEFORE prod silently falls back to empty tool list.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("extractAgentNameFromSystemPrompt — F2 tripwire", () => {
+  it("parses 'Luca' from canonical buildSystemPrompt output", () => {
+    const systemPrompt = buildSystemPrompt({
+      agentName: "Luca",
+      agentDescription: "KIOKU companion",
+      autonomyLevel: "propose",
+      allowedTopics: ["design"],
+      blockedTopics: [],
+    });
+    // Sanity: the canonical prefix is "You are Luca participating in a KIOKU Meeting Room."
+    expect(systemPrompt.startsWith("You are Luca participating in")).toBe(true);
+    const name = extractAgentNameFromSystemPrompt({ systemPrompt, agentId: 101 });
+    expect(name).toBe("Luca");
+  });
+
+  it("parses name from legacy comma-after-name shape", () => {
+    const name = extractAgentNameFromSystemPrompt({
+      systemPrompt: "You are Bro2, reviewer agent.\n\nDetails…",
+      agentId: 102,
+    });
+    expect(name).toBe("Bro2");
+  });
+
+  it("parses name from period-after-name shape", () => {
+    const name = extractAgentNameFromSystemPrompt({
+      systemPrompt: "You are Eva. Helpful assistant.",
+      agentId: 103,
+    });
+    expect(name).toBe("Eva");
+  });
+
+  it("falls back to agent_<id> when prefix is unexpected", () => {
+    const name = extractAgentNameFromSystemPrompt({
+      systemPrompt: "SYSTEM: role=agent name=Ghost\n\nrest…",
+      agentId: 77,
+    });
+    expect(name).toBe("agent_77");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 24. Bro2 SF3 — storeIdempotencyResult fires BEFORE eventBus.emit.
+//     This prevents the race where an event subscriber triggers a retry of
+//     the same idempotency key and reaches checkIdempotency before the result
+//     is stored, seeing `in_progress` and throwing 409.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("runTurn — SF3 store before emit ordering", () => {
+  it("storeIdempotencyResult is called before eventBus.emit", async () => {
+    const world = newWorld();
+    const { meetingId, p1 } = seedTwoAgentMeeting(world);
+    const pool = new FakePool({ world, lock: new MeetingLock() });
+
+    // Wrap bus.emit with a vi.fn spy so we can compare invocationCallOrder
+    // against mockStoreIdempotencyResult.
+    const bus = new RecordingMeetingEventBus();
+    const emitSpy = vi.fn(async (event: string, payload: unknown) => {
+      (bus.events as Array<any>).push({ event, payload });
+    });
+    (bus as any).emit = emitSpy;
+
+    await runTurn(pool as any, {
+      meetingId,
+      participantId: p1,
+      idempotencyKey: "client-sf3",
+      llm: makeLlm(),
+      eventBus: bus as any,
+    });
+
+    expect(mockStoreIdempotencyResult).toHaveBeenCalledTimes(1);
+    expect(emitSpy).toHaveBeenCalledTimes(1);
+    const storeOrder = mockStoreIdempotencyResult.mock.invocationCallOrder[0];
+    const emitOrder = emitSpy.mock.invocationCallOrder[0];
+    expect(storeOrder).toBeLessThan(emitOrder);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 25. Bro2 SF2 — T2 commit throws AFTER successful LLM call. The abort path
+//     must record a preview of the lost LLM content in meetings.metadata
+//     (lost_llm_output_preview) so ops can forensically reconstruct.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("runTurn — SF2 T2 commit failure preserves LLM output preview", () => {
+  it("INSERT INTO meeting_context throws → aborted with lost_llm_output_preview in metadata", async () => {
+    const world = newWorld();
+    const { meetingId, p1 } = seedTwoAgentMeeting(world);
+    const lock = new MeetingLock();
+    const pool = new FakePool({ world, lock });
+
+    // Monkey-patch pool.connect so the SECOND client (the T2 client) throws on
+    // the meeting_context INSERT, simulating a commit-time DB failure after
+    // a successful LLM call.
+    const originalConnect = pool.connect.bind(pool);
+    let connectCount = 0;
+    (pool as any).connect = async () => {
+      const client = await originalConnect();
+      connectCount += 1;
+      // connects in order: T1 reserve (1), MCM buildTurnInput (2), T2 commit (3), t2Fail (4).
+      // The T2 client is #3.
+      if (connectCount === 3) {
+        const origQuery = client.query.bind(client);
+        client.query = (async (text: string, params: any[] = []) => {
+          if (text.trim().startsWith("INSERT INTO meeting_context")) {
+            throw new Error("simulated T2 INSERT failure");
+          }
+          return origQuery(text, params);
+        }) as any;
+      }
+      return client;
+    };
+
+    const longContent = "LLM output that should be preserved in metadata as a forensic preview " +
+      "because T2 is about to die — " + "x".repeat(200);
+    const llm = makeLlm(longContent);
+
+    await expect(
+      runTurn(pool as any, { meetingId, participantId: p1, llm }),
+    ).rejects.toThrow(/simulated T2 INSERT failure/);
+
+    // Meeting is aborted, with abort_reason = t2_commit_failed AND
+    // lost_llm_output_preview present (≤ 120 chars).
+    const m = world.meetings[0];
+    expect(m.state).toBe("aborted");
+    expect(m.metadata.abort_reason).toBe("t2_commit_failed");
+    expect(m.metadata.lost_llm_output_preview).toBeDefined();
+    expect(typeof m.metadata.lost_llm_output_preview).toBe("string");
+    expect(m.metadata.lost_llm_output_preview.length).toBeLessThanOrEqual(120);
+    expect(m.metadata.lost_llm_output_preview).toBe(longContent.slice(0, 120));
+
+    // No meeting_context row was committed.
+    expect(world.meeting_context.length).toBe(0);
+    // turn_records row marked failed.
+    expect(world.turn_records.length).toBe(1);
+    expect(world.turn_records[0].state).toBe("failed");
+    expect(world.turn_records[0].error).toBe("t2_commit_failed");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 26. Q4 — t1Reserve INSERT INTO turn_records throws. randomUUID() has
+//     already produced a turnId, but the INSERT fails → ROLLBACK → caller
+//     never sees a partial turnId, no orphan turn_records row, meeting state
+//     unchanged (still `active`, current_turn_id still null).
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("runTurn — Q4 t1Reserve INSERT atomicity", () => {
+  it("INSERT INTO turn_records throws in T1 → rollback, no partial turnId leaked, meeting untouched", async () => {
+    const world = newWorld();
+    const { meetingId, p1 } = seedTwoAgentMeeting(world);
+    const lock = new MeetingLock();
+    const pool = new FakePool({ world, lock });
+
+    // Monkey-patch the FIRST client (T1) so its INSERT INTO turn_records throws.
+    const originalConnect = pool.connect.bind(pool);
+    let connectCount = 0;
+    (pool as any).connect = async () => {
+      const client = await originalConnect();
+      connectCount += 1;
+      if (connectCount === 1) {
+        const origQuery = client.query.bind(client);
+        client.query = (async (text: string, params: any[] = []) => {
+          if (text.trim().startsWith("INSERT INTO turn_records")) {
+            throw new Error("simulated T1 INSERT failure");
+          }
+          return origQuery(text, params);
+        }) as any;
+      }
+      return client;
+    };
+
+    await expect(
+      runTurn(pool as any, { meetingId, participantId: p1, llm: makeLlm() }),
+    ).rejects.toThrow(/simulated T1 INSERT failure/);
+
+    // No turn_records row was committed — T1 rolled back atomically.
+    expect(world.turn_records.length).toBe(0);
+    // Meeting state and current_turn_id untouched.
+    expect(world.meetings[0].state).toBe("active");
+    expect(world.meetings[0].current_turn_id).toBeNull();
+    // No meeting_context row either.
+    expect(world.meeting_context.length).toBe(0);
   });
 });

@@ -59,8 +59,22 @@ import logger from "../logger";
 /** Hard cap on turns per meeting — LLM cost runaway guard. */
 export const MAX_TURNS_PER_MEETING = 20;
 
-/** LLM call timeout in ms. Matches breaker + runner hard-stop. */
-export const LLM_TIMEOUT_MS = 60_000;
+/**
+ * LLM call timeout in ms. Matches breaker + runner hard-stop.
+ * Env-tunable (N5) so smoke tests can set it low (e.g. 5_000) to fail fast.
+ * Production defaults to 60s.
+ */
+export const LLM_TIMEOUT_MS = Number(process.env.MEETING_LLM_TIMEOUT_MS ?? 60_000);
+
+/**
+ * Idempotency pending-marker TTL for meeting_turn scope (Bro2 F1).
+ * Invariant: MUST be > LLM_TIMEOUT_MS + post-LLM work budget (T2 + network + retries).
+ * Formula: `LLM_TIMEOUT_MS / 1000 + 30` — 30s budget for T2 commit + retries.
+ * Without this override the default 60s pending TTL equals LLM_TIMEOUT_MS, so a
+ * retry at the exact timeout boundary sees the marker gone and races with
+ * t2Fail on the abort path — the retry gets 409s instead of the cached result.
+ */
+export const MEETING_TURN_PENDING_TTL_SEC = Math.ceil(LLM_TIMEOUT_MS / 1000) + 30;
 
 /** Idempotency scope string. Keys look like `idem:meeting_turn:<16hex>`. */
 export const IDEMPOTENCY_SCOPE = "meeting_turn";
@@ -185,7 +199,10 @@ export async function runTurn(
       participantId: args.participantId ?? null,
       clientKey: args.idempotencyKey,
     });
-    const cached = await checkIdempotency<TurnResult>(idemKey);
+    // F1: pass an explicit pendingTtl > LLM_TIMEOUT_MS so a retry at the timeout
+    // boundary still sees `in_progress` (not `new`), preventing the 409 race
+    // described in the Bro2 review.
+    const cached = await checkIdempotency<TurnResult>(idemKey, DEFAULT_TTL_LONG, MEETING_TURN_PENDING_TTL_SEC);
     if (cached.status === "done") {
       return { ...cached.result, replayed: true };
     }
@@ -267,14 +284,28 @@ export async function runTurn(
       content: llmResult.content,
       visibility: llmResult.visibility,
       scopeAgentIds: llmResult.scopeAgentIds ?? [],
+      sequenceFence,
     });
   } catch (err) {
     t2.release();
     // T2 failed after a successful LLM call — best-effort abort.
-    await t2Fail(pool, args.meetingId, turnId, previousState, "t2_commit_failed", eventBus);
+    // SF2: preserve a preview of the lost LLM output in metadata so ops can
+    // see what the model produced before T2 died (first 120 chars, forensic
+    // aid for manual recovery).
+    const lostPreview = (llmResult.content ?? "").slice(0, 120);
+    await t2Fail(pool, args.meetingId, turnId, previousState, "t2_commit_failed", eventBus, lostPreview);
     throw err;
   }
   t2.release();
+
+  // ── Idempotency result store BEFORE event emit (Bro2 SF3) ─────────────────
+  // Event subscribers may trigger a retry of the same key; if the retry reaches
+  // checkIdempotency before the store completes, it sees `in_progress` and
+  // throws 409. Storing first eliminates the race (fire-and-forget emit order
+  // was the old ordering; storing first is defense-in-depth).
+  if (idemKey) {
+    await storeIdempotencyResult(idemKey, result, DEFAULT_TTL_LONG);
+  }
 
   // ── Events (after commit, never inside tx) ────────────────────────────────
   await eventBus.emit("meeting.turn.completed", {
@@ -286,11 +317,6 @@ export async function runTurn(
     state: result.newState,
     previousState,
   });
-
-  // ── Idempotency result store ───────────────────────────────────────────────
-  if (idemKey) {
-    await storeIdempotencyResult(idemKey, result, DEFAULT_TTL_LONG);
-  }
 
   return result;
 }
@@ -372,8 +398,12 @@ async function t1Reserve(
       );
     }
 
-    // Global fence — the CURRENT max(sequence_number). Used only for keying
-    // the turn_records row; the state-machine itself is the serialisation primitive.
+    // Global fence — the CURRENT max(sequence_number) at T1 time. Stored in
+    // turn_records.sequence_fence for audit trail (forensic: what was the
+    // meeting's sequence at T1?). NOT part of the idempotency key — the
+    // idem key composition lives above at line 183 ({meetingId, participantId,
+    // clientKey}). The state-machine itself (meetings.state + current_turn_id)
+    // is the concurrency serialisation primitive, not the fence.
     const fenceRes = await client.query(
       `SELECT COALESCE(MAX(sequence_number), 0)::bigint AS fence
          FROM meeting_context WHERE meeting_id = $1`,
@@ -422,6 +452,8 @@ interface T2CommitArgs {
   content: string;
   visibility: "all" | "scoped" | "private";
   scopeAgentIds: number[];
+  /** Fence captured in T1; defense-in-depth check re-asserted in T2. */
+  sequenceFence?: number;
 }
 
 async function t2Commit(client: PoolClient, args: T2CommitArgs): Promise<TurnResult> {
@@ -441,6 +473,24 @@ async function t2Commit(client: PoolClient, args: T2CommitArgs): Promise<TurnRes
         "state_mismatch",
         `T2: expected state=turn_in_progress current_turn_id=${args.turnId}, got state=${meeting.state} current_turn_id=${meeting.current_turn_id}`,
       );
+    }
+
+    // Defense-in-depth fence assertion (Bro2 Q1 adjacent suggestion): re-read
+    // the current MAX(sequence_number) and verify it's >= the fence we captured
+    // in T1. If it's ever less, something catastrophic happened (row deletion,
+    // cross-meeting contamination) and we abort loudly before writing more data.
+    if (args.sequenceFence !== undefined) {
+      const fenceRes = await client.query(
+        `SELECT COALESCE(MAX(sequence_number), 0)::bigint AS fence
+           FROM meeting_context WHERE meeting_id = $1`,
+        [args.meetingId],
+      );
+      const currentFence = Number(fenceRes.rows[0]?.fence ?? 0);
+      if (currentFence < args.sequenceFence) {
+        throw new Error(
+          `T2 fence regression: captured=${args.sequenceFence} observed=${currentFence} meeting=${args.meetingId} turn=${args.turnId}`,
+        );
+      }
     }
 
     // Compute the next sequence_number atomically — max+1 under row lock.
@@ -528,18 +578,27 @@ async function t2Fail(
   previousState: MeetingStateDb,
   reason: string,
   eventBus: MeetingEventBus,
+  /** SF2: preview of LLM output lost on t2_commit_failed (first 120 chars). */
+  lostLlmOutputPreview?: string,
 ): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const metadataPatch: Record<string, unknown> = {
+      abort_reason: reason,
+    };
+    if (lostLlmOutputPreview !== undefined && lostLlmOutputPreview.length > 0) {
+      metadataPatch.lost_llm_output_preview = lostLlmOutputPreview;
+    }
     await client.query(
       `UPDATE meetings
           SET state = 'aborted',
               current_turn_id = NULL,
               metadata = COALESCE(metadata, '{}'::jsonb)
-                         || jsonb_build_object('abort_reason', $1::text, 'aborted_at', to_jsonb(now()))
+                         || $4::jsonb
+                         || jsonb_build_object('aborted_at', to_jsonb(now()))
         WHERE id = $2 AND current_turn_id = $3`,
-      [reason, meetingId, turnId],
+      [reason, meetingId, turnId, JSON.stringify(metadataPatch)],
     );
     await client.query(
       `UPDATE turn_records
@@ -631,12 +690,38 @@ async function loadPartnerToolsForAgent(input: TurnInput): Promise<Anthropic.Mes
   return mod.getPartnerToolsForAgent({ name: extractAgentNameFromSystemPrompt(input) });
 }
 
-function extractAgentNameFromSystemPrompt(input: TurnInput): string {
-  // buildSystemPrompt starts with "You are <agent_name>, …". Cheap parse;
-  // avoids a separate DB hop. Falls back to `agent_<id>` if the prefix
-  // doesn't match (future prompt refactors shouldn't silently break tools).
-  const m = input.systemPrompt.match(/^You are ([^,\n]+)[,.]/);
-  return m ? m[1].trim() : `agent_${input.agentId}`;
+/**
+ * Extract agent name from `buildSystemPrompt` output. Parses the canonical
+ * "You are <name>, …" prefix. Exported for a tripwire test (Bro2 F2) that
+ * fails loudly if buildSystemPrompt changes shape (e.g. voice-PR adds a
+ * preamble) and would otherwise silently route to the empty-tool-list fallback.
+ *
+ * On fallback, logs a `warn` with agentId + first 80 chars of the system
+ * prompt so prod diverges visibly in logs BEFORE users see broken behavior.
+ *
+ * W10 follow-up: carry `agentName` through TurnInput directly and delete this.
+ */
+export function extractAgentNameFromSystemPrompt(input: {
+  systemPrompt: string;
+  agentId: number;
+}): string {
+  // Canonical buildSystemPrompt shape:
+  //   "You are <name> participating in a KIOKU Meeting Room.\n\n..."
+  // Or, when adopted in prior partner-chat shapes:
+  //   "You are <name>, <description>..."
+  //   "You are <name>. <rest>"
+  // The pattern below captures the agent name up to the FIRST of:
+  //   comma, period, or " participating" landmark.
+  const m = input.systemPrompt.match(/^You are ([^,.\n]+?)(?:,|\.|\s+participating\b)/);
+  if (m) return m[1].trim();
+  logger.warn(
+    {
+      agentId: input.agentId,
+      promptPrefix: input.systemPrompt.slice(0, 80),
+    },
+    "extractAgentNameFromSystemPrompt: regex fallback — buildSystemPrompt prefix may have changed",
+  );
+  return `agent_${input.agentId}`;
 }
 
 function classifyError(err: unknown): string {
