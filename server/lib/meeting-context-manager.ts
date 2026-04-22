@@ -76,8 +76,28 @@ export interface TurnInput {
   autonomyLevel: AutonomyLevel;
   systemPrompt: string;
   visibleContext: MeetingContextEntry[];
-  /** MAX(sequence_number) visible to this agent at assembly time. 0 if empty. */
+  /**
+   * MAX(sequence_number) visible to THIS AGENT at assembly time. 0 if empty.
+   *
+   * Useful for: building the LLM message array floor ("include everything I
+   * can see up to here") and per-agent retry logic.
+   *
+   * NOT for Item 2 T1 idempotency fence — that must be a GLOBAL
+   * `MAX(sequence_number) FROM meeting_context WHERE meeting_id=$1` (no
+   * visibility filter). Private rows from other agents constitute meeting
+   * advancement and must bust an agent's idempotency cache. See Bro2 W9
+   * Item 1 review, R2 (2026-04-22).
+   */
   lastSequence: number;
+  /**
+   * Raw memory_scope JSONB from `meeting_participant_profiles`. Passed
+   * through so Item 5's memory-commit step can consume without a re-query.
+   * Shape is intentionally `Record<string, unknown>` here — schema for the
+   * scope object is defined at the memory-commit boundary, not here.
+   */
+  memoryScope: Record<string, unknown>;
+  /** Raw `carry_over_memory` flag from the participant profile. */
+  carryOverMemory: boolean;
 }
 
 /** Thrown when the meeting does not exist or the participant row is absent. */
@@ -178,6 +198,49 @@ function escapeForPrompt(topic: string): string {
 }
 
 /**
+ * Visibility filter SQL — SINGLE SOURCE OF TRUTH for "which meeting_context
+ * rows is agent $agentIdParam allowed to see".
+ *
+ * Reused by `fetchVisibleContext` AND `fetchLastVisibleSequence`. DO NOT
+ * inline this predicate anywhere else — Bro2 F1 (W9 Item 1 review): if two
+ * sites drift, the fence returned to the turn runner becomes inconsistent
+ * with the content returned to the LLM, which is a privacy-bug class.
+ *
+ * Call via `visibilityFilter(agentIdParamIndex)` to substitute the real
+ * positional-parameter index ($1/$2/...). A consistency test in
+ * `meeting-context-manager.test.ts` asserts both functions agree on row
+ * membership for the same world.
+ *
+ * FUTURE (W10): rewrite the `scope_agent_ids` EXISTS clause to
+ * `scope_agent_ids @> jsonb_build_array($agentIdParam::int)` so the GIN
+ * index `idx_mc_scope_gin` is actually used. Current form is seq-scan for
+ * meetings with <500 rows — microseconds. Defer until meeting sizes grow.
+ * Check at migration-audit time that scope_agent_ids stores integer JSON
+ * values (not strings); `@>` is type-strict.
+ */
+const VISIBILITY_FILTER_SQL = `
+  (
+         visibility = 'all'
+      OR (visibility = 'scoped' AND EXISTS (
+             SELECT 1 FROM jsonb_array_elements_text(scope_agent_ids) AS e
+              WHERE (e::int) = $agentIdParam
+         ))
+      OR (visibility = 'private' AND (
+             author_agent_id = $agentIdParam
+          OR EXISTS (
+               SELECT 1 FROM jsonb_array_elements_text(scope_agent_ids) AS e
+                WHERE (e::int) = $agentIdParam
+             )
+         ))
+  )
+`;
+
+/** Build the visibility filter with a concrete positional parameter index. */
+function visibilityFilter(agentIdParamIndex: number): string {
+  return VISIBILITY_FILTER_SQL.replaceAll("$agentIdParam", `$${agentIdParamIndex}`);
+}
+
+/**
  * Return the array of agentIds owned by `ownerUserId` that are ACTIVE
  * participants in `meetingId`. Used for scoped-visibility resolution.
  */
@@ -223,35 +286,30 @@ export async function fetchVisibleContext(
   // of the filter here — the route-level ACL has already validated the user
   // owns the participant before calling MCM.
 
-  const params: Array<string | number> = [meetingId, agentId];
+  const params: Array<string | number> = [meetingId, agentId, limit];
   const sql = `
     SELECT id, meeting_id, sequence_number, content, author_agent_id,
            visibility, scope_agent_ids, created_at
       FROM meeting_context
      WHERE meeting_id = $1
-       AND (
-              visibility = 'all'
-           OR (visibility = 'scoped' AND EXISTS (
-                  SELECT 1 FROM jsonb_array_elements_text(scope_agent_ids) AS e
-                   WHERE (e::int) = $2
-              ))
-           OR (visibility = 'private' AND (
-                  author_agent_id = $2
-               OR EXISTS (
-                    SELECT 1 FROM jsonb_array_elements_text(scope_agent_ids) AS e
-                     WHERE (e::int) = $2
-                  )
-              ))
-           )
+       AND ${visibilityFilter(2)}
      ORDER BY sequence_number ASC
      LIMIT $3`;
-  params.push(limit);
   const { rows } = await db.query(sql, params);
   return rows.map(rowToEntry);
 }
 
 function rowToEntry(r: any): MeetingContextEntry {
-  // scope_agent_ids is JSONB containing an integer array. Normalize to number[].
+  // scope_agent_ids is JSONB containing an integer array in the schema, but we
+  // defensively coerce each element through Number() before filtering with
+  // Number.isFinite. Why: different JSONB readers / driver configurations do
+  // not all hand back JSON arrays identically — node-postgres with the default
+  // type parser returns a real JS array of numbers, but some test doubles,
+  // older pg-types versions, or admin/migration tools that round-trip JSONB
+  // through text can yield an array of strings (e.g. ["10", "12"]). Coercing
+  // here keeps the public MeetingContextEntry.scopeAgentIds shape as number[]
+  // no matter which reader path produced the row, and the isFinite filter
+  // drops anything non-numeric (NaN, nulls) instead of propagating bad data.
   const rawScope = r.scope_agent_ids;
   let scope: number[] = [];
   if (Array.isArray(rawScope)) {
@@ -376,6 +434,17 @@ export async function buildTurnInput(
     }
   }
 
+  // 5. Memory policy fields (R1) — read-only, surfaced for the turn runner
+  //    and memory-isolation layer. memory_scope is a JSONB object; default to
+  //    {} when null so downstream never branches on null. carry_over_memory
+  //    is a bool column (default false); strict === true avoids coercing
+  //    unexpected values (e.g. 'false' strings from a misbehaving driver).
+  const memoryScope: Record<string, unknown> =
+    row.memory_scope && typeof row.memory_scope === "object" && !Array.isArray(row.memory_scope)
+      ? (row.memory_scope as Record<string, unknown>)
+      : {};
+  const carryOverMemory: boolean = row.carry_over_memory === true;
+
   return {
     meetingId: args.meetingId,
     participantId: args.participantId,
@@ -386,6 +455,8 @@ export async function buildTurnInput(
     systemPrompt,
     visibleContext,
     lastSequence,
+    memoryScope,
+    carryOverMemory,
   };
 }
 
@@ -406,20 +477,7 @@ export async function fetchLastVisibleSequence(
     `SELECT COALESCE(MAX(sequence_number), 0)::bigint AS seq
        FROM meeting_context
       WHERE meeting_id = $1
-        AND (
-               visibility = 'all'
-            OR (visibility = 'scoped' AND EXISTS (
-                   SELECT 1 FROM jsonb_array_elements_text(scope_agent_ids) AS e
-                    WHERE (e::int) = $2
-               ))
-            OR (visibility = 'private' AND (
-                   author_agent_id = $2
-                OR EXISTS (
-                     SELECT 1 FROM jsonb_array_elements_text(scope_agent_ids) AS e
-                      WHERE (e::int) = $2
-                   )
-               ))
-            )`,
+        AND ${visibilityFilter(2)}`,
     [meetingId, agentId],
   );
   return Number(rows[0]?.seq ?? 0);

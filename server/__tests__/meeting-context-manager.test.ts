@@ -321,9 +321,18 @@ describe("MCM — buildTurnInput happy path & error cases", () => {
   it("throws MCMNotFoundError('meeting_not_found') when meeting id unknown", async () => {
     const { world, participantId } = seedHappyWorld();
     const db = makeFakeDb(world);
-    await expect(
-      buildTurnInput(db, { meetingId: "00000000-0000-0000-0000-000000000000", participantId }),
-    ).rejects.toBeInstanceOf(MCMNotFoundError);
+    // SF1 (bro2): assert on .code not just instanceof so a future refactor that
+    // reuses MCMNotFoundError for a different code path cannot silently pass.
+    try {
+      await buildTurnInput(db, {
+        meetingId: "00000000-0000-0000-0000-000000000000",
+        participantId,
+      });
+      throw new Error("expected rejection");
+    } catch (e) {
+      expect(e).toBeInstanceOf(MCMNotFoundError);
+      expect((e as MCMNotFoundError).code).toBe("meeting_not_found");
+    }
   });
 
   it("throws MCMNotFoundError('participant_not_found') when participant id unknown", async () => {
@@ -492,6 +501,64 @@ describe("MCM — visibility filter (F1 read-side)", () => {
     expect(out.visibleContext.map((r) => r.sequenceNumber)).toEqual([1, 3]);
     expect(out.lastSequence).toBe(3);
   });
+
+  // bro2 consistency test: the dedicated fence helper must return the same
+  // value as the last-visible row inside the assembled TurnInput (or 0 when
+  // there are no visible rows). This is the invariant the turn-runner relies
+  // on for idempotency, so it belongs in this file even though it touches two
+  // public entry points. A mix of all / scoped / private + an out-of-scope
+  // row exercises every branch of the shared visibility filter.
+  it("fetchLastVisibleSequence agrees with visibleContext[last].sequenceNumber (all/scoped/private mix)", async () => {
+    const { world, meetingId, A, B, C } = seedThreeAgentWorld();
+    // A is the turn-taking agent.
+    world.context.push(ctx(meetingId, 1, "seq1-all", null, "all", []));
+    world.context.push(ctx(meetingId, 2, "seq2-owner", null, "owner", [])); // hidden from A
+    world.context.push(ctx(meetingId, 3, "seq3-scoped-BC", null, "scoped", [B, C])); // hidden from A
+    world.context.push(ctx(meetingId, 4, "seq4-private-A", A, "private", [])); // author A sees
+    world.context.push(ctx(meetingId, 5, "seq5-private-B", B, "private", [B])); // A does not see
+    world.context.push(ctx(meetingId, 6, "seq6-all", null, "all", []));
+    const participantId = world.participants[0]!.id; // participant bound to A
+    const agentId = A;
+    const db = makeFakeDb(world);
+
+    const out = await buildTurnInput(db, { meetingId, participantId });
+    const fenceOnly = await fetchLastVisibleSequence(db, meetingId, agentId);
+
+    const expected =
+      out.visibleContext.length > 0
+        ? out.visibleContext[out.visibleContext.length - 1]!.sequenceNumber
+        : 0;
+    expect(fenceOnly).toBe(expected);
+    // Also assert A actually sees the expected subset (defensive).
+    expect(out.visibleContext.map((r) => r.sequenceNumber)).toEqual([1, 4, 6]);
+    expect(out.lastSequence).toBe(6);
+  });
+
+  // bro2 contextLimit test: with more visible rows than the requested limit,
+  // buildTurnInput must return exactly `limit` rows and they must be the
+  // EARLIEST ones (ORDER BY sequence_number ASC LIMIT n). Callers downstream
+  // assume ascending order for prompt assembly, so this pins both order and
+  // truncation side.
+  it("respects contextLimit by returning the earliest visible rows in ascending order", async () => {
+    const { world, meetingId } = seedThreeAgentWorld();
+    for (let seq = 1; seq <= 20; seq++) {
+      world.context.push(ctx(meetingId, seq, `m-${seq}`, null, "all", []));
+    }
+    const participantId = world.participants[0]!.id;
+    const db = makeFakeDb(world);
+
+    const out = await buildTurnInput(db, {
+      meetingId,
+      participantId,
+      contextLimit: 5,
+    });
+
+    expect(out.visibleContext).toHaveLength(5);
+    expect(out.visibleContext.map((r) => r.sequenceNumber)).toEqual([1, 2, 3, 4, 5]);
+    // lastSequence mirrors the last row we actually returned (not the true MAX
+    // in the table) — this matches the buildTurnInput contract.
+    expect(out.lastSequence).toBe(5);
+  });
 });
 
 describe("MCM — buildSystemPrompt (deterministic)", () => {
@@ -528,7 +595,10 @@ describe("MCM — buildSystemPrompt (deterministic)", () => {
     expect(new Set(stanzas).size).toBe(4);
     expect(stanzas[0]).toContain("OBSERVER");
     expect(stanzas[1]).toContain("PROPOSE");
-    expect(stanzas[2]).toContain("commit");
+    // SF2 (bro2): use a phrase-level regex so the 'commit' stanza cannot be
+    // accidentally satisfied by another level that happens to contain the
+    // substring 'commit' (e.g. "commitment" in a doc tweak).
+    expect(stanzas[2]).toMatch(/commit decisions/i);
     expect(stanzas[3]).toContain("EXECUTE");
   });
 
