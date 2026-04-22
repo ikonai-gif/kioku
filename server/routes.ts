@@ -1669,20 +1669,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!isPartnerRoom && roomCounts.rooms >= roomLimits.rooms) {
       return res.status(429).json({ error: `Plan limit reached: ${roomLimits.rooms} rooms (${roomPlan} plan)` });
     }
-    // For Partner room, auto-assign primary agent (Agent O) so it responds
+    // For Partner room, auto-assign Luca specifically. Previously this fell
+    // through to `userAgents[0]`, which picked whichever agent happened to
+    // be first in the SELECT order (BOSS, BRO2, etc.) — causing the Partner
+    // UI to route to the wrong agent with NULL model. W7 P2.10 fix: explicit
+    // name === 'luca' match (case-insensitive), then explicit id === 16
+    // fallback (canonical Luca). NEVER userAgents[0].
     let finalAgentIds = agentIds ?? [];
     if (isPartnerRoom && finalAgentIds.length === 0) {
       const userAgents = await storage.getAgents(userId);
-      const primaryAgent = userAgents.find((a: any) =>
-        a.name.toLowerCase().includes("agent o") ||
-        a.name.toLowerCase().includes("partner")
-      ) || userAgents[0];
-      if (primaryAgent) {
-        finalAgentIds = [primaryAgent.id];
-        // Ensure primary agent is online so it can respond
-        if (primaryAgent.status !== "online") {
-          await storage.updateAgent(primaryAgent.id, userId, { status: "online" } as any);
-        }
+      const primaryAgent =
+        userAgents.find((a: any) => a.name?.toLowerCase() === "luca") ||
+        userAgents.find((a: any) => a.id === 16) ||
+        null;
+      if (!primaryAgent) {
+        return res.status(500).json({ error: "Luca agent not found for user — cannot create Partner room" });
+      }
+      finalAgentIds = [primaryAgent.id];
+      // Ensure Luca is online so she can respond
+      if (primaryAgent.status !== "online") {
+        await storage.updateAgent(primaryAgent.id, userId, { status: "online" } as any);
       }
     }
     const room = await storage.createRoom({
