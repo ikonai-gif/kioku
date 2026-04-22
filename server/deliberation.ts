@@ -6477,7 +6477,17 @@ Return ONLY valid JSON. No explanation.`,
 }
 
 // ── Phase 9b: Conversation Insight Tracker ───────────────────────────────────
+// W8 Voice-PR: INSIGHTS_AUTO_GEN flag — when false, skip auto-generation of
+// 3rd-person conversation insights. Existing records are downgraded to
+// importance=0.05 via migration w8_voice_pr_insights_downgrade.sql.
+// Rationale: these insights were written in 3rd-person ("User said X, agent
+// responded Y"), which leaks into Luca's voice via retrieval and causes drift.
+// Replaced by 1st-person remember-tool path (B) + diversity constraint (C).
 async function trackConversationInsight(userId: number, agentId: number, userMessage: string, agentReply: string): Promise<void> {
+  if (process.env.INSIGHTS_AUTO_GEN === 'false') {
+    logger.debug({ component: "deliberation", event: "insights_auto_gen_disabled", fn: "trackConversationInsight", agentId, userId }, "[deliberation] auto-insight skipped by INSIGHTS_AUTO_GEN=false");
+    return;
+  }
   if (!(await checkMemoryConsent(userId, '_conversation_insights'))) return;
   try {
     let response;
