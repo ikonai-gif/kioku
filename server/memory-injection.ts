@@ -21,6 +21,97 @@ export interface InjectedMemory {
 }
 
 /**
+ * W7 P2.14 — Type-weight coefficients for retrieval scoring.
+ *
+ * Problem (diagnosed by Luca): old `_aesthetics` rows (22 of them) were
+ * numerically dominating newer `meta_cognitive`/`commitment` rows (2–3)
+ * under flat scoring, so stale style-prefs could out-rank identity-load-
+ * bearing self-observations. This helper gives each type a multiplicative
+ * weight applied to the final composite score before sorting.
+ *
+ * Hierarchy (highest first):
+ *   identity         1.5  — hardest ground-truth (also pinned via alwaysInject)
+ *   commitment       1.4  — open obligations win over preferences
+ *   meta_cognitive   1.3  — self-observations about behaviour patterns
+ *   reflection       1.2  — lessons from experience
+ *   relational       1.1  — per-person/agent dynamics
+ *   procedural       1.1  — rules of behaviour (if X then Y)
+ *   autobiographical 1.1  — self-history facts
+ *   aesthetic        1.0  — baseline (style likes/dislikes)
+ *   emotional_state  1.0  — baseline
+ *   semantic         1.0  — baseline
+ *   fact             1.0  — legacy
+ *   causal           1.0  — replaces old 1.2 causal hardcode
+ *   episodic         0.9  — de-emphasise; there are 258 of these for Luca
+ */
+export function typeWeight(type: string | null | undefined): number {
+  switch (type) {
+    case "identity":         return 1.5;
+    case "commitment":       return 1.4;
+    case "meta_cognitive":   return 1.3;
+    case "reflection":       return 1.2;
+    case "relational":       return 1.1;
+    case "procedural":       return 1.1;
+    case "autobiographical": return 1.1;
+    case "episodic":         return 0.9;
+    default:                  return 1.0;
+  }
+}
+
+/**
+ * W7 P2.14 — Parse `[meta: { … }]` JSON sidecar written by the `remember`
+ * tool (P2.12). Returns an empty object on any parse failure — never throws.
+ * Used to surface `related_ids` for graph-boost scoring at retrieval time,
+ * without requiring a schema migration.
+ */
+export function parseMetaSidecar(content: string | null | undefined): { related_ids?: number[]; emotions?: Record<string, number> } {
+  if (!content || typeof content !== "string") return {};
+  const m = content.match(/\[meta:\s*(\{[\s\S]*?\})\s*\]\s*$/);
+  if (!m) return {};
+  try {
+    const parsed = JSON.parse(m[1]);
+    const out: { related_ids?: number[]; emotions?: Record<string, number> } = {};
+    if (Array.isArray(parsed.related_ids)) {
+      out.related_ids = parsed.related_ids.filter((x: any) => Number.isFinite(x));
+    }
+    if (parsed.emotions && typeof parsed.emotions === "object") {
+      out.emotions = parsed.emotions;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * W7 P2.14 — `related_ids` post-processing boost.
+ *
+ * After the initial top-K has been selected by composite scoring, boost
+ * candidates whose meta-sidecar `related_ids` intersect with ids already
+ * accepted. This realises the non-linear memory graph Luca builds via
+ * `remember(…, related_ids: […])` — without it the links are written
+ * but never read.
+ *
+ * Boost factor: 1 + 0.15 * (count of related_ids that hit accepted set),
+ * capped at 1.6 to prevent a single over-linked memory from dominating.
+ */
+export const RELATED_IDS_BOOST_PER_HIT = 0.15;
+export const RELATED_IDS_BOOST_CAP = 1.6;
+export function relatedIdsBoost(
+  memContent: string | null | undefined,
+  acceptedIds: Set<number>
+): number {
+  const meta = parseMetaSidecar(memContent);
+  if (!meta.related_ids || meta.related_ids.length === 0) return 1.0;
+  let hits = 0;
+  for (const id of meta.related_ids) {
+    if (acceptedIds.has(id)) hits++;
+  }
+  if (hits === 0) return 1.0;
+  return Math.min(RELATED_IDS_BOOST_CAP, 1 + RELATED_IDS_BOOST_PER_HIT * hits);
+}
+
+/**
  * Cosine similarity between two numeric vectors.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -154,7 +245,9 @@ export async function fetchRelevantMemories(
         if (m.expires_at && m.expires_at < now) return null;
 
         const semanticSimilarity = parseFloat(m.semantic_similarity) || 0;
-        const typeBoost = m.type === "procedural" ? 1.3 : m.type === "causal" ? 1.2 : 1.0;
+        // W7 P2.14: type-weighted scoring — replaces the hardcoded
+        // procedural/causal-only bump. Full hierarchy in typeWeight().
+        const typeBoost = typeWeight(m.type);
         const nsBoost = m.namespace === "decisions" ? 1.3 : 1.0;
 
         // Temporal boost: recent memories get a lift
@@ -239,9 +332,24 @@ export async function fetchRelevantMemories(
       })
       .filter((m: any): m is NonNullable<typeof m> => m !== null && m.score > 0);
 
-    const merged = [...scored, ...graphScored]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
+    const mergedRaw = [...scored, ...graphScored].sort((a, b) => b.score - a.score);
+
+    // W7 P2.14: related_ids post-processing boost. Non-linear graph links
+    // written via `remember(…, related_ids: […])` live as a [meta: {…}]
+    // JSON sidecar on content (no schema migration). Build the accepted
+    // set (alwaysInject + episode summaries + top-K-so-far), then re-score
+    // every candidate whose sidecar references an accepted id.
+    const acceptedIds = new Set<number>([
+      ...alwaysInject.map(m => m.id),
+      ...episodeSummaries.map(m => m.id),
+      ...mergedRaw.slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length)).map(m => m.id),
+    ]);
+    const boosted = mergedRaw.map((m: any) => {
+      const boost = relatedIdsBoost(m.content, acceptedIds);
+      return boost === 1.0 ? m : { ...m, score: m.score * boost };
+    }).sort((a: any, b: any) => b.score - a.score);
+
+    const merged = boosted.slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
 
     return [...alwaysInject, ...episodeSummaries, ...merged.map(({ score: _score, ...rest }) => rest)];
   }
@@ -269,8 +377,9 @@ export async function fetchRelevantMemories(
       const matchCount = topicWords.filter((w: string) => contentLower.includes(w)).length;
       const textRelevance = topicWords.length > 0 ? matchCount / topicWords.length : 0.1;
 
-      // Boost procedural memories (decisions) and memories in "decisions" namespace
-      const typeBoost = m.type === "procedural" ? 1.3 : m.type === "causal" ? 1.2 : 1.0;
+      // W7 P2.14: type-weighted scoring — replaces the hardcoded
+      // procedural/causal-only bump. Full hierarchy in typeWeight().
+      const typeBoost = typeWeight(m.type);
       const nsBoost = m.namespace === "decisions" ? 1.3 : 1.0;
 
       // Combined score: relevance * confidence * importance * boosts
@@ -299,11 +408,24 @@ export async function fetchRelevantMemories(
       };
     })
     .filter((m): m is NonNullable<typeof m> => m !== null && m.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score);
+
+  // W7 P2.14: related_ids post-processing boost (keyword-fallback branch).
+  // Same rationale as the vector branch — build accepted set, then boost
+  // candidates whose meta-sidecar references an already-accepted id.
+  const fallbackAcceptedIds = new Set<number>([
+    ...alwaysInject.map(m => m.id),
+    ...episodeSummaries.map(m => m.id),
+    ...scored.slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length)).map(m => m.id),
+  ]);
+  const fallbackBoosted = scored.map((m: any) => {
+    const boost = relatedIdsBoost(m.content, fallbackAcceptedIds);
+    return boost === 1.0 ? m : { ...m, score: m.score * boost };
+  }).sort((a: any, b: any) => b.score - a.score)
     .slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
 
   // Identity memories first, then episode summaries, then topic-relevant memories
-  return [...alwaysInject, ...episodeSummaries, ...scored.map(({ score: _score, ...rest }) => rest)];
+  return [...alwaysInject, ...episodeSummaries, ...fallbackBoosted.map(({ score: _score, ...rest }) => rest)];
 }
 
 /**
