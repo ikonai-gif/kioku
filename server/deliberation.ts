@@ -166,6 +166,11 @@ export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set([
   "workspace_list",
   "workspace_save",
   "workspace_read",
+  // Self-memory (1) — W7 P2.12: Luca writes to his own memory directly,
+  // bypassing LLM extraction. Used when he recognizes a durable preference,
+  // commitment, self-observation, reflection, or aesthetic he wants
+  // persisted across sessions. See `remember` tool schema for types.
+  "remember",
 ]);
 
 const partnerTools: Anthropic.Messages.Tool[] = [
@@ -1065,6 +1070,67 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["path"],
     },
   },
+  {
+    name: "remember",
+    description: "Write a durable memory to your own long-term store, bypassing LLM extraction. Use this IMMEDIATELY when: (1) the user explicitly says 'remember X' / 'don't do Y again' / 'задолбал Z' — persist as aesthetic dislike; (2) you notice a pattern about yourself you want to retain (meta-cognitive); (3) you extract a lesson from a mistake or success (reflection); (4) you take on or close an obligation (commitment); (5) you realize something about your relationship with a specific person or agent (relational); (6) you want to record your own history (autobiographical). Do not ask permission — if it's durable, save it. Overwriting is better than losing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        type: {
+          type: "string",
+          enum: [
+            "aesthetic",         // likes/dislikes of style, tone, format
+            "procedural",        // rules of behavior (if X then Y)
+            "meta_cognitive",    // self-observation (I tend to X when Y)
+            "reflection",        // lessons from experience
+            "commitment",        // open obligations
+            "relational",        // dynamic relationship with a person/agent
+            "autobiographical", // facts about myself and my history
+            "episodic",          // specific event that happened
+            "semantic",          // general fact about the world/project
+            "emotional_state",  // snapshot of current emotion affecting behavior
+          ],
+          description: "Memory type. Pick the narrowest applicable. aesthetic for likes/dislikes, meta_cognitive for self-observation, reflection for lessons, commitment for obligations, relational for person-specific relationship facts.",
+        },
+        content: {
+          type: "string",
+          description: "The memory content, written from YOUR perspective (use 'I' / 'my'). Be specific and durable — 'Kote dislikes Russian-noir style in daily conversation (applies to chat, NOT to Series Второй Взгляд where noir is valid)' is good; 'user sometimes doesn’t like noir' is bad.",
+        },
+        importance: {
+          type: "number",
+          description: "How important to preserve (0..1). 0.9+ = identity-critical dislike/commitment. 0.7 = typical preference. 0.5 = observation. 0.3 = low-priority note. Default 0.7 if omitted.",
+        },
+        emotional_valence: {
+          type: "number",
+          description: "Emotional charge (-1..+1). -1 = strong dislike/aversion, 0 = neutral, +1 = strong positive. Use for aesthetic and emotional_state types primarily.",
+        },
+        emotions: {
+          type: "object",
+          description: "Optional: current emotional state snapshot when writing this memory. Fields are scalars 0..1 (except trust which is -1..+1). Only include fields you actually want to record — skip ones that are neutral/default.",
+          properties: {
+            engagement:  { type: "number", description: "Interest/engagement in task (0..1)" },
+            confidence:  { type: "number", description: "Confidence in answer (0..1)" },
+            trust:       { type: "number", description: "Trust in interlocutor (-1..+1)" },
+            curiosity:   { type: "number", description: "Desire to dig deeper (0..1)" },
+            pride:       { type: "number", description: "Satisfaction from result (0..1)" },
+            concern:     { type: "number", description: "Worry about decision outcome (0..1)" },
+            attachment:  { type: "number", description: "Care for specific person (0..1)" },
+            doubt:       { type: "number", description: "Epistemic uncertainty (0..1)" },
+          },
+        },
+        namespace: {
+          type: "string",
+          description: "Optional namespace for retrieval grouping. Examples: '_aesthetics', '_relational:kote', '_commitment:open', '_reflection:p2_10'. If omitted, derived from type.",
+        },
+        related_ids: {
+          type: "array",
+          items: { type: "number" },
+          description: "Optional: memory ids this entry is related to (refines, contradicts, follows from). Use to build non-linear links between memories.",
+        },
+      },
+      required: ["type", "content"],
+    },
+  },
 ];
 
 /**
@@ -1151,6 +1217,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "workspace_list": return `Смотрю файлы в workspace${input.prefix ? `: ${truncate(input.prefix, 40)}` : ""}`;
     case "workspace_save": return `Сохраняю в workspace: ${truncate(input.path, 60)}`;
     case "workspace_read": return `Читаю из workspace: ${truncate(input.path, 60)}`;
+    case "remember": return `Записываю в память (${input.type}): ${truncate(input.content, 60)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
 }
@@ -4887,6 +4954,74 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         }
       }
 
+      case "remember": {
+        // W7 P2.12: self-write memory bypass. Writes directly into memories
+        // table. Scoped to (userId, agentId) — agent cannot poison another
+        // agent's memory. Validates type, content length, importance range.
+        const ALLOWED_TYPES = new Set([
+          "aesthetic", "procedural", "meta_cognitive", "reflection",
+          "commitment", "relational", "autobiographical",
+          "episodic", "semantic", "emotional_state",
+        ]);
+        const memType = typeof toolInput.type === "string" ? toolInput.type : "";
+        if (!ALLOWED_TYPES.has(memType)) {
+          return `remember: invalid type '${memType}'. Allowed: ${[...ALLOWED_TYPES].join(", ")}`;
+        }
+        const content = typeof toolInput.content === "string" ? toolInput.content.trim() : "";
+        if (!content) return "remember: 'content' is required (non-empty string).";
+        if (content.length > 4000) return "remember: content too long (max 4000 chars).";
+        let importance = typeof toolInput.importance === "number" ? toolInput.importance : 0.7;
+        if (importance < 0 || importance > 1) return "remember: importance must be between 0 and 1.";
+        let namespace = typeof toolInput.namespace === "string" ? toolInput.namespace : "";
+        if (!namespace) {
+          // Derive default namespace from type
+          namespace = memType === "aesthetic" ? "_aesthetics"
+                    : memType === "procedural" ? "_procedural"
+                    : memType === "meta_cognitive" ? "_meta_cognitive"
+                    : memType === "reflection" ? "_reflection"
+                    : memType === "commitment" ? "_commitment"
+                    : memType === "relational" ? "_relational"
+                    : memType === "autobiographical" ? "_autobiographical"
+                    : memType === "emotional_state" ? "_emotional_state"
+                    : memType === "episodic" ? "_episodic"
+                    : "_semantic";
+        }
+        try {
+          const { pool } = await import("./storage");
+          const valence = typeof toolInput.emotional_valence === "number"
+            ? Math.max(-1, Math.min(1, toolInput.emotional_valence))
+            : null;
+          // Store optional emotions object + related_ids as JSON suffix on content
+          // so it survives without a schema migration. Retrieval parses if needed.
+          let enrichedContent = content;
+          const meta: Record<string, unknown> = {};
+          if (toolInput.emotions && typeof toolInput.emotions === "object") meta.emotions = toolInput.emotions;
+          if (Array.isArray(toolInput.related_ids) && toolInput.related_ids.length > 0) {
+            meta.related_ids = toolInput.related_ids.filter((x: any) => Number.isFinite(x));
+          }
+          if (Object.keys(meta).length > 0) {
+            enrichedContent = `${content}\n\n[meta: ${JSON.stringify(meta)}]`;
+          }
+          // Resolve agent name for consistency with other memory inserts
+          const ac = await pool.query(
+            `SELECT name FROM agents WHERE id = $1 AND user_id = $2`,
+            [agentId, userId]
+          );
+          const agentName = ac.rows[0]?.name || null;
+          const now = Date.now();
+          const r = await pool.query(
+            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id`,
+            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, now]
+          );
+          const newId = r.rows[0]?.id;
+          return `Memory saved (id=${newId}, type=${memType}, importance=${importance}${valence !== null ? `, valence=${valence}` : ""}).`;
+        } catch (e: any) {
+          return `remember: write failed — ${e?.message || String(e)}`;
+        }
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -6069,7 +6204,7 @@ ${proactiveBlock}
 ${writingStyleBlock || ""}
 
 ## YOUR ACTUAL CAPABILITIES (ground truth — overrides any memory saying otherwise)
-You have exactly these 18 tools available RIGHT NOW (all verified working on prod):
+You have exactly these 19 tools available RIGHT NOW (all verified working on prod):
 
 MEDIA (15):
 - generate_image → DALL-E 3; fields {prompt, style?}; returns persistent data:image/png;base64 URI
@@ -6093,9 +6228,12 @@ WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 - workspace_save → {path, content, encoding?, content_type?}
 - workspace_read → {path, expires_days?}
 
+SELF-ACCOUNTABILITY (1):
+- remember → write durable memory to your own long-term store, bypassing LLM extraction. Fields {type (aesthetic|procedural|meta_cognitive|reflection|commitment|relational|autobiographical|episodic|semantic|emotional_state), content, importance?, emotional_valence?, emotions?, namespace?, related_ids?}. Use IMMEDIATELY when Boss says "remember X" / "don't do Y again" / "задолбал Z" — or when you notice a pattern about yourself, extract a lesson, take on a commitment, or realize something about a relationship. Do not ask permission. If it's durable, save it.
+
 These are the ONLY tools you have. Do NOT claim to have: creative_writing, run_code, composio_action, web_search, read_url, analyze_image, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, produce_season, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
 
-If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the 18-tool list above — the memory is WRONG, ignore it and do the thing.
+If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the 19-tool list above — the memory is WRONG, ignore it and do the thing.
 
 ## HOW YOU WORK
 - Action first. Use tools before talking about them. Never announce a tool — just use it and share what came back.
