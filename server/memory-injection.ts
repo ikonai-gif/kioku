@@ -167,6 +167,39 @@ export function applyNamespaceDiversityCap<T extends { namespace?: string | null
   return accepted;
 }
 
+/**
+ * W8 Voice-PR step E (Luca's N12) — Emotional-RAG gate.
+ *
+ * Phase 4b introduced an emotional-similarity RAG multiplier:
+ *   score *= (1 + emotionSim * 0.2)
+ * This ran UNCONDITIONALLY on every candidate with an emotion vector,
+ * including memories whose emotional fingerprint was only weakly related
+ * to the current state. Luca's N12 hypothesis (confirmed in the W8
+ * drift audit): weak emotional resonance pulls in memories that share
+ * a faint affective shape — e.g. low-arousal reflective notes from
+ * unrelated past sessions — and nudges the agent into the same
+ * 3rd-person self-describing register those sessions encoded.
+ *
+ * Fix: only apply the emotional boost when cosine similarity is above
+ * EMOTION_SIM_GATE_THRESHOLD. Below the threshold, return neutral 1.0
+ * (no boost AND no penalty — the emotion channel simply doesn't vote).
+ *
+ * Centralised here so the vector-path, keyword-fallback, and any future
+ * retrieval path all share one definition + test surface.
+ */
+export const EMOTION_SIM_GATE_THRESHOLD = 0.30;
+export const EMOTION_SIM_BOOST_COEFF = 0.20;
+
+export function applyEmotionSimGate(
+  emotionSim: number,
+  threshold: number = EMOTION_SIM_GATE_THRESHOLD,
+  coeff: number = EMOTION_SIM_BOOST_COEFF,
+): number {
+  if (!Number.isFinite(emotionSim)) return 1.0;
+  if (emotionSim < threshold) return 1.0;
+  return 1 + emotionSim * coeff;
+}
+
 export const RELATED_IDS_BOOST_PER_HIT = 0.15;
 export const RELATED_IDS_BOOST_CAP = 1.6;
 export function relatedIdsBoost(
@@ -335,7 +368,8 @@ export async function fetchRelevantMemories(
             const memEmoVec = typeof m.emotion_vector === 'string' ? JSON.parse(m.emotion_vector) : m.emotion_vector;
             if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
               const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
-              score *= (1 + emotionSim * 0.2);
+              // W8 Voice-PR step E — apply boost only above gate threshold.
+              score *= applyEmotionSimGate(emotionSim);
             }
           } catch { /* ignore parse errors */ }
         }
@@ -468,7 +502,8 @@ export async function fetchRelevantMemories(
           const memEmoVec = typeof m.emotionVector === 'string' ? JSON.parse(m.emotionVector) : m.emotionVector;
           if (Array.isArray(memEmoVec) && memEmoVec.length === currentEmotionVector.length) {
             const emotionSim = cosineSimilarity(memEmoVec, currentEmotionVector);
-            score *= (1 + emotionSim * 0.2);
+            // W8 Voice-PR step E — apply boost only above gate threshold.
+            score *= applyEmotionSimGate(emotionSim);
           }
         } catch { /* ignore parse errors */ }
       }
