@@ -26,6 +26,12 @@ import type { MeetingEventBus } from "../lib/meeting-event-bus";
 import { NoopMeetingEventBus } from "../lib/meeting-event-bus";
 import { verifyTurnParticipantOwnership } from "../lib/meeting-acl";
 import { makeMeetingLlmCaller } from "../lib/meeting-llm-caller";
+import {
+  upsertArtifact,
+  endMeetingAndMaybeCommitMemory,
+  MeetingAlreadyTerminalError,
+  type MeetingSummarizer,
+} from "../lib/meeting-artifact";
 
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -134,6 +140,14 @@ async function userCanReadMeeting(userId: number, meetingId: string): Promise<bo
 export interface MeetingRoutesOptions {
   eventBus?: MeetingEventBus;
   llmFactory?: (agentId: number) => Promise<LlmCaller>;
+  /**
+   * W9 Item 5 — injected summarizer for POST /end path. Tests pass a
+   * deterministic stub; production wires Anthropic via `makeMeetingLlmCaller`
+   * but WITHOUT reusing the in-turn caller (end-meeting is a server-side
+   * one-shot — no tools, no transcript retrieval). A trivial default is
+   * provided below that just returns the first 200 chars of the transcript.
+   */
+  summarizer?: MeetingSummarizer;
 }
 
 export function registerMeetingRoutes(
@@ -143,6 +157,17 @@ export function registerMeetingRoutes(
 ) {
   const eventBus = opts.eventBus ?? new NoopMeetingEventBus();
   const llmFactory = opts.llmFactory ?? makeMeetingLlmCaller;
+  // Default summarizer: naive first-line distillation so V1 does not depend
+  // on an extra Anthropic round-trip from the end endpoint. Prod can swap in
+  // a one-shot LLM summarizer via opts.summarizer when the cost/quality
+  // tradeoff is worth it.
+  const summarizer: MeetingSummarizer =
+    opts.summarizer ??
+    (async ({ transcript }) => {
+      const trimmed = transcript.replace(/\s+/g, " ").trim();
+      if (trimmed.length === 0) return "[meeting: no transcript]";
+      return trimmed.slice(0, 200);
+    });
   // ── POST /api/meetings ─────────────────────────────────────────────────────
   app.post(
     "/api/meetings",
@@ -901,6 +926,169 @@ export function registerMeetingRoutes(
         throw err;
       } finally {
         client.release();
+      }
+    }),
+  );
+
+  // ── POST /api/meetings/:id/artifact ──────────────────────────────────
+  // Creator-only. Inserts a new artifact version for (meeting_id, type).
+  // Server-managed monotonic versioning — no client-supplied version.
+  // Rejects on terminal meeting states.
+  const artifactSchema = z.object({
+    type: z.string().min(1).max(30),
+    content: z.unknown(),
+    created_by_agent_id: z.number().int().positive().optional().nullable(),
+  });
+
+  app.post(
+    "/api/meetings/:id/artifact",
+    asyncHandler(async (req, res) => {
+      const userId = await getUser(req);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const id = String(req.params.id ?? "");
+      if (!isValidUuid(id)) return res.status(400).json({ error: "invalid_id" });
+
+      const parsed = artifactSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        const { rows } = await client.query(
+          `SELECT creator_user_id, state FROM meetings WHERE id = $1 FOR UPDATE`,
+          [id],
+        );
+        if (rows.length === 0) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "meeting_not_found" });
+        }
+        const meeting = rows[0];
+        if (meeting.creator_user_id !== userId) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ error: "not_authorized" });
+        }
+        if (TERMINAL_STATES.has(meeting.state)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "meeting_terminal", state: meeting.state });
+        }
+
+        const artifact = await upsertArtifact(client, {
+          meetingId: id,
+          type: parsed.data.type,
+          content: parsed.data.content,
+          createdByAgentId: parsed.data.created_by_agent_id ?? null,
+        });
+
+        await client.query("COMMIT");
+
+        logger.info(
+          {
+            component: "meetings",
+            userId,
+            meetingId: id,
+            action: "artifact",
+            type: artifact.type,
+            version: artifact.version,
+            result: "ok",
+          },
+          "[meetings] artifact saved",
+        );
+
+        return res.status(201).json({
+          meeting_id: id,
+          artifact: {
+            id: artifact.id,
+            type: artifact.type,
+            version: artifact.version,
+            content: artifact.content,
+            created_at: artifact.createdAt,
+            updated_at: artifact.updatedAt,
+          },
+        });
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    }),
+  );
+
+  // ── POST /api/meetings/:id/end ──────────────────────────────────────
+  // Creator-only. Transitions the meeting to `completed` and, for each
+  // participant with carry_over_memory=true, writes exactly one memory row
+  // under the `_meeting_summary_{meetingId}` namespace. Idempotent: second
+  // call on an already-terminal meeting returns 409.
+  app.post(
+    "/api/meetings/:id/end",
+    asyncHandler(async (req, res) => {
+      const userId = await getUser(req);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const id = String(req.params.id ?? "");
+      if (!isValidUuid(id)) return res.status(400).json({ error: "invalid_id" });
+
+      // Cheap creator check BEFORE locking — avoids leaking the endpoint's
+      // meeting existence to arbitrary users via 409/404 timing.
+      const { rows: cRows } = await pool.query(
+        `SELECT creator_user_id, state FROM meetings WHERE id = $1`,
+        [id],
+      );
+      if (cRows.length === 0) {
+        return res.status(404).json({ error: "meeting_not_found" });
+      }
+      if (cRows[0].creator_user_id !== userId) {
+        return res.status(403).json({ error: "not_authorized" });
+      }
+
+      try {
+        const result = await endMeetingAndMaybeCommitMemory({
+          meetingId: id,
+          summarizer,
+        });
+
+        eventBus
+          .emit("meeting.ended", {
+            meetingId: id,
+            state: result.state,
+            previousState: result.previousState as any,
+            reason: "ended_by_creator",
+          })
+          .catch(() => {});
+
+        logger.info(
+          {
+            component: "meetings",
+            userId,
+            meetingId: id,
+            action: "end",
+            previousState: result.previousState,
+            memoriesWritten: result.memoriesWritten,
+            participantsOptedIn: result.participantsOptedIn,
+            result: "ok",
+          },
+          "[meetings] meeting ended",
+        );
+
+        return res.status(200).json({
+          meeting_id: id,
+          state: result.state,
+          previous_state: result.previousState,
+          memories_written: result.memoriesWritten,
+          participants_opted_in: result.participantsOptedIn,
+        });
+      } catch (err: any) {
+        if (err instanceof MeetingAlreadyTerminalError) {
+          return res.status(409).json({ error: "meeting_terminal", state: err.state });
+        }
+        if (err?.message === "meeting_not_found") {
+          return res.status(404).json({ error: "meeting_not_found" });
+        }
+        throw err;
       }
     }),
   );
