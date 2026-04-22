@@ -548,6 +548,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: insert memory (master key only) ──────────────
+  // W7 P2.9 — Directly insert a memory row bypassing LLM extraction.
+  // Used when the agent failed to persist a user preference (e.g., dislike)
+  // and we need a hard floor. Scoped to (userId, agentId) — agent ownership
+  // is verified before insert, so we can't poison another user's agent.
+  app.post("/api/admin/insert-memory", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.body?.userId ?? ""), 10);
+    const agentId = parseInt(String(req.body?.agentId ?? ""), 10);
+    const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
+    const type = typeof req.body?.type === "string" ? req.body.type : "semantic";
+    const namespace = typeof req.body?.namespace === "string" ? req.body.namespace : null;
+    const importance = typeof req.body?.importance === "number" ? req.body.importance : 0.7;
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    if (!agentId || Number.isNaN(agentId)) return res.status(400).json({ error: "agentId required" });
+    if (!content) return res.status(400).json({ error: "content required" });
+    if (content.length > 4000) return res.status(400).json({ error: "content too long (max 4000 chars)" });
+    if (importance < 0 || importance > 1) return res.status(400).json({ error: "importance must be 0..1" });
+    try {
+      const { pool } = await import("./storage");
+      // Verify agent belongs to user — non-negotiable guard.
+      const ac = await pool.query(
+        `SELECT id, name FROM agents WHERE id = $1 AND user_id = $2`,
+        [agentId, userId]
+      );
+      if (ac.rows.length === 0) return res.status(400).json({ error: "agent not owned by user" });
+      const agentName = ac.rows[0].name;
+      const now = Date.now();
+      const r = await pool.query(
+        `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, user_id, agent_id, type, namespace, importance, created_at`,
+        [userId, agentId, agentName, content, type, namespace, importance, now]
+      );
+      res.json({ ok: true, memory: r.rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "insert failed" });
+    }
+  }));
+
   // ── Admin: list all users (master key only) ──────────────────
   app.get("/api/admin/users", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";
