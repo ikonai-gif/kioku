@@ -95,6 +95,78 @@ export function parseMetaSidecar(content: string | null | undefined): { related_
  * Boost factor: 1 + 0.15 * (count of related_ids that hit accepted set),
  * capped at 1.6 to prevent a single over-linked memory from dominating.
  */
+/**
+ * W8 Voice-PR step C — Namespace diversity cap.
+ *
+ * After top-K is selected by composite scoring + related_ids boost, enforce
+ * that no single namespace occupies more than MAX_SINGLE_NAMESPACE_SHARE of
+ * the returned slots. Motivation: during the W8 voice-drift audit we found
+ * 279 rows in `_conversation_insights` — a single namespace could saturate
+ * top-K and push Luca into the 3rd-person register those rows encoded. Even
+ * after downgrade (importance=0.05), a future re-enable of INSIGHTS_AUTO_GEN
+ * — or any similar mass-write namespace — must not silently dominate.
+ *
+ * Algorithm:
+ *   1. Walk candidates in score order (already sorted).
+ *   2. Accept into the output list, tracking namespace counts.
+ *   3. If accepting would push one namespace above the cap, skip and keep
+ *      the candidate as overflow.
+ *   4. If fewer than `limit` slots were filled (because too many were
+ *      skipped), top up from the overflow list in score order.
+ *
+ * This preserves score ordering among accepted items but opens the door
+ * to lower-scoring items from other namespaces when one namespace is
+ * over-represented. `null` / undefined namespace is treated as its own
+ * bucket ("__null__") — unnamespaced memories don’t combine with named
+ * ones for the purpose of the cap.
+ *
+ * The cap applies ONLY to the post-alwaysInject, post-episodeSummaries
+ * slice — identity and episode summary injection is policy-driven and
+ * not subject to diversity pressure.
+ */
+export const MAX_SINGLE_NAMESPACE_SHARE = 0.30; // 30 percent
+export const NAMESPACE_CAP_MIN_ABSOLUTE = 2;     // never cap below 2 slots (small limits need breathing room)
+
+export function applyNamespaceDiversityCap<T extends { namespace?: string | null }>(
+  candidates: T[],
+  limit: number,
+  maxShare: number = MAX_SINGLE_NAMESPACE_SHARE,
+): T[] {
+  if (limit <= 0 || candidates.length === 0) return [];
+  if (candidates.length <= limit) return candidates.slice(0, limit);
+
+  const perNamespaceCap = Math.max(
+    NAMESPACE_CAP_MIN_ABSOLUTE,
+    Math.ceil(limit * maxShare),
+  );
+
+  const accepted: T[] = [];
+  const overflow: T[] = [];
+  const counts = new Map<string, number>();
+
+  for (const c of candidates) {
+    if (accepted.length >= limit) { overflow.push(c); continue; }
+    const ns = (c.namespace ?? "__null__") as string;
+    const cur = counts.get(ns) ?? 0;
+    if (cur >= perNamespaceCap) {
+      overflow.push(c);
+      continue;
+    }
+    accepted.push(c);
+    counts.set(ns, cur + 1);
+  }
+
+  // Top up from overflow if we under-filled.
+  if (accepted.length < limit) {
+    for (const c of overflow) {
+      if (accepted.length >= limit) break;
+      accepted.push(c);
+    }
+  }
+
+  return accepted;
+}
+
 export const RELATED_IDS_BOOST_PER_HIT = 0.15;
 export const RELATED_IDS_BOOST_CAP = 1.6;
 export function relatedIdsBoost(
@@ -349,7 +421,12 @@ export async function fetchRelevantMemories(
       return boost === 1.0 ? m : { ...m, score: m.score * boost };
     }).sort((a: any, b: any) => b.score - a.score);
 
-    const merged = boosted.slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
+    // W8 Voice-PR step C — apply namespace diversity cap BEFORE final slice.
+    // If one namespace holds >30% of the candidate list, those overflow entries
+    // get demoted below other namespaces' first candidates while score order is
+    // preserved within each namespace’s share.
+    const topKLimit = Math.max(0, limit - alwaysInject.length - episodeSummaries.length);
+    const merged = applyNamespaceDiversityCap(boosted, topKLimit);
 
     return [...alwaysInject, ...episodeSummaries, ...merged.map(({ score: _score, ...rest }) => rest)];
   }
@@ -421,11 +498,15 @@ export async function fetchRelevantMemories(
   const fallbackBoosted = scored.map((m: any) => {
     const boost = relatedIdsBoost(m.content, fallbackAcceptedIds);
     return boost === 1.0 ? m : { ...m, score: m.score * boost };
-  }).sort((a: any, b: any) => b.score - a.score)
-    .slice(0, Math.max(0, limit - alwaysInject.length - episodeSummaries.length));
+  }).sort((a: any, b: any) => b.score - a.score);
+
+  // W8 Voice-PR step C — namespace diversity cap on the keyword-fallback path
+  // (same policy as the vector path above).
+  const fallbackTopKLimit = Math.max(0, limit - alwaysInject.length - episodeSummaries.length);
+  const fallbackCapped = applyNamespaceDiversityCap(fallbackBoosted, fallbackTopKLimit);
 
   // Identity memories first, then episode summaries, then topic-relevant memories
-  return [...alwaysInject, ...episodeSummaries, ...fallbackBoosted.map(({ score: _score, ...rest }) => rest)];
+  return [...alwaysInject, ...episodeSummaries, ...fallbackCapped.map(({ score: _score, ...rest }) => rest)];
 }
 
 /**
