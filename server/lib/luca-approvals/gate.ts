@@ -99,6 +99,16 @@ export const DEFAULT_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
  */
 export const SOLO_DEDUPE_WINDOW_MS = 60 * 1000;
 
+/**
+ * Max number of pending approvals a single user may accrue (Luca Q5).
+ * The 21st call throws ApprovalError("approval_queue_full") — the caller
+ * (middleware) surfaces this to Luca as a tool-layer error, which he
+ * reports to Kote ("я собрал 20 ожидающих решений, разберись с ними
+ * прежде чем я буду слать ещё"). Dedupe hits are OK past the cap — they
+ * don't create a new row.
+ */
+export const MAX_PENDING_PER_USER = 20;
+
 export interface CreateApprovalInput {
   agentId: number;
   userId: number;
@@ -141,7 +151,8 @@ export type ApprovalErrorCode =
   | "approval_already_decided"
   | "approval_not_authorized"
   | "approval_edit_missing_payload"
-  | "approval_invalid_action";
+  | "approval_invalid_action"
+  | "approval_queue_full";
 
 /**
  * Stable JSON stringify for codeSha hashing. Sorts object keys so
@@ -234,6 +245,26 @@ export async function createPendingApproval(
     if (existing.length > 0) {
       return existing[0];
     }
+  }
+
+  // ─── Pending-cap check (Q5) ─────────────────────────────────────
+  // Only evaluated when we're about to insert a fresh row. A dedupe hit
+  // above already short-circuited, so existing pending rows are fine.
+  const pending = await db()
+    .select({ count: sql<number>`count(*)::int` })
+    .from(toolApprovals)
+    .where(
+      and(
+        eq(toolApprovals.userId, input.userId),
+        eq(toolApprovals.status, "pending"),
+      ),
+    );
+  const pendingCount = pending[0]?.count ?? 0;
+  if (pendingCount >= MAX_PENDING_PER_USER) {
+    throw new ApprovalError(
+      "approval_queue_full",
+      `user ${input.userId} already has ${pendingCount} pending approvals (cap ${MAX_PENDING_PER_USER})`,
+    );
   }
 
   // ─── Fresh insert ───────────────────────────────────────────────

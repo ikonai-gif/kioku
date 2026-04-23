@@ -29,6 +29,16 @@ const meetingClients = new Map<string, Set<WebSocket>>();
 const MEETING_EVENT_RATE_LIMIT = 2; // per second per meetingId
 const meetingEmitHistory = new Map<string, number[]>();
 
+// Per-user subscriptions (Day 6 — Luca approval gate events). Used by
+// `broadcastToUser` to push events that aren't scoped to any specific room:
+//   - luca.approval.requested
+//   - luca.approval.decided
+// The Luca Board UI subscribes once per connection via
+//   { type: "subscribe", topic: "user" }
+// No ACL check beyond JWT auth — a user can only ever subscribe to their
+// own events because subscribe uses the authenticated userId directly.
+const userClients = new Map<number, Set<WebSocket>>();
+
 // Track authenticated userId per WebSocket
 const wsUserMap = new WeakMap<WebSocket, number>();
 
@@ -111,6 +121,8 @@ export function setupWebSocket(httpServer: Server) {
     // more than one meeting tab on the same socket). Set also tolerates a
     // client spamming subscribe for the same meetingId (idempotent Set.add).
     const subscribedMeetings = new Set<string>();
+    // Day 6: flag so cleanup can drop this ws from userClients on close.
+    let subscribedToUser = false;
 
     ws.on("message", async (raw) => {
       try {
@@ -188,6 +200,23 @@ export function setupWebSocket(httpServer: Server) {
           );
           return;
         }
+
+        // Day 6: per-user subscription for Luca approval events.
+        // Idempotent — clients may subscribe multiple times (tab focus etc.)
+        if (msg.type === "subscribe" && msg.topic === "user") {
+          if (!userClients.has(userId)) userClients.set(userId, new Set());
+          userClients.get(userId)!.add(ws);
+          subscribedToUser = true;
+          ws.send(JSON.stringify({ type: "subscribed", topic: "user", userId }));
+          return;
+        }
+
+        if (msg.type === "unsubscribe" && msg.topic === "user") {
+          userClients.get(userId)?.delete(ws);
+          subscribedToUser = false;
+          ws.send(JSON.stringify({ type: "unsubscribed", topic: "user", userId }));
+          return;
+        }
       } catch {
         // ignore invalid messages
       }
@@ -201,6 +230,10 @@ export function setupWebSocket(httpServer: Server) {
         meetingClients.get(mid)?.delete(ws);
       }
       subscribedMeetings.clear();
+      if (subscribedToUser) {
+        userClients.get(userId)?.delete(ws);
+        subscribedToUser = false;
+      }
     };
 
     ws.on("close", cleanup);
@@ -220,6 +253,30 @@ export function getActiveWsConnectionCount(): number {
     }
   }
   return total;
+}
+
+/**
+ * Day 6 — broadcast to every open ws subscribed to a given user's topic.
+ * Used by Luca approval gate events that aren't room-scoped (Luca Board
+ * UI listens regardless of which partner-chat room is focused).
+ *
+ * Best-effort: silently returns if no one is subscribed. Clients re-fetch
+ * via REST on reconnect.
+ */
+export function broadcastToUser(userId: number, payload: Record<string, unknown>): void {
+  const clients = userClients.get(userId);
+  if (!clients || clients.size === 0) return;
+  const data = JSON.stringify(payload);
+  Array.from(clients).forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.send(data); } catch { /* best-effort */ }
+    }
+  });
+}
+
+/** Test-only: drop all user subscriptions (for vitest cleanup). */
+export function __clearUserClientsForTests(): void {
+  userClients.clear();
 }
 
 /**

@@ -68,6 +68,28 @@ export interface LucaEnv {
   LUCA_TOOL_WRITE_MEMORY_ENABLED: boolean;
   LUCA_TOOL_READ_FILE_ENABLED: boolean;
   LUCA_TOOL_UPLOAD_FILE_ENABLED: boolean;
+
+  // Day 6 — approval gate. When LUCA_APPROVAL_GATE_ENABLED=true, the
+  // middleware intercepts HIGH_STAKES_WRITE tool calls (see
+  // server/lib/luca-approvals/classify.ts) and inserts a pending row
+  // in tool_approvals; Luca receives `{status:"pending_approval",...}`
+  // instead of running the tool. Default false.
+  LUCA_APPROVAL_GATE_ENABLED: boolean;
+  /**
+   * Shadow-mode control (Luca's suggestion). When "log_only" the gate
+   * classifies and logs every HIGH call but still executes it — lets us
+   * observe real traffic without blocking Luca in prod. When "block" the
+   * gate enforces (pending-approval pathway). Default "block".
+   */
+  LUCA_APPROVAL_GATE_MODE: "log_only" | "block";
+  /**
+   * When true, the expanded Luca tool scope (Gmail 12 + cloud reads +
+   * schedule/set_reminder — Day 6 part 3) is admitted into
+   * LUCA_STUDIO_TOOL_NAMES. Orthogonal to the gate: expanded scope is
+   * safe only when APPROVAL_GATE_ENABLED=true, so startup fails fast if
+   * EXPANDED=true && GATE=false.
+   */
+  LUCA_EXPANDED_SCOPE_ENABLED: boolean;
 }
 
 export function readLucaEnv(): LucaEnv {
@@ -92,7 +114,51 @@ export function readLucaEnv(): LucaEnv {
     LUCA_TOOL_WRITE_MEMORY_ENABLED: process.env.LUCA_TOOL_WRITE_MEMORY_ENABLED === "true",
     LUCA_TOOL_READ_FILE_ENABLED: process.env.LUCA_TOOL_READ_FILE_ENABLED === "true",
     LUCA_TOOL_UPLOAD_FILE_ENABLED: process.env.LUCA_TOOL_UPLOAD_FILE_ENABLED === "true",
+    LUCA_APPROVAL_GATE_ENABLED: process.env.LUCA_APPROVAL_GATE_ENABLED === "true",
+    // Mode defaults to "block" — when the flag is on, enforce. "log_only"
+    // is opt-in via explicit value. Any unrecognized value falls back to
+    // "block" (fail-safe: prefer over-blocking to under-blocking).
+    LUCA_APPROVAL_GATE_MODE:
+      process.env.LUCA_APPROVAL_GATE_MODE === "log_only" ? "log_only" : "block",
+    LUCA_EXPANDED_SCOPE_ENABLED: process.env.LUCA_EXPANDED_SCOPE_ENABLED === "true",
   };
+}
+
+/**
+ * Startup fail-fast check. Call from server boot AFTER env is loaded but
+ * BEFORE request handlers bind. Throws if the config is internally
+ * inconsistent — catches e.g. "expanded scope on but gate off" which
+ * would expose un-gated Gmail/Drive writes.
+ *
+ * Rules:
+ *   - LUCA_EXPANDED_SCOPE_ENABLED=true REQUIRES LUCA_APPROVAL_GATE_ENABLED=true.
+ *   - LUCA_APPROVAL_GATE_ENABLED=true REQUIRES LUCA_V1A_ENABLED=true.
+ *     (Gate uses Luca's execution path; no sense enabling it if the
+ *     master is off.)
+ */
+export function assertLucaEnvConsistency(env: LucaEnv = readLucaEnv()): void {
+  if (env.LUCA_EXPANDED_SCOPE_ENABLED && !env.LUCA_APPROVAL_GATE_ENABLED) {
+    throw new Error(
+      "luca_env_inconsistent: LUCA_EXPANDED_SCOPE_ENABLED=true requires LUCA_APPROVAL_GATE_ENABLED=true " +
+        "(expanded scope adds Gmail/Drive/GitHub writes; disabling the gate would let Luca send without confirmation)",
+    );
+  }
+  if (env.LUCA_APPROVAL_GATE_ENABLED && !env.LUCA_V1A_ENABLED) {
+    throw new Error(
+      "luca_env_inconsistent: LUCA_APPROVAL_GATE_ENABLED=true requires LUCA_V1A_ENABLED=true",
+    );
+  }
+}
+
+/** Is the approval gate live and enforcing? */
+export function isApprovalGateEnforcing(): boolean {
+  const env = readLucaEnv();
+  return env.LUCA_APPROVAL_GATE_ENABLED && env.LUCA_APPROVAL_GATE_MODE === "block";
+}
+
+/** Is the gate doing anything at all (log_only or block)? */
+export function isApprovalGateActive(): boolean {
+  return readLucaEnv().LUCA_APPROVAL_GATE_ENABLED;
 }
 
 /**

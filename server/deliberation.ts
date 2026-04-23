@@ -29,6 +29,22 @@ import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile,
 import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
 import { TRUST_POLICY_PROMPT_SECTION } from "./lib/luca-tools/trust-policy";
 import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
+import {
+  readLucaEnv,
+  isApprovalGateActive,
+  isApprovalGateEnforcing,
+} from "./lib/luca/env";
+import { classifyToolCall } from "./lib/luca-approvals/classify";
+import {
+  createPendingApproval,
+  recordExecutionResult,
+  ApprovalError,
+} from "./lib/luca-approvals/gate";
+import {
+  broadcastApprovalRequested,
+  broadcastApprovalDecided,
+  rowToRequestedPayload,
+} from "./lib/luca-approvals/ws-events";
 import { randomUUID } from "crypto";
 
 // ── SSRF Protection: validate URLs before fetching ─────────────────────────
@@ -1234,12 +1250,31 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
   }
 }
 
+/**
+ * Optional per-call context for executePartnerTool. All fields are optional
+ * for backward-compat with existing call sites. Day 6 additions:
+ *   - meetingId / turnId: threaded into the approval gate for dedupe scope
+ *   - _skipApprovalGate: set to true by the /decide endpoint when re-entering
+ *     the dispatcher with an approved payload — prevents infinite recursion
+ *     (gate → approve → dispatcher → gate...). DO NOT set from any other
+ *     caller; this is a private signal.
+ *   - approvalId: when re-entering post-approval, we pass it so the
+ *     dispatcher can call recordExecutionResult on completion.
+ */
+export interface ExecutePartnerToolOptions {
+  meetingId?: string | null;
+  turnId?: string | null;
+  _skipApprovalGate?: boolean;
+  _approvalId?: string;
+}
+
 export async function executePartnerTool(
   toolName: string,
   toolInput: Record<string, any>,
   userId: number,
   agentId: number,
-  roomId?: number
+  roomId?: number,
+  options?: ExecutePartnerToolOptions,
 ): Promise<string> {
   // W7 P2.5 defense-in-depth: if Luca somehow invokes a non-Studio tool (e.g.
   // via an in-flight Anthropic session that saw the old schema, or via a
@@ -1249,10 +1284,11 @@ export async function executePartnerTool(
   // Luca V1a wire-up: tools prefixed with `luca_` (luca_run_code, luca_analyze_image,
   // etc.) are Luca V1a toolkit — allow them through the guard. They dispatch
   // via dispatchLucaTool() below and have their own flag-gated admission.
+  let __cachedAgent: Awaited<ReturnType<typeof storage.getAgent>> | null = null;
   try {
-    const __agent = await storage.getAgent(agentId);
+    __cachedAgent = await storage.getAgent(agentId);
     const isLucaV1aTool = toolName.startsWith("luca_");
-    if (__agent?.name === "Luca" && !LUCA_STUDIO_TOOL_NAMES.has(toolName) && !isLucaV1aTool) {
+    if (__cachedAgent?.name === "Luca" && !LUCA_STUDIO_TOOL_NAMES.has(toolName) && !isLucaV1aTool) {
       logger.warn(
         { component: "deliberation", event: "luca_out_of_scope_tool_blocked", agentId, tool: toolName },
         "[deliberation] blocked Luca non-studio tool call"
@@ -1260,6 +1296,103 @@ export async function executePartnerTool(
       return `Tool '${toolName}' is not part of Luca Studio. Available tools: ${Array.from(LUCA_STUDIO_TOOL_NAMES).join(", ")}.`;
     }
   } catch { /* best-effort guard — never break real tool execution if storage hiccups */ }
+
+  // ─── Day 6: Luca approval gate ───────────────────────────────────────────────────────────
+  // Gate HIGH_STAKES_WRITE tools for Luca. Inserts a pending row in
+  // tool_approvals, broadcasts luca.approval.requested, returns
+  // {status:"pending_approval"} back to Luca. He acknowledges in chat;
+  // when Kote decides via POST /api/luca/approvals/:id/decide the handler
+  // re-enters this function with options._skipApprovalGate=true.
+  //
+  // Skip conditions (any short-circuits the gate):
+  //   - agent is not Luca
+  //   - flag LUCA_APPROVAL_GATE_ENABLED is off
+  //   - classification is READ_ONLY or LOW_STAKES_WRITE
+  //   - caller set _skipApprovalGate=true (post-decision re-entry)
+  if (
+    isApprovalGateActive() &&
+    __cachedAgent?.name === "Luca" &&
+    !options?._skipApprovalGate
+  ) {
+    const klass = classifyToolCall(toolName, toolInput);
+    if (klass === "HIGH_STAKES_WRITE") {
+      if (isApprovalGateEnforcing()) {
+        try {
+          const row = await createPendingApproval({
+            agentId,
+            userId,
+            meetingId: options?.meetingId ?? null,
+            turnId: options?.turnId ?? null,
+            toolName,
+            draftPayload: toolInput,
+          });
+          // Only broadcast on fresh insert. Dedupe hit = same createdAt as
+          // original; client already has this card. We can't cheaply tell
+          // without another lookup, but broadcasting twice is idempotent
+          // on the UI (same approval_id → dedupe on client).
+          try {
+            broadcastApprovalRequested(rowToRequestedPayload(row, klass));
+          } catch (e) {
+            logger.warn(
+              { component: "luca-approvals", event: "broadcast_requested_failed", approvalId: row.id, err: e instanceof Error ? e.message : String(e) },
+              "[luca-approvals] broadcastApprovalRequested failed",
+            );
+          }
+          logger.info(
+            {
+              component: "luca-approvals",
+              event: "gate_intercepted",
+              agentId,
+              userId,
+              tool: toolName,
+              approvalId: row.id,
+              turnId: options?.turnId ?? null,
+            },
+            "[luca-approvals] HIGH_STAKES_WRITE intercepted — pending approval created",
+          );
+          return JSON.stringify({
+            status: "pending_approval",
+            approval_id: row.id,
+            tool_name: toolName,
+            expires_at: row.expiresAt.toISOString(),
+            message: `Waiting for Kote to approve this ${toolName} call. Continue with other work; you'll be notified when the decision lands. Do not retry the same call.`,
+          });
+        } catch (e) {
+          if (e instanceof ApprovalError && e.code === "approval_queue_full") {
+            logger.warn(
+              { component: "luca-approvals", event: "queue_full", userId, tool: toolName },
+              "[luca-approvals] pending queue full — rejecting tool call",
+            );
+            return JSON.stringify({
+              status: "error",
+              error: "approval_queue_full",
+              message: `You have 20 pending approval requests — Kote needs to decide on some before I can queue more. Please wait or choose another action.`,
+            });
+          }
+          logger.error(
+            { component: "luca-approvals", event: "gate_create_failed", tool: toolName, err: e instanceof Error ? e.message : String(e) },
+            "[luca-approvals] createPendingApproval threw — falling open",
+          );
+          // Fail-open: gate errors must NOT deadlock Luca. Log and continue
+          // to normal execution. Alarming happens via logs/Sentry.
+        }
+      } else {
+        // log_only mode — classify + log but execute normally. Lets us
+        // observe real HIGH_STAKES traffic shape before flipping to block.
+        logger.info(
+          {
+            component: "luca-approvals",
+            event: "gate_log_only",
+            agentId,
+            userId,
+            tool: toolName,
+            turnId: options?.turnId ?? null,
+          },
+          "[luca-approvals] log_only mode — HIGH call observed, not intercepted",
+        );
+      }
+    }
+  }
 
   // Luca V1a early-route: tools prefixed `luca_` dispatch via the V1a registry
   // (run_code, analyze_image, future search/read_url/memory/files). Context:

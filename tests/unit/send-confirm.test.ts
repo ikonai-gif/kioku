@@ -17,6 +17,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../server/storage", () => ({
   pool: { query: vi.fn().mockResolvedValue({ rows: [] }) },
+  db: {
+    insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })),
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]), orderBy: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })) })) })) })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })) })),
+  },
   storage: {},
   recordToolActivityStart: vi.fn(),
   recordToolActivityEnd: vi.fn(),
@@ -179,6 +184,11 @@ describe("executePartnerTool — send tools return pending state", () => {
     // Override the pool mock for this describe block, ensuring recordToolActivityStart returns a promise
     vi.doMock("../../server/storage", () => ({
       pool: { query: vi.fn().mockResolvedValue({ rows: [] }) },
+      db: {
+        insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })),
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]), orderBy: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })) })) })) })),
+        update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })) })),
+      },
       storage: {},
       recordToolActivityStart: vi.fn().mockResolvedValue(undefined),
       recordToolActivityEnd: vi.fn().mockResolvedValue(undefined),

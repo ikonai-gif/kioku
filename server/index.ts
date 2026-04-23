@@ -30,6 +30,8 @@ import { closeRedisClient } from "./lib/redis";
 import { getWss } from "./ws";
 import { startMeetingReaper, type ReaperHandle } from "./lib/meeting-reaper";
 import { getMeetingEventBus } from "./lib/meeting-event-bus-registry";
+import { assertLucaEnvConsistency, readLucaEnv } from "./lib/luca/env";
+import { startApprovalExpireWorker } from "./lib/luca-approvals/expire-worker";
 
 // SECURITY: Constant-time string comparison to prevent timing attacks on secrets
 export function safeCompare(a: string, b: string): boolean {
@@ -289,6 +291,22 @@ void runInitLoop();
   // Log feature flag state at startup
   logFlags(logger);
 
+  // Day 6: Luca approval gate fail-fast. Throws if EXPANDED_SCOPE is on
+  // without GATE, or GATE on without V1A master. Fail-fast at boot so
+  // Railway surfaces it immediately instead of at first tool call.
+  try {
+    assertLucaEnvConsistency();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error({ source: "boot", event: "luca_env_inconsistent", err: msg }, "[boot] Luca env config is inconsistent");
+    // In production we treat this as fatal — don't boot with a broken
+    // security config. In dev we log and keep going so local dev servers
+    // can start with partial envs.
+    if (process.env.NODE_ENV === "production") {
+      throw e;
+    }
+  }
+
   await registerRoutes(httpServer, app);
 
   // Sentry error handler — must be AFTER all routes, BEFORE custom error handler
@@ -344,6 +362,13 @@ void runInitLoop();
 
   // Start task scheduler (Phase 4: Scheduling & Automation)
   startScheduler();
+
+  // Day 6: approval-gate expire worker. Only starts if the gate flag is
+  // on — otherwise there's no work. Tick interval is internal to the
+  // worker module (default 60s).
+  if (readLucaEnv().LUCA_APPROVAL_GATE_ENABLED) {
+    startApprovalExpireWorker();
+  }
 
   // Auto-purge old request logs every 24 hours (GDPR compliance)
   setInterval(async () => {
