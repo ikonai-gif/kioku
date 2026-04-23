@@ -84,7 +84,7 @@ const VISION_MODEL =
   process.env.LUCA_ANALYZE_IMAGE_MODEL || "claude-3-5-sonnet-20241022";
 
 /** Default prompt when caller omits. */
-const DEFAULT_PROMPT = "Describe this image in detail.";
+export const DEFAULT_PROMPT = "Describe this image in detail.";
 
 /**
  * MIME types Anthropic vision accepts. Enforced client-side so we emit a
@@ -721,7 +721,13 @@ export async function analyzeImageHandler(
   }
 
   // Resolve effective params.
-  const prompt = input.prompt ?? DEFAULT_PROMPT;
+  // Fix A (Day 3 pass-1): normalize empty/whitespace prompt to DEFAULT_PROMPT.
+  // Nullish-coalesce (??) alone lets "" through → Anthropic receives an empty
+  // text block, 400s or returns unclear garbage. Trim + falsy-check forces
+  // the default describe-this-image intent.
+  const promptRaw = input.prompt ?? DEFAULT_PROMPT;
+  const promptTrimmed = promptRaw.trim();
+  const prompt = promptTrimmed.length > 0 ? promptTrimmed : DEFAULT_PROMPT;
   const maxTokens = Math.min(
     input.max_tokens ?? ANALYZE_IMAGE_DEFAULT_MAX_TOKENS,
     ANALYZE_IMAGE_MAX_MAX_TOKENS,

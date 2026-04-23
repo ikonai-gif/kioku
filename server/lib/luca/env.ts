@@ -64,7 +64,11 @@ export interface LucaEnv {
 export function readLucaEnv(): LucaEnv {
   return {
     LUCA_V1A_ENABLED: process.env.LUCA_V1A_ENABLED === "true",
-    LUCA_S3_BUCKET: process.env.LUCA_S3_BUCKET ?? null,
+    // Fix C (Day 3 pass-1): normalize bucket to lowercase at read time.
+    // AWS S3 bucket names are DNS-compliant and always lowercase; ops may
+    // misconfigure with uppercase and we don't want SF4 to reject legitimate
+    // URLs with confusing "bucket not allowed" errors. Empty string → null.
+    LUCA_S3_BUCKET: (process.env.LUCA_S3_BUCKET ?? "").toLowerCase().trim() || null,
     AWS_REGION: process.env.AWS_REGION ?? null,
     LUCA_DRIVE_ROOT_FOLDER: process.env.LUCA_DRIVE_ROOT_FOLDER ?? null,
     BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY ?? null,

@@ -56,6 +56,7 @@ import {
   ANALYZE_IMAGE_DEFAULT_TIMEOUT_MS,
   ANALYZE_IMAGE_MAX_TIMEOUT_MS,
   ANALYZE_IMAGE_MAX_BYTES,
+  DEFAULT_PROMPT,
   type AnalyzeImageContext,
   type FetchedImage,
 } from "../../lib/luca-tools/analyze-image";
@@ -336,6 +337,34 @@ describe("validateImageUrlSF4 — reject paths", () => {
   it("rejects malformed URL", () => {
     const r = validateImageUrlSF4("not a url at all");
     expect(r.ok).toBe(false);
+  });
+
+  // Fix C (Day 3 pass-1): env bucket lowercased at read time so uppercase
+  // misconfig doesn't reject legit URLs.
+  it("Fix C: tolerates uppercase LUCA_S3_BUCKET env (lowercased at read time)", () => {
+    setFlags({
+      LUCA_V1A_ENABLED: "true",
+      LUCA_TOOLS_ENABLED: "true",
+      LUCA_TOOL_ANALYZE_IMAGE_ENABLED: "true",
+      LUCA_S3_BUCKET: "IKONBAI-LUCA-TEST",
+      AWS_REGION: "eu-central-1",
+    });
+    const r = validateImageUrlSF4(
+      "https://ikonbai-luca-test.s3.eu-central-1.amazonaws.com/x.png",
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("Fix C: mixed-case LUCA_S3_BUCKET with surrounding whitespace still works", () => {
+    setFlags({
+      LUCA_V1A_ENABLED: "true",
+      LUCA_TOOLS_ENABLED: "true",
+      LUCA_TOOL_ANALYZE_IMAGE_ENABLED: "true",
+      LUCA_S3_BUCKET: "  Ikonbai-Luca-Test  ",
+      AWS_REGION: "eu-central-1",
+    });
+    const r = validateImageUrlSF4("s3://ikonbai-luca-test/x.png");
+    expect(r.ok).toBe(true);
   });
 });
 
@@ -668,6 +697,57 @@ describe("analyzeImageHandler", () => {
       }),
     ).rejects.toThrow(/image_url/);
     expect(insertedRows).toHaveLength(0);
+  });
+
+  // ─── Pass-1 fixes ──────────────────────────────────────────────────────
+
+  it("Fix A: empty prompt normalizes to DEFAULT_PROMPT in Anthropic call", async () => {
+    const client = makeMockAnthropic({});
+    await analyzeImageHandler(
+      { image_url: "s3://ikonbai-luca-test/x.jpg", prompt: "" },
+      makeCtx(),
+      { anthropicClient: client, fetchFn: mockFetchFn({}) },
+    );
+    const createMock = (client.messages.create as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock;
+    const arg = createMock.calls[0][0] as {
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    const textBlock = arg.messages[0].content.find((b) => b.type === "text");
+    expect(textBlock?.text).toBe(DEFAULT_PROMPT);
+  });
+
+  it("Fix A: whitespace-only prompt normalizes to DEFAULT_PROMPT", async () => {
+    const client = makeMockAnthropic({});
+    await analyzeImageHandler(
+      { image_url: "s3://ikonbai-luca-test/x.jpg", prompt: "   \t\n  " },
+      makeCtx(),
+      { anthropicClient: client, fetchFn: mockFetchFn({}) },
+    );
+    const arg = (client.messages.create as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls[0][0] as {
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    const textBlock = arg.messages[0].content.find((b) => b.type === "text");
+    expect(textBlock?.text).toBe(DEFAULT_PROMPT);
+  });
+
+  it("Fix A: non-empty prompt passes through trimmed, not replaced", async () => {
+    const client = makeMockAnthropic({});
+    await analyzeImageHandler(
+      { image_url: "s3://ikonbai-luca-test/x.jpg", prompt: "  what color?  " },
+      makeCtx(),
+      { anthropicClient: client, fetchFn: mockFetchFn({}) },
+    );
+    const arg = (client.messages.create as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls[0][0] as {
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    const textBlock = arg.messages[0].content.find((b) => b.type === "text");
+    expect(textBlock?.text).toBe("what color?");
   });
 
   it("caps max_tokens at MAX — handler enforces even if caller asks for more", async () => {
