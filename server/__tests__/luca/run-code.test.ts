@@ -139,6 +139,30 @@ describe("parseRunCodeInput", () => {
     );
   });
 
+  it("rejects NaN / Infinity / -Infinity / 0 timeout_ms (D30 edge cases)", () => {
+    // NaN passes typeof "number" but fails Math.min — guard with Number.isFinite.
+    expect(() => parseRunCodeInput({ code: "p", timeout_ms: Number.NaN })).toThrow(
+      /finite positive/,
+    );
+    expect(() =>
+      parseRunCodeInput({ code: "p", timeout_ms: Number.POSITIVE_INFINITY }),
+    ).toThrow(/finite positive/);
+    expect(() =>
+      parseRunCodeInput({ code: "p", timeout_ms: Number.NEGATIVE_INFINITY }),
+    ).toThrow(/finite positive/);
+    expect(() => parseRunCodeInput({ code: "p", timeout_ms: 0 })).toThrow(
+      /finite positive/,
+    );
+  });
+
+  it("accepts large timeout_ms (handler layer caps it, parser does not)", () => {
+    // Parser tolerates large finite values; Math.min in runCodeHandler caps
+    // to RUN_CODE_MAX_TIMEOUT_MS. This separation keeps parse errors about
+    // shape, not policy.
+    const r = parseRunCodeInput({ code: "p", timeout_ms: 1_000_000 });
+    expect(r.timeout_ms).toBe(1_000_000);
+  });
+
   it("rejects non-boolean keep_globals", () => {
     expect(() =>
       parseRunCodeInput({ code: "p", keep_globals: "yes" }),

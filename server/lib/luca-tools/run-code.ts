@@ -125,8 +125,19 @@ export function parseRunCodeInput(raw: unknown): RunCodeToolInput {
     throw new Error("run_code.invalid_input: `code` exceeds 100KB limit");
   }
   if (r.timeout_ms != null) {
-    if (typeof r.timeout_ms !== "number" || r.timeout_ms <= 0) {
-      throw new Error("run_code.invalid_input: `timeout_ms` must be positive number");
+    // Must be a finite positive number. Rejects NaN (which passes typeof check
+    // as "number" but fails any < > <= >= comparison), rejects +/-Infinity,
+    // rejects non-numbers. Audit D30 (pass-4) — `NaN <= 0` evaluates false,
+    // so a naive `<= 0` guard lets NaN through and Math.min(NaN, cap)=NaN
+    // which Node setTimeout coerces to 1ms, producing fast-fail loops.
+    if (
+      typeof r.timeout_ms !== "number" ||
+      !Number.isFinite(r.timeout_ms) ||
+      r.timeout_ms <= 0
+    ) {
+      throw new Error(
+        "run_code.invalid_input: `timeout_ms` must be a finite positive number",
+      );
     }
   }
   if (r.keep_globals != null && typeof r.keep_globals !== "boolean") {
