@@ -17,6 +17,7 @@ import { registerMcp } from "./mcp";
 import { randomBytes } from "crypto";
 import { registerBilling } from "./billing";
 import { registerPrivacyRoutes } from "./privacy";
+import { registerLucaApprovalRoutes } from "./luca-approval-routes";
 import { registerMeetingRoutes } from "./routes/meetings";
 import { requireFlag } from "./feature-flags";
 import { PRIVATE_MODE, isEmailAllowed, getPrivateModeStatus } from "./lib/private-mode";
@@ -302,6 +303,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerMcp(app);
   registerBilling(app);
   registerPrivacyRoutes(app, getUser);
+  // Day 6 — Luca approval gate HTTP endpoints (GET list/one, POST /decide).
+  // Always registered; the gate itself is flag-gated in executePartnerTool,
+  // so with LUCA_APPROVAL_GATE_ENABLED=false the list returns [] and no one
+  // ever hits /decide.
+  registerLucaApprovalRoutes(app, getUser);
 
   // ── Meeting Room API (behind MEETING_ROOM_ENABLED flag) ──────
   // Install the production WS event bus into the singleton registry. Must

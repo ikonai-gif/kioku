@@ -709,3 +709,155 @@ describe("gate: expirePending", () => {
     expect(decided.status).toBe("approved");
   });
 });
+
+// ─── Pending-cap (Q5 — max 20 per user) ───────────────────────────
+
+describe("gate: pending-cap (MAX_PENDING_PER_USER)", () => {
+  const baseInput = {
+    agentId: 16,
+    userId: 10,
+    meetingId: null,
+    turnId: null,
+    toolName: "send_new_email",
+    draftPayload: { to: "alice@example.com", subject: "hi" },
+  };
+
+  it("allows a fresh insert when pending < 20", async () => {
+    // Plant 19 existing pending rows — cap check reads count via .then
+    // path, so fake's nextSelectFilter drives the count.
+    for (let i = 0; i < 19; i++) {
+      fake.rows.push({
+        id: `p-${i}`,
+        agentId: 16,
+        userId: 10,
+        meetingId: null,
+        turnId: null,
+        toolName: "x",
+        draftPayload: {},
+        finalPayload: null,
+        status: "pending",
+        decisionNote: null,
+        codeSha: `c-${i}`,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        decidedAt: null,
+        executedAt: null,
+        executionResult: null,
+      } as ToolApproval);
+    }
+    // Dedupe lookup: no match.
+    fake.nextSelectFilter = () => false;
+    // Cap count: matches all 19 pending rows for user 10.
+    // In the fake, both dedupe (limit path) and count (then path) consume
+    // nextSelectFilter — so we need to set it TWICE. But the API only has
+    // one slot. Workaround: set a counter-aware filter.
+    let consumeCount = 0;
+    Object.defineProperty(fake, "nextSelectFilter", {
+      configurable: true,
+      get() {
+        consumeCount++;
+        // First call = dedupe lookup (returns nothing)
+        // Second call = cap count (matches 19 pending rows)
+        if (consumeCount === 2) {
+          return (r: ToolApproval) =>
+            r.userId === 10 && r.status === "pending";
+        }
+        return () => false;
+      },
+      set() {
+        /* ignore planter attempts — we're using the getter */
+      },
+    });
+    const row = await createPendingApproval(baseInput);
+    expect(row.status).toBe("pending");
+    expect(fake.rows.length).toBe(20);
+  });
+
+  it("throws approval_queue_full when 20 pending exist", async () => {
+    for (let i = 0; i < 20; i++) {
+      fake.rows.push({
+        id: `p-${i}`,
+        agentId: 16,
+        userId: 10,
+        meetingId: null,
+        turnId: null,
+        toolName: "x",
+        draftPayload: {},
+        finalPayload: null,
+        status: "pending",
+        decisionNote: null,
+        codeSha: `c-${i}`,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        decidedAt: null,
+        executedAt: null,
+        executionResult: null,
+      } as ToolApproval);
+    }
+    // Per-invocation consume counter: call 1 = dedupe (no match),
+    // call 2 = count query (returns all 20 pending). Reset-aware so
+    // repeat invocations in the same test keep working.
+    let consumeCount = 0;
+    Object.defineProperty(fake, "nextSelectFilter", {
+      configurable: true,
+      get() {
+        consumeCount++;
+        // Every EVEN call = count query → match all 20 pending
+        if (consumeCount % 2 === 0) {
+          return (r: ToolApproval) =>
+            r.userId === 10 && r.status === "pending";
+        }
+        return () => false;
+      },
+      set() { /* ignore */ },
+    });
+    let caught: unknown;
+    try {
+      await createPendingApproval(baseInput);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ApprovalError);
+    expect((caught as ApprovalError).code).toBe("approval_queue_full");
+  });
+
+  it("dedupe hit past cap does NOT throw (reuses existing row)", async () => {
+    // 20 rows exist, but a dedupe hit returns the first one — cap check
+    // is only evaluated on fresh inserts.
+    const turnId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const existingCodeSha = computeCodeSha(
+      baseInput.toolName,
+      baseInput.draftPayload,
+    );
+    const existing: ToolApproval = {
+      id: "existing-dup",
+      agentId: 16,
+      userId: 10,
+      meetingId: null,
+      turnId,
+      toolName: baseInput.toolName,
+      draftPayload: baseInput.draftPayload,
+      finalPayload: null,
+      status: "pending",
+      decisionNote: null,
+      codeSha: existingCodeSha,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      executedAt: null,
+      executionResult: null,
+    } as ToolApproval;
+    fake.rows.push(existing);
+    // Add 19 more pending rows so total = 20.
+    for (let i = 0; i < 19; i++) {
+      fake.rows.push({ ...existing, id: `p-${i}`, codeSha: `other-${i}` } as ToolApproval);
+    }
+    // Dedupe planter matches the existing row.
+    fake.nextSelectFilter = (r) =>
+      r.id === "existing-dup" && r.status === "pending";
+    const row = await createPendingApproval({ ...baseInput, turnId });
+    expect(row.id).toBe("existing-dup");
+    // No new row inserted
+    expect(fake.rows.length).toBe(20);
+  });
+});
