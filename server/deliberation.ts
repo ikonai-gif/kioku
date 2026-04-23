@@ -24,6 +24,11 @@ import { checkSycophancy } from "./sycophancy-checker";
 import { applyVoiceGate, buildRewriteDirective } from "./voice-gate";
 import dns from "dns/promises";
 import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus } from "./cloud-integrations";
+// Luca V1a — wire-up for integration Day 6 (early: to unblock Luca on `luca_run_code`).
+// `getLucaTools()` is self-flag-gated (three-level: V1A + TOOLS + per-tool).
+import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
+import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
+import { randomUUID } from "crypto";
 
 // ── SSRF Protection: validate URLs before fetching ─────────────────────────
 async function validateUrl(url: string): Promise<void> {
@@ -1143,7 +1148,12 @@ const partnerTools: Anthropic.Messages.Tool[] = [
  */
 export function getPartnerToolsForAgent(agent: { name?: string | null } | null | undefined): Anthropic.Messages.Tool[] {
   if (agent?.name === "Luca") {
-    return partnerTools.filter(t => LUCA_STUDIO_TOOL_NAMES.has(t.name));
+    // Luca Studio tools (16 canonical) + Luca V1a tools (flag-gated).
+    // getLucaTools() returns [] when any of LUCA_V1A_ENABLED / LUCA_TOOLS_ENABLED
+    // / LUCA_TOOL_<NAME>_ENABLED is false, so this is safe by default.
+    const studio = partnerTools.filter(t => LUCA_STUDIO_TOOL_NAMES.has(t.name));
+    const v1a = getLucaTools();
+    return [...studio, ...v1a];
   }
   return partnerTools;
 }
@@ -1234,9 +1244,14 @@ export async function executePartnerTool(
   // via an in-flight Anthropic session that saw the old schema, or via a
   // future prompt-injection attempt), refuse cleanly instead of executing
   // real side effects (Gmail send, Stripe call, GitHub write, etc.).
+  //
+  // Luca V1a wire-up: tools prefixed with `luca_` (luca_run_code, luca_analyze_image,
+  // etc.) are Luca V1a toolkit — allow them through the guard. They dispatch
+  // via dispatchLucaTool() below and have their own flag-gated admission.
   try {
     const __agent = await storage.getAgent(agentId);
-    if (__agent?.name === "Luca" && !LUCA_STUDIO_TOOL_NAMES.has(toolName)) {
+    const isLucaV1aTool = toolName.startsWith("luca_");
+    if (__agent?.name === "Luca" && !LUCA_STUDIO_TOOL_NAMES.has(toolName) && !isLucaV1aTool) {
       logger.warn(
         { component: "deliberation", event: "luca_out_of_scope_tool_blocked", agentId, tool: toolName },
         "[deliberation] blocked Luca non-studio tool call"
@@ -1244,6 +1259,34 @@ export async function executePartnerTool(
       return `Tool '${toolName}' is not part of Luca Studio. Available tools: ${Array.from(LUCA_STUDIO_TOOL_NAMES).join(", ")}.`;
     }
   } catch { /* best-effort guard — never break real tool execution if storage hiccups */ }
+
+  // Luca V1a early-route: tools prefixed `luca_` dispatch via the V1a registry
+  // (run_code, analyze_image, future search/read_url/memory/files). Context:
+  // we don't currently pipe meetingId/turnId down here, so we synthesize a
+  // per-invocation sandbox key — acceptable because V1a run_code currently
+  // uses a mock pyodide runner (Day 1 scaffold) with no real per-turn state
+  // reuse. When Day 6 integration lands properly, meetingId/turnId will be
+  // threaded through and sandboxKeyForTurn() will be used instead.
+  if (toolName.startsWith("luca_")) {
+    const ctxKey = toSandboxKey(`m_ad_hoc_${randomUUID().replace(/-/g, "").slice(0, 24)}_t_${Date.now().toString(36)}`);
+    try {
+      const lucaResult = await dispatchLucaTool(toolName, toolInput, {
+        userId,
+        agentId,
+        meetingId: null,
+        turnId: null,
+        ctxKey,
+      });
+      return typeof lucaResult === "string" ? lucaResult : JSON.stringify(lucaResult);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.warn(
+        { component: "deliberation", event: "luca_v1a_dispatch_failed", tool: toolName, err: msg },
+        "[deliberation] Luca V1a tool dispatch failed"
+      );
+      return JSON.stringify({ status: "error", error: msg });
+    }
+  }
   const __activityStarted = Date.now();
   // Stable identifier for this specific tool call. Lets live chunks
   // (e.g. sandbox_shell stdout lines) attach to the correct step in the
