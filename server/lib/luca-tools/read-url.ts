@@ -67,6 +67,7 @@ import {
 } from "../luca/env";
 import { isPrivateOrLoopbackHost } from "./analyze-image";
 import { getToolTrustLevel, type TrustLevel } from "./trust-policy";
+import { isSocialHost, readSocialMeta } from "./social-meta";
 import type { SandboxKey } from "../luca/pyodide-runner";
 import logger from "../../logger";
 
@@ -773,6 +774,56 @@ export async function readUrlHandler(
   }
 
   const startedAt = Date.now();
+
+  // ── Day 10: social-media short-circuit. For JS-shell hosts (Instagram
+  //    etc.), plain fetch returns nothing useful. Try yt-dlp metadata
+  //    first; fall through to regular fetch on any failure.
+  try {
+    const fetchHost = new URL(ssrf.fetchUrl).hostname.toLowerCase();
+    if (isSocialHost(fetchHost)) {
+      const socialText = await readSocialMeta(ssrf.fetchUrl);
+      if (socialText) {
+        const truncated = socialText.length > maxChars;
+        const content = truncateCompacted(socialText, maxChars);
+        const elapsedMs = Date.now() - startedAt;
+        try {
+          await insertTerminalReadUrlRun(ctx, runnerInput, codeSha, {
+            status: "ok",
+            finalUrl: ssrf.fetchUrl,
+            mediaType: "text/plain",
+            bytesRead: Buffer.byteLength(socialText, "utf-8"),
+            charsReturned: content.length,
+            truncated,
+            redirectHops: 0,
+            elapsedMs,
+          });
+        } catch (e) {
+          logger.error(
+            { err: e, ctxKey: ctx.ctxKey, codeSha },
+            "[luca.readUrl] failed to insert terminal tool_runs row (social path)",
+          );
+        }
+        return {
+          status: "ok",
+          content,
+          trust_level: trustLevel,
+          final_url: ssrf.fetchUrl,
+          media_type: "text/plain",
+          bytes_read: Buffer.byteLength(socialText, "utf-8"),
+          chars_returned: content.length,
+          truncated,
+          redirect_hops: 0,
+        };
+      }
+      // yt-dlp returned null — fall through to plain fetch below.
+    }
+  } catch (e) {
+    // Defensive: never let the social short-circuit block the normal path.
+    logger.warn(
+      { err: e, url: ssrf.fetchUrl },
+      "[luca.readUrl] social-meta probe threw; falling back to plain fetch",
+    );
+  }
 
   let fetched: ReadUrlFetchResult;
   try {
