@@ -31,6 +31,15 @@ export interface LucaEnv {
   AWS_REGION: string | null;
 
   /**
+   * Dev/staging escape hatch for SF4. When true, `validateImageUrlSF4`
+   * additionally accepts arbitrary https:// hosts (still blocking
+   * localhost / private IP ranges to prevent SSRF). Default false.
+   * Set ONLY in non-prod when S3 is not configured but Luca needs to
+   * analyze publicly-hosted images for smoke tests.
+   */
+  LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC: boolean;
+
+  /**
    * Google Drive folder id that is the root of Luca's workspace.
    * Every drive_save_file call must resolve to a folder that is THIS folder
    * or a descendant. Enforced by SF5 sanity fence.
@@ -70,6 +79,8 @@ export function readLucaEnv(): LucaEnv {
     // URLs with confusing "bucket not allowed" errors. Empty string → null.
     LUCA_S3_BUCKET: (process.env.LUCA_S3_BUCKET ?? "").toLowerCase().trim() || null,
     AWS_REGION: process.env.AWS_REGION ?? null,
+    LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC:
+      process.env.LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC === "true",
     LUCA_DRIVE_ROOT_FOLDER: process.env.LUCA_DRIVE_ROOT_FOLDER ?? null,
     BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY ?? null,
     LUCA_TOOLS_ENABLED: process.env.LUCA_TOOLS_ENABLED === "true",

@@ -75,7 +75,7 @@ const LUCA_FLAG_KEYS = [
   "LUCA_TOOL_RUN_CODE_ENABLED",
   "LUCA_TOOL_ANALYZE_IMAGE_ENABLED",
 ];
-const S3_ENV_KEYS = ["LUCA_S3_BUCKET", "AWS_REGION"];
+const S3_ENV_KEYS = ["LUCA_S3_BUCKET", "AWS_REGION", "LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC"];
 
 function setFlags(overrides: Record<string, string | undefined>) {
   for (const k of [...LUCA_FLAG_KEYS, ...S3_ENV_KEYS]) delete process.env[k];
@@ -365,6 +365,132 @@ describe("validateImageUrlSF4 — reject paths", () => {
     });
     const r = validateImageUrlSF4("s3://ikonbai-luca-test/x.png");
     expect(r.ok).toBe(true);
+  });
+});
+
+// ─── SF4 allow-public escape hatch ────────────────────────────────
+
+describe("validateImageUrlSF4 — LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC", () => {
+  function allowPublicNoS3() {
+    setFlags({
+      LUCA_V1A_ENABLED: "true",
+      LUCA_TOOLS_ENABLED: "true",
+      LUCA_TOOL_ANALYZE_IMAGE_ENABLED: "true",
+      LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC: "true",
+      // S3 vars intentionally absent
+    });
+  }
+
+  it("accepts a public https URL when flag is on and S3 not configured", () => {
+    allowPublicNoS3();
+    const r = validateImageUrlSF4(
+      "https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png",
+    );
+    expect(r.ok).toBe(true);
+    expect(r.fetchUrl).toContain("upload.wikimedia.org");
+  });
+
+  it("still accepts data: URIs when flag is on", () => {
+    allowPublicNoS3();
+    const r = validateImageUrlSF4("data:image/png;base64,iVBORw0KGgo=");
+    expect(r.ok).toBe(true);
+    expect(r.isDataUri).toBe(true);
+  });
+
+  it("rejects http:// even with flag on", () => {
+    allowPublicNoS3();
+    const r = validateImageUrlSF4("http://example.com/x.png");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/https only/);
+  });
+
+  it("rejects localhost / loopback hostnames", () => {
+    allowPublicNoS3();
+    for (const url of [
+      "https://localhost/x.png",
+      "https://foo.localhost/x.png",
+      "https://127.0.0.1/x.png",
+      "https://127.255.255.254/x.png",
+      "https://[::1]/x.png",
+    ]) {
+      const r = validateImageUrlSF4(url);
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/loopback|private|metadata/);
+    }
+  });
+
+  it("rejects RFC1918 private IPv4 ranges", () => {
+    allowPublicNoS3();
+    for (const url of [
+      "https://10.0.0.1/x.png",
+      "https://10.255.255.255/x.png",
+      "https://192.168.1.1/x.png",
+      "https://172.16.0.1/x.png",
+      "https://172.31.255.255/x.png",
+    ]) {
+      expect(validateImageUrlSF4(url).ok).toBe(false);
+    }
+    // 172.32 and 172.15 are PUBLIC — should pass when path present.
+    expect(validateImageUrlSF4("https://172.32.0.1/x.png").ok).toBe(true);
+    expect(validateImageUrlSF4("https://172.15.0.1/x.png").ok).toBe(true);
+  });
+
+  it("rejects AWS/GCP metadata endpoints", () => {
+    allowPublicNoS3();
+    for (const url of [
+      "https://169.254.169.254/latest/meta-data/",
+      "https://metadata.google.internal/x",
+      "https://foo.internal/x",
+    ]) {
+      expect(validateImageUrlSF4(url).ok).toBe(false);
+    }
+  });
+
+  it("rejects s3:// URLs in allow-public mode (still needs bucket config)", () => {
+    allowPublicNoS3();
+    const r = validateImageUrlSF4("s3://some-bucket/x.png");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/s3:\/\//);
+  });
+
+  it("rejects URL missing path in allow-public mode", () => {
+    allowPublicNoS3();
+    const r = validateImageUrlSF4("https://example.com");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/missing path/);
+  });
+
+  it("flag OFF — public URL still rejected (fail-closed default)", () => {
+    setFlags({
+      LUCA_V1A_ENABLED: "true",
+      LUCA_TOOLS_ENABLED: "true",
+      LUCA_TOOL_ANALYZE_IMAGE_ENABLED: "true",
+      // No S3 vars, no allow-public
+    });
+    const r = validateImageUrlSF4("https://upload.wikimedia.org/x.png");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/LUCA_S3_BUCKET|whitelist/);
+  });
+
+  it("flag ON + S3 also configured — still allows public URLs (widens whitelist)", () => {
+    setFlags({
+      LUCA_V1A_ENABLED: "true",
+      LUCA_TOOLS_ENABLED: "true",
+      LUCA_TOOL_ANALYZE_IMAGE_ENABLED: "true",
+      LUCA_S3_BUCKET: "ikonbai-luca-test",
+      AWS_REGION: "eu-central-1",
+      LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC: "true",
+    });
+    // S3 bucket URL still works
+    expect(
+      validateImageUrlSF4(
+        "https://ikonbai-luca-test.s3.eu-central-1.amazonaws.com/x.png",
+      ).ok,
+    ).toBe(true);
+    // AND arbitrary public URL works
+    expect(validateImageUrlSF4("https://example.com/x.png").ok).toBe(true);
+    // AND localhost still rejected
+    expect(validateImageUrlSF4("https://localhost/x.png").ok).toBe(false);
   });
 });
 

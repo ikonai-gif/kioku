@@ -284,15 +284,35 @@ export function validateImageUrlSF4(imageUrl: string): SF4ValidationResult {
   const env = readLucaEnv();
   const bucket = env.LUCA_S3_BUCKET;
   const region = env.AWS_REGION;
+  const allowPublic = env.LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC;
 
-  if (!bucket) {
-    return {
-      ok: false,
-      reason:
-        "analyze_image.sf4: LUCA_S3_BUCKET not configured (fail-closed)",
-    };
-  }
-  if (!region) {
+  // Dev/staging escape hatch: when LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC=true,
+  // bypass the S3-only check and accept arbitrary https:// hosts. SSRF
+  // protection stays — localhost / private IP ranges remain rejected.
+  // This is NOT a replacement for SF4 in prod; it's a smoke-test tool
+  // for environments without a configured S3 bucket.
+  //
+  // NOTE: still runs AFTER the data: URI fast-path above and AFTER bucket
+  // checks below fall through — meaning s3:// URLs still require the
+  // bucket/region vars. The flag only widens the https:// path.
+  if (!bucket || !region) {
+    if (allowPublic) {
+      if (imageUrl.startsWith("s3://")) {
+        return {
+          ok: false,
+          reason:
+            "analyze_image.sf4: s3:// scheme requires LUCA_S3_BUCKET+AWS_REGION (even in allow-public mode)",
+        };
+      }
+      return validatePublicHttpsUrl(imageUrl);
+    }
+    if (!bucket) {
+      return {
+        ok: false,
+        reason:
+          "analyze_image.sf4: LUCA_S3_BUCKET not configured (fail-closed)",
+      };
+    }
     return {
       ok: false,
       reason: "analyze_image.sf4: AWS_REGION not configured (fail-closed)",
@@ -399,10 +419,120 @@ export function validateImageUrlSF4(imageUrl: string): SF4ValidationResult {
     };
   }
 
+  // If S3 path didn't match but allow-public flag is on, widen to public https.
+  if (allowPublic) {
+    return validatePublicHttpsUrl(imageUrl);
+  }
+
   return {
     ok: false,
     reason: `analyze_image.sf4: host \`${host}\` not in regional S3 whitelist`,
   };
+}
+
+/**
+ * Validate a generic https:// URL for the LUCA_ANALYZE_IMAGE_ALLOW_PUBLIC
+ * escape hatch. Enforces:
+ *   - https:// only (no http, ftp, file, etc.)
+ *   - No localhost / loopback / metadata endpoint hosts (SSRF defense)
+ *   - No IPv4/IPv6 literals pointing at private ranges
+ *
+ * NOTE: this is DNS-blind — the hostname is checked but DNS resolution
+ * still happens at fetch time, and a public DNS name could resolve to a
+ * private IP (classic SSRF via DNS rebinding). For V1a smoke testing
+ * this is acceptable; a hardened prod path must resolve + re-check the
+ * IP before the actual fetch. Tracked in Day 5 TOOL_TRUST_POLICY notes.
+ */
+export function validatePublicHttpsUrl(imageUrl: string): SF4ValidationResult {
+  let parsed: URL;
+  try {
+    parsed = new URL(imageUrl);
+  } catch {
+    return {
+      ok: false,
+      reason: "analyze_image.sf4: malformed URL (URL constructor threw)",
+    };
+  }
+  if (parsed.protocol !== "https:") {
+    return {
+      ok: false,
+      reason: `analyze_image.sf4: protocol \`${parsed.protocol}\` not allowed — https only (allow-public mode)`,
+    };
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (isPrivateOrLoopbackHost(host)) {
+    return {
+      ok: false,
+      reason: `analyze_image.sf4: host \`${host}\` blocked (loopback / private / metadata range) in allow-public mode`,
+    };
+  }
+  if (parsed.pathname === "/" || parsed.pathname.length === 0) {
+    return {
+      ok: false,
+      reason: "analyze_image.sf4: URL missing path (allow-public mode)",
+    };
+  }
+  return {
+    ok: true,
+    fetchUrl: `https://${host}${parsed.pathname}${parsed.search}`,
+  };
+}
+
+/**
+ * True if `host` is a name or IP literal that points at loopback, link-local,
+ * RFC1918 private space, cloud metadata service, or similar SSRF targets.
+ * Covers literal IPv4 (1.2.3.4), IPv6 ([::1]), and common names (localhost,
+ * *.internal). Does NOT resolve DNS — see caller caveat.
+ */
+export function isPrivateOrLoopbackHost(host: string): boolean {
+  if (!host) return true;
+  // Node's URL parser keeps IPv6 literals in [brackets]; strip them so the
+  // IPv6 tests below see the bare address.
+  const stripped =
+    host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  const h = stripped.toLowerCase();
+
+  // Names / suffixes.
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h.endsWith(".local")) return true;
+  if (h.endsWith(".internal")) return true;
+  // AWS / GCP metadata service by name (belt-and-braces; IP check covers too).
+  if (h === "metadata.google.internal") return true;
+
+  // IPv6 literal (URL.hostname strips the brackets).
+  if (h.includes(":")) {
+    if (h === "::1" || h === "::") return true;
+    // fe80::/10 link-local, fc00::/7 unique-local
+    if (h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb"))
+      return true;
+    if (h.startsWith("fc") || h.startsWith("fd")) return true;
+    // IPv4-mapped (::ffff:a.b.c.d) — inspect the embedded v4.
+    const mapped = /^::ffff:([0-9.]+)$/.exec(h);
+    if (mapped) return isPrivateIPv4(mapped[1]);
+    return false;
+  }
+
+  // IPv4 literal.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) {
+    return isPrivateIPv4(h);
+  }
+
+  return false;
+}
+
+function isPrivateIPv4(ip: string): boolean {
+  const parts = ip.split(".").map((p) => parseInt(p, 10));
+  if (parts.length !== 4 || parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255))
+    return true; // malformed → treat as private (fail-closed)
+  const [a, b] = parts;
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 127) return true; // loopback
+  if (a === 0) return true; // 0.0.0.0/8
+  if (a === 169 && b === 254) return true; // link-local + 169.254.169.254 metadata
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a >= 224) return true; // multicast + reserved
+  return false;
 }
 
 // ─── Image fetch ─────────────────────────────────────────────────────────
