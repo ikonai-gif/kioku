@@ -30,7 +30,7 @@ import logger from "../logger";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 
 /** Default Anthropic model for meeting turns — matches deliberation path. */
-const DEFAULT_MODEL = process.env.MEETING_LLM_MODEL || "claude-3-5-sonnet-20241022";
+const DEFAULT_MODEL = process.env.MEETING_LLM_MODEL || "claude-sonnet-4-6";
 const DEFAULT_MAX_TOKENS = Number(process.env.MEETING_LLM_MAX_TOKENS ?? 2048);
 
 interface AgentLlmCreds {
