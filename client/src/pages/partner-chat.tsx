@@ -2429,6 +2429,118 @@ export default function PartnerChat() {
 
   // ── Image Handling ────────────────────────────────────────────
   // ── Paste Handler (images + text from clipboard) ─────────────
+  // Day 12: extract a single frame from a (possibly huge) local video file
+  // entirely in the browser. Avoids uploading the whole video when all the
+  // server needs is one JPEG for vision. Returns base64 JPEG (without the
+  // data: prefix), duration in seconds, and dimensions.
+  //
+  // Seeks to min(1s, duration/4) to skip black/splash intros. Falls back
+  // to t=0 if seeking fails. Never throws after a frame is successfully
+  // drawn — partial metadata (duration NaN etc.) is tolerated.
+  const extractVideoFrameClientSide = (
+    file: File,
+  ): Promise<{
+    jpegBase64: string;
+    durationSec: number | null;
+    widthPx: number;
+    heightPx: number;
+  }> => {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.muted = true;
+      video.playsInline = true;
+      video.crossOrigin = "anonymous";
+      video.src = url;
+
+      let settled = false;
+      const cleanup = () => {
+        URL.revokeObjectURL(url);
+        video.src = "";
+      };
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
+      const succeed = (result: {
+        jpegBase64: string;
+        durationSec: number | null;
+        widthPx: number;
+        heightPx: number;
+      }) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      // Safety timeout: some browsers never fire loadeddata on odd codecs.
+      const timer = setTimeout(
+        () => fail(new Error("video decode timeout (15s)")),
+        15_000,
+      );
+
+      const drawFrame = () => {
+        try {
+          const w = video.videoWidth || 640;
+          const h = video.videoHeight || 360;
+          // Downscale: vision API doesn't need >1280px on longest side.
+          const maxDim = 1280;
+          const scale = Math.min(1, maxDim / Math.max(w, h));
+          const outW = Math.max(1, Math.round(w * scale));
+          const outH = Math.max(1, Math.round(h * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = outW;
+          canvas.height = outH;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            clearTimeout(timer);
+            return fail(new Error("canvas 2d context unavailable"));
+          }
+          ctx.drawImage(video, 0, 0, outW, outH);
+          // JPEG quality 0.85 — ~50-200KB for typical 720p/1080p frames.
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+          const base64 = dataUrl.split(",")[1] ?? "";
+          const duration = isFinite(video.duration) ? video.duration : null;
+          clearTimeout(timer);
+          succeed({
+            jpegBase64: base64,
+            durationSec: duration,
+            widthPx: outW,
+            heightPx: outH,
+          });
+        } catch (e) {
+          clearTimeout(timer);
+          fail(e instanceof Error ? e : new Error(String(e)));
+        }
+      };
+
+      video.addEventListener("error", () => {
+        clearTimeout(timer);
+        fail(new Error("video decode error"));
+      });
+
+      video.addEventListener("loadedmetadata", () => {
+        const target =
+          isFinite(video.duration) && video.duration > 0
+            ? Math.min(1, video.duration / 4)
+            : 0;
+        try {
+          video.currentTime = target;
+        } catch {
+          drawFrame();
+        }
+      });
+
+      video.addEventListener("seeked", () => {
+        drawFrame();
+      });
+    });
+  };
+
   // Compress image to max 1024px and JPEG quality 0.7 for fast upload
   const compressImage = (file: File): Promise<{ preview: string; base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
@@ -2497,51 +2609,85 @@ export default function PartnerChat() {
     }
     e.target.value = ""; // Reset input so same file can be re-selected
 
-    // ── Video branch: send to /api/partner/read-video for metadata + thumbnail description ──
+    // ── Video branch (Day 12): extract frame client-side via <video>+canvas,
+    //    send ONLY the frame JPEG + metadata to the server (no video bytes
+    //    over the wire). Lets us support files up to 500MB without Railway
+    //    upload pain. ffmpeg on the server becomes a fallback only.
     if (file.type.startsWith("video/")) {
-      if (file.size > 200 * 1024 * 1024) {
-        toast({ title: "Video too large (max 200MB)", variant: "destructive" });
+      if (file.size > 500 * 1024 * 1024) {
+        toast({ title: "Video too large (max 500MB)", variant: "destructive" });
         return;
       }
       setAttachedFileName(file.name);
       setFileExtractedText(null);
       setIsProcessingFile(true);
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const token = getSessionToken();
-        const res = await fetch(`${API_BASE}/api/partner/read-video`, {
-          method: "POST",
-          headers: token ? { "x-session-token": token } : {},
-          credentials: "include",
-          body: formData,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const sizeMb = (data.sizeBytes / (1024 * 1024)).toFixed(1);
-          const durationStr = data.durationSec != null ? `, ${data.durationSec}s` : "";
-          const descLine = data.thumbnailDescription
-            ? `\n\nFirst frame shows: ${data.thumbnailDescription}`
-            : data.warning
-              ? `\n\n(Thumbnail unavailable: ${data.warning})`
-              : "";
-          // Compose a text stub Luca will see in the sent message
-          setFileExtractedText(
-            `Video metadata\nfilename: ${data.fileName}\nmime: ${data.mimeType}\nsize: ${sizeMb} MB${durationStr}${descLine}`,
-          );
-          toast({
-            title: data.thumbnailDescription
-              ? `${file.name} — Luca can see the first frame`
-              : `${file.name} attached${data.warning ? " (preview unavailable)" : ""}`,
+        const { jpegBase64, durationSec, widthPx, heightPx } =
+          await extractVideoFrameClientSide(file);
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+
+        // Ask server to describe the frame via vision. Body is small (frame
+        // JPEG ~30-200KB vs original video 50-500MB).
+        let description: string | null = null;
+        let warning: string | null = null;
+        try {
+          const token = getSessionToken();
+          const res = await fetch(`${API_BASE}/api/partner/read-video-meta`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(token ? { "x-session-token": token } : {}),
+            },
+            credentials: "include",
+            body: JSON.stringify({
+              fileName: file.name,
+              mimeType: file.type,
+              sizeBytes: file.size,
+              durationSec,
+              widthPx,
+              heightPx,
+              frameJpegBase64: jpegBase64,
+            }),
           });
-        } else {
-          const err = await res.json().catch(() => ({ error: "Unknown error" }));
-          toast({ title: err.error || "Failed to read video", variant: "destructive" });
-          setAttachedFileName(null);
+          if (res.ok) {
+            const data = await res.json();
+            description = data.thumbnailDescription ?? null;
+            warning = data.warning ?? null;
+          } else {
+            const err = await res.json().catch(() => ({ error: "Unknown error" }));
+            warning = err.error || "description unavailable";
+          }
+        } catch (err) {
+          console.warn("read-video-meta failed:", err);
+          warning = "description unavailable (network)";
         }
+
+        const durationStr =
+          durationSec != null && isFinite(durationSec)
+            ? `, ${durationSec.toFixed(1)}s`
+            : "";
+        const descLine = description
+          ? `\n\nFirst frame shows: ${description}`
+          : warning
+            ? `\n\n(Thumbnail unavailable: ${warning})`
+            : "";
+        setFileExtractedText(
+          `Video metadata\nfilename: ${file.name}\nmime: ${file.type}\nsize: ${sizeMb} MB${durationStr}${descLine}`,
+        );
+        toast({
+          title: description
+            ? `${file.name} — Luca can see the first frame`
+            : `${file.name} attached${warning ? " (preview unavailable)" : ""}`,
+        });
       } catch (err) {
         console.error("Video processing failed:", err);
-        toast({ title: "Failed to process video", variant: "destructive" });
+        toast({
+          title:
+            err instanceof Error && err.message
+              ? `Failed to read video: ${err.message}`
+              : "Failed to read video",
+          variant: "destructive",
+        });
         setAttachedFileName(null);
       } finally {
         setIsProcessingFile(false);
