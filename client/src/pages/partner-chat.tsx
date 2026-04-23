@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "../App";
 import { Link } from "wouter";
@@ -16,6 +16,8 @@ import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
 import { ActionPanel } from "@/components/ActionPanel";
 import { ActionPanelToggle } from "@/components/ActionPanelToggle";
 import { InboxPanel, type InboxFullMessage } from "@/components/InboxPanel";
+import { LucaWorkPanel } from "@/components/LucaWorkPanel";
+import { countPending } from "@/lib/luca-board-helpers";
 import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
 import { DailyBriefCard, isDailyBriefMessage } from "@/components/DailyBriefCard";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1849,6 +1851,7 @@ export default function PartnerChat() {
   const [actionPanelSeen, setActionPanelSeen] = useState(0);
   const [showInboxPanel, setShowInboxPanel] = useState(false);
   const [activeInboxMessage, setActiveInboxMessage] = useState<InboxFullMessage | null>(null);
+  const [showWorkPanel, setShowWorkPanel] = useState(false);
   // Email confirm-modal state (for send_new_email / send_email_reply Luca tool calls)
   const [emailConfirmPayload, setEmailConfirmPayload] = useState<EmailConfirmPayload | null>(null);
   const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
@@ -2662,16 +2665,39 @@ export default function PartnerChat() {
   const glowColor = getGlowColor(emotion);
 
   // ── Toggle action panel ────────────────────────────────────────
+  // ── Luca Work Panel: owner-only. Poll pending count for the header badge only when closed
+  //    (avoids stacking requests — when the panel is open it polls itself via LucaWorkPanel).
+  const isOwner = user?.role === "owner";
+  const { data: workPanelList } = useQuery<{ approvals: any[] }>({
+    queryKey: ["/api/luca/approvals"],
+    enabled: isOwner && !showWorkPanel,
+    refetchInterval: isOwner && !showWorkPanel ? 15_000 : false,
+    refetchIntervalInBackground: false,
+  });
+  const workPanelPending = workPanelList ? countPending(workPanelList.approvals ?? []) : 0;
+
+  const toggleWorkPanel = useCallback(() => {
+    setShowWorkPanel((prev) => {
+      const next = !prev;
+      if (next) {
+        setShowActionPanel(false);
+        setShowInboxPanel(false);
+      }
+      return next;
+    });
+  }, []);
+
   const toggleInboxPanel = useCallback(() => {
     setShowInboxPanel((prev) => {
       const next = !prev;
-      if (next) setShowActionPanel(false);
+      if (next) { setShowActionPanel(false); setShowWorkPanel(false); }
       return next;
     });
   }, []);
 
   const toggleActionPanel = useCallback(() => {
     setShowInboxPanel(false);
+    setShowWorkPanel(false);
     setShowActionPanel((prev) => !prev);
   }, []);
 
@@ -2712,7 +2738,7 @@ export default function PartnerChat() {
     <div
       className="flex flex-col h-full overflow-hidden transition-all duration-300"
       style={{
-        width: !isMobile && (showActionPanel || showInboxPanel) ? "55%" : "100%",
+        width: !isMobile && (showActionPanel || showInboxPanel || showWorkPanel) ? "55%" : "100%",
         minWidth: 0,
       }}
     >
@@ -2760,6 +2786,31 @@ export default function PartnerChat() {
         >
           <Volume2 className="w-3.5 h-3.5" />
         </button>
+
+        {/* Luca Work Panel Toggle (owner-only) */}
+        {isOwner && (
+          <button
+            onClick={toggleWorkPanel}
+            className="relative flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors"
+            style={{
+              background: showWorkPanel ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+              color: showWorkPanel ? "#C9A340" : "rgba(255,255,255,0.5)",
+              border: `1px solid ${showWorkPanel ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
+            }}
+            title="Luca's work — pending approvals"
+            data-testid="toggle-luca-work-panel"
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+            {workPanelPending > 0 && (
+              <span
+                className="absolute -top-1.5 -right-1.5 text-[9px] font-bold min-w-[16px] h-[16px] flex items-center justify-center rounded-full"
+                style={{ background: "#C9A340", color: "#0a0f1e" }}
+              >
+                {workPanelPending}
+              </span>
+            )}
+          </button>
+        )}
 
         {/* Inbox Panel Toggle (desktop header) */}
         <button
@@ -3466,6 +3517,33 @@ export default function PartnerChat() {
           hasActiveDeliberation={hasActiveDeliberation}
         />
       </motion.div>
+    )}
+
+    {/* ── Right: Luca Work Panel (desktop inline) ──────────── */}
+    {!isMobile && showWorkPanel && (
+      <motion.div
+        initial={{ width: 0, opacity: 0 }}
+        animate={{ width: "45%", opacity: 1 }}
+        exit={{ width: 0, opacity: 0 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        className="h-full overflow-hidden flex-shrink-0"
+        style={{ maxWidth: "45%", minWidth: 0 }}
+      >
+        <LucaWorkPanel
+          show={true}
+          onClose={() => setShowWorkPanel(false)}
+          isMobile={false}
+        />
+      </motion.div>
+    )}
+
+    {/* ── Mobile: Luca Work Panel overlay ───────────────────── */}
+    {isMobile && showWorkPanel && (
+      <LucaWorkPanel
+        show={true}
+        onClose={() => setShowWorkPanel(false)}
+        isMobile={true}
+      />
     )}
 
     {/* ── Right: Inbox Panel (desktop inline) ──────────────── */}
