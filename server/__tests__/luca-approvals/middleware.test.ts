@@ -183,7 +183,7 @@ describe("executePartnerTool: approval-gate middleware", () => {
     expect(createPendingApproval).not.toHaveBeenCalled();
   });
 
-  it("log_only mode: classifies + logs but does NOT intercept", async () => {
+  it("log_only mode: creates shadow row for observability but does NOT intercept", async () => {
     gateEnforcing = false;
     // Active but not enforcing.
     try {
@@ -194,7 +194,11 @@ describe("executePartnerTool: approval-gate middleware", () => {
         16,
       );
     } catch { /* downstream can throw */ }
-    expect(createPendingApproval).not.toHaveBeenCalled();
+    // Shadow mode: DB row is created (for dedupe verification + observability)
+    // but no broadcast and no early return. Execution falls through to
+    // normal path (which throws here because of the test's mock shape).
+    expect(createPendingApproval).toHaveBeenCalledTimes(1);
+    expect(broadcastApprovalRequested).not.toHaveBeenCalled();
   });
 
   it("skips the gate when _skipApprovalGate=true (decide re-entry)", async () => {

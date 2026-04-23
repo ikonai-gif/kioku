@@ -1377,8 +1377,35 @@ export async function executePartnerTool(
           // to normal execution. Alarming happens via logs/Sentry.
         }
       } else {
-        // log_only mode — classify + log but execute normally. Lets us
-        // observe real HIGH_STAKES traffic shape before flipping to block.
+        // log_only mode — classify + log + create a shadow row for
+        // observability, but execute normally. Lets us verify dedupe and
+        // gate behaviour end-to-end before flipping to block. The shadow
+        // row is a real pending tool_approvals row; expirePending() will
+        // flip it to 'timeout' 24h later, which is fine since no downstream
+        // consumer acts on shadow rows.
+        let shadowApprovalId: string | null = null;
+        let shadowDeduped = false;
+        try {
+          const before = Date.now();
+          const row = await createPendingApproval({
+            agentId,
+            userId,
+            meetingId: options?.meetingId ?? null,
+            turnId: options?.turnId ?? null,
+            toolName,
+            draftPayload: toolInput,
+          });
+          shadowApprovalId = row.id;
+          // A dedupe hit returns an existing row whose createdAt is older
+          // than `before`. Fresh inserts have createdAt >= `before` (within
+          // clock skew, but DB NOW() on same host is fine).
+          shadowDeduped = row.createdAt.getTime() < before;
+        } catch (e) {
+          logger.warn(
+            { component: "luca-approvals", event: "shadow_create_failed", tool: toolName, err: e instanceof Error ? e.message : String(e) },
+            "[luca-approvals] log_only shadow createPendingApproval failed — continuing",
+          );
+        }
         logger.info(
           {
             component: "luca-approvals",
@@ -1387,8 +1414,10 @@ export async function executePartnerTool(
             userId,
             tool: toolName,
             turnId: options?.turnId ?? null,
+            approvalId: shadowApprovalId,
+            deduped: shadowDeduped,
           },
-          "[luca-approvals] log_only mode — HIGH call observed, not intercepted",
+          "[luca-approvals] log_only mode — HIGH call observed, shadow row recorded",
         );
       }
     }
