@@ -359,6 +359,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }));
 
+  // ── Debug — Luca Day 6 gate state (master key only) ──
+  app.get("/api/debug/luca-gate", asyncHandler(async (req, res) => {
+    const mk = req.headers["x-master-key"] as string || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    let resolved: any;
+    try {
+      const { isApprovalGateActive, isApprovalGateEnforcing } = await import("./lib/luca/env");
+      resolved = {
+        isApprovalGateActive: isApprovalGateActive(),
+        isApprovalGateEnforcing: isApprovalGateEnforcing(),
+      };
+    } catch (e: any) {
+      resolved = { error: e?.message || "env module failed" };
+    }
+    res.json({
+      LUCA_V1A_ENABLED: process.env.LUCA_V1A_ENABLED ?? null,
+      LUCA_APPROVAL_GATE_ENABLED: process.env.LUCA_APPROVAL_GATE_ENABLED ?? null,
+      LUCA_APPROVAL_GATE_MODE: process.env.LUCA_APPROVAL_GATE_MODE ?? null,
+      LUCA_EXPANDED_SCOPE_ENABLED: process.env.LUCA_EXPANDED_SCOPE_ENABLED ?? null,
+      resolved,
+    });
+  }));
+
   // Read-only admin: list user_integrations for a given user (master key only)
   app.get("/api/admin/user-integrations", asyncHandler(async (req, res) => {
     const mk = req.headers["x-master-key"] as string || "";
