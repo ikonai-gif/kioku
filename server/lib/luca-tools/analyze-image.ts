@@ -3,7 +3,7 @@
  *
  * Anthropic vision — caller passes an image URL, we fetch it (SF4-whitelisted
  * regional S3 or data: URI — see `parseAnalyzeImageInput`), base64-encode it
- * into an Anthropic image content block, ship to claude-3-5-sonnet, return
+ * into an Anthropic image content block, ship to claude-sonnet-4-6, return
  * the textual description. Logs forensic `tool_runs` row pair like run_code.
  *
  * Three-level flag defense (same as run_code):
@@ -79,9 +79,14 @@ export const ANALYZE_IMAGE_MAX_MAX_TOKENS = 4096;
  */
 export const ANALYZE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
-/** Anthropic vision model. Hardcoded — matches deliberation/meeting path. */
+/**
+ * Anthropic vision model. Defaults to claude-sonnet-4-6 to match the rest
+ * of the codebase (deliberation default, meeting-turn-runner tests). The
+ * old claude-3-5-sonnet-20241022 alias returns not_found_error on current
+ * API keys — confirmed during Day 3 smoke. Override via env if needed.
+ */
 const VISION_MODEL =
-  process.env.LUCA_ANALYZE_IMAGE_MODEL || "claude-3-5-sonnet-20241022";
+  process.env.LUCA_ANALYZE_IMAGE_MODEL || "claude-sonnet-4-6";
 
 /** Default prompt when caller omits. */
 export const DEFAULT_PROMPT = "Describe this image in detail.";
