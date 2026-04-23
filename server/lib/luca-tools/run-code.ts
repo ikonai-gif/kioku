@@ -279,13 +279,22 @@ export async function runCodeHandler(
     };
   }
 
-  // TODO Day 5 (plan §B2): insert `turnStateStore.isLocked(ctx.turnId)` check
-  // here AFTER flag gate, BEFORE parseRunCodeInput. If locked → return
+  // TODO Day 5 (BLOCKED BY `luca_read_url` ship — plan §F1 integration
+  // checklist): insert `turnStateStore.isLocked(ctx.turnId)` check here
+  // AFTER flag gate, BEFORE parseRunCodeInput. If locked → return
   // {status: "disabled", error: "turn_locked_untrusted_content"} without
-  // inserting tool_runs rows. Belt-and-braces — the tool-set filter in
-  // getLucaTools() should already strip run_code from Luca's offered tools
-  // when the turn is locked, so this handler path shouldn't fire; this is
-  // defense-in-depth against forged tool_use blocks / future refactor bugs.
+  // inserting tool_runs rows.
+  //
+  // DO NOT LAND before `read_url` wires up — until read_url calls
+  // `markUntrusted(turnId)`, no lock ever exists and this check is pure
+  // RTT cost. This landing is part of the Day 5 read_url PR, not an
+  // independent cleanup.
+  //
+  // Defense-in-depth: primary gate is the tool-set filter in getLucaTools()
+  // (plan §F2 `isLockedOutByUntrustedTurn`), which strips run_code from
+  // Luca's offered tools when the turn is locked. This handler check is
+  // belt-and-braces against forged tool_use blocks / future refactor bugs.
+  //
   // TurnStateStore already shipped Day -1 (server/lib/luca/turn-state-store.ts).
 
   const input = parseRunCodeInput(raw);
