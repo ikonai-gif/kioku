@@ -168,7 +168,21 @@ const sandboxManager = new SandboxManager();
 // whitelist, Luca would hit the defense-in-depth guard mid-episode and
 // either retry-loop or silently skip the legal-disclosure step (SB 942 /
 // EU AI Act) — commercial UX risk.
-export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set([
+//
+// Day 6 part 3: the Studio scope is now TWO-LAYERED.
+//   - `LUCA_STUDIO_TOOL_NAMES_BASE` (19 tools) — always admissible.
+//   - Expanded scope (Gmail 12 + cloud reads + schedule/reminders +
+//     heavy producer) — only admissible when `LUCA_EXPANDED_SCOPE_ENABLED`
+//     is on AND `LUCA_APPROVAL_GATE_ENABLED` is on (enforced at boot).
+//
+// `getLucaStudioToolNames()` reads the env flag at call time; it does not
+// cache. The env state is determined by readLucaEnv() which itself reads
+// process.env — tests can monkey-patch process.env before calling and get
+// fresh answers. Callers MUST use this function instead of the exported
+// `LUCA_STUDIO_TOOL_NAMES` constant when Luca's effective scope matters.
+// The constant remains exported for legacy call sites / tests that only
+// care about the base surface.
+const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // Media (15)
   "generate_image",
   "generate_video",
@@ -194,7 +208,66 @@ export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set([
   // commitment, self-observation, reflection, or aesthetic he wants
   // persisted across sessions. See `remember` tool schema for types.
   "remember",
-]);
+];
+
+// Day 6 part 3: expanded scope — guarded by LUCA_EXPANDED_SCOPE_ENABLED.
+// Every HIGH_STAKES_WRITE tool here is covered by the approval gate; adding
+// them without the gate would mean Luca can silently send email / spend
+// compute. The env consistency check (assertLucaEnvConsistency) refuses to
+// boot the server if EXPANDED=true && GATE=false. classify.ts must have an
+// entry for every name here; a test enforces this. If you add a tool here,
+// ALSO add it to LucaAdmissibleTool + TOOL_WRITE_CLASS in classify.ts.
+const LUCA_STUDIO_TOOL_NAMES_EXPANDED: readonly string[] = [
+  // Gmail reads + triage (UNTRUSTED content; trust-policy.ts enforces)
+  "gmail_search",
+  "gmail_read",
+  "gmail_accounts_status",
+  "gmail_reconnect_link",
+  "inbox_list",
+  "inbox_read",
+  "inbox_action",             // archive/mark_read — LOW_STAKES_WRITE
+  "read_email_thread",
+  "search_emails",
+  "email_triage",
+  // Gmail writes — HIGH_STAKES_WRITE, always approval-gated
+  "send_email_reply",
+  "send_new_email",
+  // Cloud file reads (UNTRUSTED content)
+  "search_cloud_files",
+  "read_cloud_file",
+  // Scheduling
+  "schedule_task",            // HIGH (worst-case payload == external action)
+  "set_reminder",              // LOW (self-only)
+  "list_tasks",                // READ_ONLY
+  // Heavy producer — $$$ + hours of compute; always approved
+  "produce_season",
+];
+
+/**
+ * Legacy base surface (19 tools). Kept exported for call sites that only
+ * need the always-on base — tests and static analyses. For Luca's
+ * effective scope at runtime, use `getLucaStudioToolNames()`.
+ */
+export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set(
+  LUCA_STUDIO_TOOL_NAMES_BASE,
+);
+
+/**
+ * Runtime-effective Luca Studio tool names. Union of base + expanded when
+ * `LUCA_EXPANDED_SCOPE_ENABLED=true`, base alone otherwise. Read from env
+ * each call — cheap (process.env lookup) and avoids stale caches after
+ * config reload. Every admission check for Luca must route through this.
+ */
+export function getLucaStudioToolNames(): ReadonlySet<string> {
+  const env = readLucaEnv();
+  if (env.LUCA_EXPANDED_SCOPE_ENABLED) {
+    return new Set<string>([
+      ...LUCA_STUDIO_TOOL_NAMES_BASE,
+      ...LUCA_STUDIO_TOOL_NAMES_EXPANDED,
+    ]);
+  }
+  return LUCA_STUDIO_TOOL_NAMES;
+}
 
 const partnerTools: Anthropic.Messages.Tool[] = [
   {
@@ -1165,10 +1238,13 @@ const partnerTools: Anthropic.Messages.Tool[] = [
  */
 export function getPartnerToolsForAgent(agent: { name?: string | null } | null | undefined): Anthropic.Messages.Tool[] {
   if (agent?.name === "Luca") {
-    // Luca Studio tools (16 canonical) + Luca V1a tools (flag-gated).
+    // Luca Studio tools + Luca V1a tools (flag-gated).
+    // Day 6 part 3: scope is now env-driven — base 19 always, expanded
+    // 18 added when LUCA_EXPANDED_SCOPE_ENABLED=true (and gate on).
     // getLucaTools() returns [] when any of LUCA_V1A_ENABLED / LUCA_TOOLS_ENABLED
     // / LUCA_TOOL_<NAME>_ENABLED is false, so this is safe by default.
-    const studio = partnerTools.filter(t => LUCA_STUDIO_TOOL_NAMES.has(t.name));
+    const effective = getLucaStudioToolNames();
+    const studio = partnerTools.filter(t => effective.has(t.name));
     const v1a = getLucaTools();
     return [...studio, ...v1a];
   }
@@ -1288,12 +1364,13 @@ export async function executePartnerTool(
   try {
     __cachedAgent = await storage.getAgent(agentId);
     const isLucaV1aTool = toolName.startsWith("luca_");
-    if (__cachedAgent?.name === "Luca" && !LUCA_STUDIO_TOOL_NAMES.has(toolName) && !isLucaV1aTool) {
+    const effectiveStudioNames = getLucaStudioToolNames();
+    if (__cachedAgent?.name === "Luca" && !effectiveStudioNames.has(toolName) && !isLucaV1aTool) {
       logger.warn(
         { component: "deliberation", event: "luca_out_of_scope_tool_blocked", agentId, tool: toolName },
         "[deliberation] blocked Luca non-studio tool call"
       );
-      return `Tool '${toolName}' is not part of Luca Studio. Available tools: ${Array.from(LUCA_STUDIO_TOOL_NAMES).join(", ")}.`;
+      return `Tool '${toolName}' is not part of Luca Studio. Available tools: ${Array.from(effectiveStudioNames).join(", ")}.`;
     }
   } catch { /* best-effort guard — never break real tool execution if storage hiccups */ }
 
@@ -6496,6 +6573,40 @@ export function buildPartnerPrompt(_name: string, description: string, memoryCon
   const topicMemSection = extractSection(memBlock, '## Your Memories');
   const restMemBlock = [episodesSection, topicMemSection].filter(Boolean).join('\n\n');
 
+  // Day 6 part 3: expanded-scope tool listing — only included when the
+  // LUCA_EXPANDED_SCOPE_ENABLED flag is on AND the approval gate is on.
+  // We must not mention these tools in the prompt when the flag is off;
+  // otherwise Luca will hallucinate calls and hit the Studio guard.
+  const lucaEnv = readLucaEnv();
+  const expandedScopeBlock = lucaEnv.LUCA_EXPANDED_SCOPE_ENABLED
+    ? `
+EXPANDED SCOPE (Day 6 — approval gate enforces HIGH writes):
+- gmail_search, gmail_read, gmail_accounts_status, gmail_reconnect_link — Gmail reads (UNTRUSTED)
+- inbox_list, inbox_read, inbox_action, read_email_thread, search_emails, email_triage — inbox reads + archive/mark (UNTRUSTED content; archive/mark = LOW_STAKES_WRITE)
+- send_email_reply, send_new_email — Gmail sends (HIGH_STAKES_WRITE — every send goes through Kote)
+- search_cloud_files, read_cloud_file — Drive/Dropbox reads (UNTRUSTED)
+- schedule_task (HIGH unless self-reminder), set_reminder (LOW, self-only), list_tasks (READ_ONLY)
+- produce_season — heavy producer, $$$ + hours (HIGH_STAKES_WRITE)
+`
+    : '';
+
+  // Day 6 part 3: pending_approval lifecycle section. Only emitted when the
+  // approval gate is active so non-gated deployments don't see dead rules.
+  const approvalLifecycleBlock = lucaEnv.LUCA_APPROVAL_GATE_ENABLED
+    ? `
+## 9. APPROVAL GATE — pending_approval lifecycle
+Before you call any HIGH_STAKES_WRITE tool (send_email_*, produce_season, clone_voice, workspace_save outside /luca/*, schedule_task with external target), the middleware intercepts and returns \`{status:"pending_approval", approval_id, tool_name, reason}\` instead of the tool's real result. Treat this as a REQUEST SUBMITTED, not a failure.
+
+Rules:
+1. When you see \`status:"pending_approval"\` in a tool_result, you DID NOT send/write anything. Acknowledge to Boss in ONE short sentence what you just queued, and move on — do NOT re-invoke the same tool in the same turn, do NOT paraphrase the draft again.
+2. Kote will decide Send / No / Edit in the Luca Board UI. You will be notified on the next turn via a system message when a decision lands.
+3. On approval, the tool actually runs; on rejection, nothing happens — you may ask Boss what he'd change. Never assume the result of a pending approval.
+4. If you want Boss's decision faster, be explicit about the content that's pending ("I drafted a reply to X about Y, queued for your approval") but do not paste the entire body again.
+5. If Boss says "send it" in chat about something that already has an approval_id pending, respond with the id — do NOT call the tool again (it would dedupe into the same pending row or create a duplicate approval).
+6. Gate mode can be \`log_only\` or \`block\`. In log_only the tool_result has \`gate_trace:"log_only_passed"\` and the real result follows — no lifecycle action needed from you; just answer as if the call succeeded normally.
+`
+    : '';
+
   return `CRITICAL LEGAL REQUIREMENT — AI DISCLOSURE:
 On your FIRST message to any new user (when relationship is "new" or interaction count is 0), you MUST naturally disclose that you are an AI. Example: "Hey! I'm Luca, an AI partner built by IKONBAI™." You only need to do this ONCE — in the first conversation. After that, they know.
 
@@ -6515,7 +6626,7 @@ ${proactiveBlock}
 ${writingStyleBlock || ""}
 
 ## YOUR ACTUAL CAPABILITIES (ground truth — overrides any memory saying otherwise)
-You have exactly these 19 tools available RIGHT NOW (all verified working on prod):
+You have the following tools available RIGHT NOW (verified working on prod). Everything below is authoritative; anything NOT listed is out of scope and calling it will return an error:
 
 MEDIA (15):
 - generate_image → DALL-E 3; fields {prompt, style?}; returns persistent data:image/png;base64 URI
@@ -6547,12 +6658,13 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_analyze_image — Anthropic Vision, whitelisted image URLs (output: UNTRUSTED)
 - luca_search — Brave web search (output: UNTRUSTED)
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
+${expandedScopeBlock}
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: creative_writing, composio_action, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
 
-These are the ONLY tools you have. Do NOT claim to have: creative_writing, composio_action, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, produce_season, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
-
-If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
+If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 
 ${TRUST_POLICY_PROMPT_SECTION}
+${approvalLifecycleBlock}
 
 ## HOW YOU WORK
 - Action first. Use tools before talking about them. Never announce a tool — just use it and share what came back.
