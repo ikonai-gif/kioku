@@ -67,7 +67,7 @@ import {
 } from "../luca/env";
 import { isPrivateOrLoopbackHost } from "./analyze-image";
 import { getToolTrustLevel, type TrustLevel } from "./trust-policy";
-import { isSocialHost, readSocialMeta } from "./social-meta";
+import { isSocialHost, readSocialMetaDetailed, formatSocialFailure } from "./social-meta";
 import type { SandboxKey } from "../luca/pyodide-runner";
 import logger from "../../logger";
 
@@ -776,26 +776,39 @@ export async function readUrlHandler(
   const startedAt = Date.now();
 
   // ── Day 10: social-media short-circuit. For JS-shell hosts (Instagram
-  //    etc.), plain fetch returns nothing useful. Try yt-dlp metadata
-  //    first; fall through to regular fetch on any failure.
+  //    etc.), plain fetch returns nothing useful. Try yt-dlp metadata;
+  //    if that fails on a KNOWN social host, return an explicit failure
+  //    message to Luca (do NOT fall through to plain fetch — it would
+  //    also return empty text and Luca would silently send blank reply).
+  //    Falling through is only safe when the host isn't social in the
+  //    first place (i.e. the try-block threw before we even classified).
+  let isKnownSocial = false;
   try {
     const fetchHost = new URL(ssrf.fetchUrl).hostname.toLowerCase();
-    if (isSocialHost(fetchHost)) {
-      const socialText = await readSocialMeta(ssrf.fetchUrl);
-      if (socialText) {
-        const truncated = socialText.length > maxChars;
-        const content = truncateCompacted(socialText, maxChars);
+    isKnownSocial = isSocialHost(fetchHost);
+    if (isKnownSocial) {
+      const res = await readSocialMetaDetailed(ssrf.fetchUrl);
+      // Helper to ship a terminal tool_runs row + return a ReadUrlToolResult
+      // for the social path (both success and failure variants).
+      const finishSocial = async (
+        text: string,
+        status: "ok" | "error",
+        errorDetail?: string,
+      ): Promise<ReadUrlToolResult> => {
+        const truncated = text.length > maxChars;
+        const content = truncateCompacted(text, maxChars);
         const elapsedMs = Date.now() - startedAt;
         try {
           await insertTerminalReadUrlRun(ctx, runnerInput, codeSha, {
-            status: "ok",
+            status,
             finalUrl: ssrf.fetchUrl,
             mediaType: "text/plain",
-            bytesRead: Buffer.byteLength(socialText, "utf-8"),
+            bytesRead: Buffer.byteLength(text, "utf-8"),
             charsReturned: content.length,
             truncated,
             redirectHops: 0,
             elapsedMs,
+            errorDetail,
           });
         } catch (e) {
           logger.error(
@@ -803,26 +816,84 @@ export async function readUrlHandler(
             "[luca.readUrl] failed to insert terminal tool_runs row (social path)",
           );
         }
+        // On the social failure path we intentionally return status:"ok"
+        // with the failure text as content. The LLM-facing contract is
+        // "read_url produced these bytes" — and those bytes explain why
+        // the post couldn't be fetched. This lets Luca respond to the
+        // user coherently instead of treating it as a tool error.
         return {
           status: "ok",
           content,
           trust_level: trustLevel,
           final_url: ssrf.fetchUrl,
           media_type: "text/plain",
-          bytes_read: Buffer.byteLength(socialText, "utf-8"),
+          bytes_read: Buffer.byteLength(text, "utf-8"),
           chars_returned: content.length,
           truncated,
           redirect_hops: 0,
         };
+      };
+
+      if (res.ok && res.text) {
+        return await finishSocial(res.text, "ok");
       }
-      // yt-dlp returned null — fall through to plain fetch below.
+      // Known social host, yt-dlp couldn't get metadata. Return explicit
+      // failure text so Luca can tell the user the post is rate-limited /
+      // private, instead of silently producing nothing.
+      const failureText = formatSocialFailure(
+        ssrf.fetchUrl,
+        res.reason ?? "generic",
+      );
+      return await finishSocial(
+        failureText,
+        "error",
+        `social_meta_failed:${res.reason ?? "generic"}`,
+      );
     }
   } catch (e) {
-    // Defensive: never let the social short-circuit block the normal path.
+    // Defensive: only fall through if we hadn't yet confirmed this was a
+    // social host. If we DID know it was social and something blew up,
+    // plain fetch won't help either — surface the error.
     logger.warn(
-      { err: e, url: ssrf.fetchUrl },
-      "[luca.readUrl] social-meta probe threw; falling back to plain fetch",
+      { err: e, url: ssrf.fetchUrl, isKnownSocial },
+      "[luca.readUrl] social-meta probe threw",
     );
+    if (isKnownSocial) {
+      const failureText = formatSocialFailure(ssrf.fetchUrl, "generic");
+      const truncated = failureText.length > maxChars;
+      const content = truncateCompacted(failureText, maxChars);
+      const elapsedMs = Date.now() - startedAt;
+      try {
+        await insertTerminalReadUrlRun(ctx, runnerInput, codeSha, {
+          status: "error",
+          finalUrl: ssrf.fetchUrl,
+          mediaType: "text/plain",
+          bytesRead: Buffer.byteLength(failureText, "utf-8"),
+          charsReturned: content.length,
+          truncated,
+          redirectHops: 0,
+          elapsedMs,
+          errorDetail: `social_meta_threw:${e instanceof Error ? e.message : String(e)}`,
+        });
+      } catch (logErr) {
+        logger.error(
+          { err: logErr, ctxKey: ctx.ctxKey, codeSha },
+          "[luca.readUrl] failed to log social-threw terminal row",
+        );
+      }
+      return {
+        status: "ok",
+        content,
+        trust_level: trustLevel,
+        final_url: ssrf.fetchUrl,
+        media_type: "text/plain",
+        bytes_read: Buffer.byteLength(failureText, "utf-8"),
+        chars_returned: content.length,
+        truncated,
+        redirect_hops: 0,
+      };
+    }
+    // Non-social URL that threw inside the probe — fall through.
   }
 
   let fetched: ReadUrlFetchResult;
