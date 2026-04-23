@@ -2495,12 +2495,67 @@ export default function PartnerChat() {
       console.warn("No file selected");
       return;
     }
+    e.target.value = ""; // Reset input so same file can be re-selected
+
+    // ── Video branch: send to /api/partner/read-video for metadata + thumbnail description ──
+    if (file.type.startsWith("video/")) {
+      if (file.size > 50 * 1024 * 1024) {
+        toast({ title: "Video too large (max 50MB)", variant: "destructive" });
+        return;
+      }
+      setAttachedFileName(file.name);
+      setFileExtractedText(null);
+      setIsProcessingFile(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const token = getSessionToken();
+        const res = await fetch(`${API_BASE}/api/partner/read-video`, {
+          method: "POST",
+          headers: token ? { "x-session-token": token } : {},
+          credentials: "include",
+          body: formData,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const sizeMb = (data.sizeBytes / (1024 * 1024)).toFixed(1);
+          const durationStr = data.durationSec != null ? `, ${data.durationSec}s` : "";
+          const descLine = data.thumbnailDescription
+            ? `\n\nFirst frame shows: ${data.thumbnailDescription}`
+            : data.warning
+              ? `\n\n(Thumbnail unavailable: ${data.warning})`
+              : "";
+          // Compose a text stub Luca will see in the sent message
+          setFileExtractedText(
+            `Video metadata\nfilename: ${data.fileName}\nmime: ${data.mimeType}\nsize: ${sizeMb} MB${durationStr}${descLine}`,
+          );
+          toast({
+            title: data.thumbnailDescription
+              ? `${file.name} — Luca can see the first frame`
+              : `${file.name} attached${data.warning ? " (preview unavailable)" : ""}`,
+          });
+        } else {
+          const err = await res.json().catch(() => ({ error: "Unknown error" }));
+          toast({ title: err.error || "Failed to read video", variant: "destructive" });
+          setAttachedFileName(null);
+        }
+      } catch (err) {
+        console.error("Video processing failed:", err);
+        toast({ title: "Failed to process video", variant: "destructive" });
+        setAttachedFileName(null);
+      } finally {
+        setIsProcessingFile(false);
+      }
+      return;
+    }
+
+    // ── Image branch (existing behavior) ──
     if (file.size > 20 * 1024 * 1024) {
       toast({ title: "Image too large (max 20MB)", variant: "destructive" });
       return;
     }
     if (!file.type.startsWith("image/")) {
-      toast({ title: "Please select an image file", variant: "destructive" });
+      toast({ title: "Please select an image or video file", variant: "destructive" });
       return;
     }
 
@@ -2527,8 +2582,6 @@ export default function PartnerChat() {
       };
       reader.readAsDataURL(file);
     }
-    // Reset file input so same file can be re-selected
-    e.target.value = "";
   };
 
   const clearImage = () => {
