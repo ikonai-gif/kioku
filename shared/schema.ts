@@ -1,4 +1,5 @@
-import { pgTable, text, integer, real, serial, bigint, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, bigint, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -510,6 +511,14 @@ export const toolRuns = pgTable("tool_runs", {
   index("idx_tr_user_created").on(t.userId, t.createdAt),
   index("idx_tr_code_sha").on(t.codeSha),  // retry-grouping via SF3
   index("idx_tr_tool_status").on(t.tool, t.status),  // error-rate telemetry
+  // Mirror of CHECK constraint in migrations/0005_luca_v1a_tool_runs.sql.
+  // Required so `drizzle-kit push` ends up with the SAME schema as a psql
+  // apply of 0005.sql (audit pass-3 D19). DB-level gate against typos in
+  // status; also documents the allowed RunCodeStatus ∪ {pending} domain.
+  check(
+    "tool_runs_status_valid",
+    sql`${t.status} IN ('pending','ok','error','timeout','memory_exceeded','disabled')`,
+  ),
 ]);
 
 export const insertToolRunSchema = createInsertSchema(toolRuns).omit({ id: true, createdAt: true });
