@@ -25,6 +25,7 @@ import PrivacyDashboardPage from "./pages/privacy-dashboard";
 import TermsPage from "./pages/terms";
 import CookiesPage from "./pages/cookies";
 import BossBoardPage from "./pages/boss-board";
+import LucaBoardPage from "./pages/luca-board";
 import PartnerChatPage from "./pages/partner-chat";
 import GalleryPage from "./pages/gallery";
 import KnowledgePage from "./pages/knowledge";
@@ -245,6 +246,7 @@ export default function App() {
                         <Route path="/connectors" component={ConnectorsPage} />
                         <Route path="/dashboard" component={DashboardPage} />
                         <Route path="/boss" component={BossBoardPage} />
+                        <Route path="/luca/board" component={LucaBoardPage} />
                         <Route path="/agents" component={AgentsPage} />
                         <Route path="/memory" component={MemoryPage} />
                         <Route path="/flows" component={FlowsPage} />

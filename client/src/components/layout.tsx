@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { useAuth, useTheme } from "../App";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard, Bot, Brain, GitBranch, MessageSquare, Activity,
   CreditCard, BookOpen, LogOut, Sun, Moon, ChevronRight, Menu, X, Crown, Heart, Palette, Library,
-  FolderOpen, Plug, Shield
+  FolderOpen, Plug, Shield, ShieldAlert
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logoSrc from "@assets/kioku-logo.jpg";
@@ -40,6 +41,7 @@ const baseNavItems = [
 ];
 
 const bossNavItem = { href: "/boss", icon: Crown, label: "Boss Board" };
+const lucaBoardNavItem = { href: "/luca/board", icon: ShieldAlert, label: "Luca Board" };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
@@ -47,7 +49,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { dark, toggle } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const isOwnerUser = user?.role === "owner";
-  const navItems = isOwnerUser ? [bossNavItem, ...baseNavItems] : baseNavItems;
+  const navItems = isOwnerUser
+    ? [bossNavItem, lucaBoardNavItem, ...baseNavItems]
+    : baseNavItems;
+
+  // Pending approvals badge — owner only, cheap poll every 15s.
+  const { data: approvalsData } = useQuery<{ approvals: Array<{ status: string }> }>({
+    queryKey: ["/api/luca/approvals"],
+    enabled: isOwnerUser,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+  });
+  const pendingCount = approvalsData?.approvals?.filter((a) => a.status === "pending").length ?? 0;
   const mobileNav = [
     { href: "/",        icon: Heart,      label: "Chat"     },
     { href: "/memory",  icon: Brain,      label: "Memory"   },
@@ -86,20 +99,31 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ href, icon: Icon, label }) => (
-            <Link key={href} href={href}>
-              <a className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer",
-                isActive(href)
-                  ? "bg-sidebar-accent text-sidebar-primary font-medium"
-                  : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
-              )}>
-                <Icon className="w-4 h-4 flex-shrink-0" />
-                {label}
-                {isActive(href) && <ChevronRight className="w-3 h-3 ml-auto opacity-50" />}
-              </a>
-            </Link>
-          ))}
+          {navItems.map(({ href, icon: Icon, label }) => {
+            const showBadge = href === "/luca/board" && pendingCount > 0;
+            return (
+              <Link key={href} href={href}>
+                <a className={cn(
+                  "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer",
+                  isActive(href)
+                    ? "bg-sidebar-accent text-sidebar-primary font-medium"
+                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                )}>
+                  <Icon className="w-4 h-4 flex-shrink-0" />
+                  {label}
+                  {showBadge && (
+                    <span
+                      data-testid="nav-luca-pending-badge"
+                      className="ml-auto min-w-[1.25rem] h-5 px-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-semibold text-amber-300 flex items-center justify-center"
+                    >
+                      {pendingCount}
+                    </span>
+                  )}
+                  {isActive(href) && !showBadge && <ChevronRight className="w-3 h-3 ml-auto opacity-50" />}
+                </a>
+              </Link>
+            );
+          })}
         </nav>
 
         {/* Footer */}
@@ -184,22 +208,30 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
             {/* Nav */}
             <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-              {navItems.map(({ href, icon: Icon, label }) => (
-                <Link key={href} href={href}>
-                  <a className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors cursor-pointer",
-                    isActive(href)
-                      ? "bg-sidebar-accent text-sidebar-primary font-medium"
-                      : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
-                  )}
-                    onClick={() => setDrawerOpen(false)}
-                  >
-                    <Icon className="w-5 h-5 flex-shrink-0" />
-                    {label}
-                    {isActive(href) && <ChevronRight className="w-3.5 h-3.5 ml-auto opacity-50" />}
-                  </a>
-                </Link>
-              ))}
+              {navItems.map(({ href, icon: Icon, label }) => {
+                const showBadge = href === "/luca/board" && pendingCount > 0;
+                return (
+                  <Link key={href} href={href}>
+                    <a className={cn(
+                      "flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-colors cursor-pointer",
+                      isActive(href)
+                        ? "bg-sidebar-accent text-sidebar-primary font-medium"
+                        : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                    )}
+                      onClick={() => setDrawerOpen(false)}
+                    >
+                      <Icon className="w-5 h-5 flex-shrink-0" />
+                      {label}
+                      {showBadge && (
+                        <span className="ml-auto min-w-[1.25rem] h-5 px-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-semibold text-amber-300 flex items-center justify-center">
+                          {pendingCount}
+                        </span>
+                      )}
+                      {isActive(href) && !showBadge && <ChevronRight className="w-3.5 h-3.5 ml-auto opacity-50" />}
+                    </a>
+                  </Link>
+                );
+              })}
             </nav>
 
             {/* Footer */}
