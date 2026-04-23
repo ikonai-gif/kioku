@@ -2499,8 +2499,8 @@ export default function PartnerChat() {
 
     // ── Video branch: send to /api/partner/read-video for metadata + thumbnail description ──
     if (file.type.startsWith("video/")) {
-      if (file.size > 50 * 1024 * 1024) {
-        toast({ title: "Video too large (max 50MB)", variant: "destructive" });
+      if (file.size > 200 * 1024 * 1024) {
+        toast({ title: "Video too large (max 200MB)", variant: "destructive" });
         return;
       }
       setAttachedFileName(file.name);

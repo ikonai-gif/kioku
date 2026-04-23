@@ -3110,7 +3110,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // POST /api/partner/read-video — Video metadata + first-frame thumbnail description
   //   Workflow:
-  //     1. Accept video upload (max 50MB).
+  //     1. Accept video upload (max 200MB — covers typical phone reels & clips).
   //     2. ffprobe for duration + mime sanity.
   //     3. ffmpeg grab frame at t=00:00:01 (or t=0 if duration < 1s) as JPEG.
   //     4. Send that JPEG through GPT-4.1-mini vision for a short description.
@@ -3125,7 +3125,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const multer = (await import("multer")).default;
     const upload = multer({
       storage: multer.memoryStorage(),
-      limits: { fileSize: 50 * 1024 * 1024 },
+      limits: { fileSize: 200 * 1024 * 1024 },
     }).single("file");
 
     await new Promise<void>((resolve, reject) => {
