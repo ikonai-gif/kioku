@@ -34,14 +34,49 @@ describe("trust-policy: TOOL_TRUST_POLICY table", () => {
     expect(TOOL_TRUST_POLICY.luca_read_url).toBe("UNTRUSTED");
   });
 
-  it("contains exactly the 4 V1a Luca tools", () => {
+  it("contains the 4 V1a tools plus Day 6 part 3 Studio + Gmail + cloud entries", () => {
+    // Day 6 part 3 (N4): workspace_read/list are TRUSTED, every Gmail read
+    // and cloud file read is UNTRUSTED. Pinning the exact set so an
+    // accidental removal (forgetting to classify a new Gmail-family tool)
+    // fails the test rather than silently defaulting to UNTRUSTED (which
+    // is safe behavior-wise but obscures intent).
     const keys = Object.keys(TOOL_TRUST_POLICY).sort();
     expect(keys).toEqual([
+      "email_triage",
+      "gmail_read",
+      "gmail_search",
+      "inbox_list",
+      "inbox_read",
       "luca_analyze_image",
       "luca_read_url",
       "luca_run_code",
       "luca_search",
+      "read_cloud_file",
+      "read_email_thread",
+      "search_cloud_files",
+      "search_emails",
+      "workspace_list",
+      "workspace_read",
     ]);
+  });
+
+  it("Day 6 part 3: workspace reads are TRUSTED (Luca's own bucket)", () => {
+    expect(TOOL_TRUST_POLICY.workspace_read).toBe("TRUSTED");
+    expect(TOOL_TRUST_POLICY.workspace_list).toBe("TRUSTED");
+  });
+
+  it("Day 6 part 3: every Gmail read is UNTRUSTED", () => {
+    for (const k of [
+      "gmail_search", "gmail_read", "inbox_list", "inbox_read",
+      "read_email_thread", "search_emails", "email_triage",
+    ] as const) {
+      expect(TOOL_TRUST_POLICY[k]).toBe("UNTRUSTED");
+    }
+  });
+
+  it("Day 6 part 3: cloud file reads are UNTRUSTED", () => {
+    expect(TOOL_TRUST_POLICY.search_cloud_files).toBe("UNTRUSTED");
+    expect(TOOL_TRUST_POLICY.read_cloud_file).toBe("UNTRUSTED");
   });
 
   it("every value is either TRUSTED or UNTRUSTED", () => {
@@ -143,6 +178,17 @@ describe("trust-policy: isUntrusted()", () => {
       "luca_analyze_image",
       "luca_search",
       "luca_read_url",
+      "workspace_read",
+      "workspace_list",
+      "gmail_search",
+      "gmail_read",
+      "inbox_list",
+      "inbox_read",
+      "read_email_thread",
+      "search_emails",
+      "email_triage",
+      "search_cloud_files",
+      "read_cloud_file",
     ];
     for (const name of names) {
       const expected = getToolTrustLevel(name) === "UNTRUSTED";

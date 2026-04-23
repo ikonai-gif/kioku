@@ -26,11 +26,15 @@ const deliberationSource = readFileSync(
 );
 
 describe("remember tool — registration & schema", () => {
-  it("is listed in LUCA_STUDIO_TOOL_NAMES", () => {
+  it("is listed in LUCA_STUDIO_TOOL_NAMES (via the base-set array)", () => {
+    // Day 6 part 3: LUCA_STUDIO_TOOL_NAMES is now derived from
+    // LUCA_STUDIO_TOOL_NAMES_BASE (an array literal). We match against
+    // the base array — any refactor that moves `remember` out of the
+    // always-on base set will (rightly) break this.
     const block = extractBetween(
       deliberationSource,
-      "export const LUCA_STUDIO_TOOL_NAMES",
-      "]);"
+      "LUCA_STUDIO_TOOL_NAMES_BASE",
+      "];"
     );
     expect(block).toMatch(/["']remember["']/);
   });
