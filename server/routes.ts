@@ -3108,6 +3108,108 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // POST /api/partner/read-video-meta — Day 12: frame already extracted client-side.
+  //   Client does the heavy lifting (HTMLVideoElement + canvas.toDataURL) and
+  //   uploads just the JPEG. Lets us describe videos up to 500MB without
+  //   ever streaming video bytes to Railway. ffmpeg on the server is no
+  //   longer on the hot path for this endpoint.
+  //
+  //   Request JSON:
+  //     { fileName, mimeType, sizeBytes, durationSec|null,
+  //       widthPx, heightPx, frameJpegBase64 }
+  //   Response:
+  //     { fileName, mimeType, sizeBytes, durationSec,
+  //       thumbnailDescription | warning }
+  app.post("/api/partner/read-video-meta", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const {
+      fileName,
+      mimeType,
+      sizeBytes,
+      durationSec,
+      widthPx,
+      heightPx,
+      frameJpegBase64,
+    } = req.body ?? {};
+
+    if (typeof fileName !== "string" || !fileName) {
+      return res.status(400).json({ error: "fileName required" });
+    }
+    if (typeof sizeBytes !== "number" || !Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+      return res.status(400).json({ error: "sizeBytes required (number)" });
+    }
+    if (sizeBytes > 500 * 1024 * 1024) {
+      return res.status(413).json({ error: "Video too large (max 500MB)" });
+    }
+    if (typeof frameJpegBase64 !== "string" || frameJpegBase64.length < 100) {
+      return res.status(400).json({ error: "frameJpegBase64 required" });
+    }
+    // Frame JPEG payload cap — defensive. 1280px @ q0.85 is typically <400KB;
+    // 4MB base64 leaves headroom for weird aspect ratios.
+    if (frameJpegBase64.length > 4 * 1024 * 1024) {
+      return res.status(413).json({ error: "Frame image too large" });
+    }
+    const cleanBase64 = frameJpegBase64.replace(/\s/g, "");
+    if (!/^[A-Za-z0-9+/]+=*$/.test(cleanBase64.slice(0, 100))) {
+      return res.status(400).json({ error: "Invalid base64 frame" });
+    }
+
+    const safeMime = typeof mimeType === "string" && mimeType.startsWith("video/")
+      ? mimeType
+      : "video/mp4";
+    const safeDuration =
+      typeof durationSec === "number" && Number.isFinite(durationSec) && durationSec > 0
+        ? durationSec
+        : null;
+
+    const dataUrl = `data:image/jpeg;base64,${cleanBase64}`;
+    let thumbnailDescription: string | null = null;
+    let warning: string | null = null;
+
+    try {
+      const OpenAI = (await import("openai")).default;
+      const openai = new OpenAI();
+      const response = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [{
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "This is a single frame extracted from a short video the user is sharing. " +
+                "Describe what's visible in the frame in 1-2 sentences, naturally, as a friend would. " +
+                "Don't speculate about what happens before or after \u2014 only what you can see.",
+            },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        }],
+        max_tokens: 300,
+      });
+      thumbnailDescription = response.choices[0]?.message?.content?.trim() || null;
+      if (!thumbnailDescription) warning = "vision returned empty";
+    } catch (err: any) {
+      logger.warn(
+        { source: "read-video-meta", error: err?.message || String(err) },
+        "vision failed",
+      );
+      warning = "vision unavailable";
+    }
+
+    res.json({
+      fileName,
+      mimeType: safeMime,
+      sizeBytes,
+      durationSec: safeDuration,
+      widthPx: typeof widthPx === "number" ? widthPx : null,
+      heightPx: typeof heightPx === "number" ? heightPx : null,
+      thumbnailDescription,
+      warning,
+    });
+  }));
+
   // POST /api/partner/read-video — Video metadata + first-frame thumbnail description
   //   Workflow:
   //     1. Accept video upload (max 200MB — covers typical phone reels & clips).
