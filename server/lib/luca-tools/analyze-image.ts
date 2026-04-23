@@ -574,6 +574,13 @@ export function sniffImageMagic(buf: Buffer): string | null {
  * SF3 identity: url + normalized params. Two calls with same URL and same
  * (prompt, max_tokens) group under one code_sha. Timeout is NOT part of
  * identity — it only affects when to give up, not what was asked.
+ *
+ * Pass-2 finding K: SHA does NOT hash the image bytes — only the URL. If the
+ * S3 object at `imageUrl` is overwritten (same key, different content) or if
+ * a versioned bucket resolves a different object version at fetch time, two
+ * analyses with different bytes collide under one codeSha. Today this is
+ * forensic-only so the collision is benign. DO NOT introduce codeSha-based
+ * caching without also hashing the fetched bytes (or pinning via versionId).
  */
 export function computeAnalyzeImageSha(
   imageUrl: string,
@@ -693,6 +700,16 @@ export interface AnalyzeImageDeps {
 
 /**
  * Invoke the tool. Returns the user-facing result shape.
+ *
+ * Pass-2 finding H (Day 5 TOOL_TRUST_POLICY): `luca_analyze_image` is read-
+ * only but fetches external content (Anthropic Vision reads the image,
+ * including any text pixels). Treat as **UNTRUSTED** when Day 5 adds trust
+ * enforcement — image contents can carry prompt-injection just like `read_url`.
+ *
+ * Pass-2 finding I.a (Day 4 followup): data: URIs are preserved verbatim in
+ * `tool_runs.input` — a 10MB image lands directly in the JSONB row. Replace
+ * with a `{type:'data-uri', sha256, size}` stub before insert to keep the
+ * forensic log lean (codeSha already covers SF3 identity).
  */
 export async function analyzeImageHandler(
   raw: unknown,
