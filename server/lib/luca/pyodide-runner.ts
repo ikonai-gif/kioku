@@ -37,6 +37,10 @@
  */
 import { LucaFeatureDisabledError, isLucaEnabled } from "./env";
 import logger from "../../logger";
+import {
+  E2BPyodideRunner,
+  resolvePyodideRunnerBackend,
+} from "./e2b-pyodide-runner";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -377,16 +381,28 @@ export class MockPyodideRunner implements PyodideRunner {
 let singleton: PyodideRunner | null = null;
 
 /**
- * Process-wide runner. Day 1 returns `MockPyodideRunner` in all environments
- * (including prod) because the real Pyodide binding isn't wired yet AND the
- * master flag is off. Day 1.5 will introduce a real-vs-mock switch.
+ * Process-wide runner. Day 1.5 introduces a real-vs-mock switch via
+ * `LUCA_PYODIDE_RUNNER`:
+ *   - `"mock"` (default): in-process MockPyodideRunner. Free, used in tests
+ *     and when the master flag is off.
+ *   - `"e2b"`: E2BPyodideRunner, requires E2B_API_KEY. Real Python execution.
+ *
+ * Auto-falls-back to mock when E2B_API_KEY is missing (warn-log, no crash).
+ * See `resolvePyodideRunnerBackend()` for full contract.
  */
 export function getPyodideRunner(): PyodideRunner {
   if (!singleton) {
-    singleton = new MockPyodideRunner();
-    logger.info(
-      "[luca.pyodideRunner] using MockPyodideRunner (Day 1); real Pyodide wire-up is Day 1.5",
-    );
+    const backend = resolvePyodideRunnerBackend();
+    if (backend === "e2b") {
+      // E2BPyodideRunner constructor doesn't touch the network — actual
+      // sandbox creation is deferred to the first run() call, so this is
+      // safe to instantiate even if we end up not using it this process.
+      singleton = new E2BPyodideRunner();
+      logger.info("[luca.pyodideRunner] using E2BPyodideRunner");
+    } else {
+      singleton = new MockPyodideRunner();
+      logger.info("[luca.pyodideRunner] using MockPyodideRunner");
+    }
   }
   return singleton;
 }
