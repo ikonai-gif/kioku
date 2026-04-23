@@ -52,6 +52,9 @@ export interface LucaEnv {
   LUCA_TOOL_RUN_CODE_ENABLED: boolean;
   LUCA_TOOL_ANALYZE_IMAGE_ENABLED: boolean;
   LUCA_TOOL_SEARCH_ENABLED: boolean;
+  // Day 5 — untrusted-by-policy (TOOL_TRUST_POLICY). Flag reserved now so
+  // Day 5 PR can register without touching env.ts / isLucaToolEnabled union.
+  LUCA_TOOL_READ_URL_ENABLED: boolean;
   LUCA_TOOL_READ_MEMORY_ENABLED: boolean;
   LUCA_TOOL_WRITE_MEMORY_ENABLED: boolean;
   LUCA_TOOL_READ_FILE_ENABLED: boolean;
@@ -69,6 +72,7 @@ export function readLucaEnv(): LucaEnv {
     LUCA_TOOL_RUN_CODE_ENABLED: process.env.LUCA_TOOL_RUN_CODE_ENABLED === "true",
     LUCA_TOOL_ANALYZE_IMAGE_ENABLED: process.env.LUCA_TOOL_ANALYZE_IMAGE_ENABLED === "true",
     LUCA_TOOL_SEARCH_ENABLED: process.env.LUCA_TOOL_SEARCH_ENABLED === "true",
+    LUCA_TOOL_READ_URL_ENABLED: process.env.LUCA_TOOL_READ_URL_ENABLED === "true",
     LUCA_TOOL_READ_MEMORY_ENABLED: process.env.LUCA_TOOL_READ_MEMORY_ENABLED === "true",
     LUCA_TOOL_WRITE_MEMORY_ENABLED: process.env.LUCA_TOOL_WRITE_MEMORY_ENABLED === "true",
     LUCA_TOOL_READ_FILE_ENABLED: process.env.LUCA_TOOL_READ_FILE_ENABLED === "true",
@@ -85,6 +89,7 @@ export function isLucaToolEnabled(
     | "LUCA_TOOL_RUN_CODE_ENABLED"
     | "LUCA_TOOL_ANALYZE_IMAGE_ENABLED"
     | "LUCA_TOOL_SEARCH_ENABLED"
+    | "LUCA_TOOL_READ_URL_ENABLED"
     | "LUCA_TOOL_READ_MEMORY_ENABLED"
     | "LUCA_TOOL_WRITE_MEMORY_ENABLED"
     | "LUCA_TOOL_READ_FILE_ENABLED"
