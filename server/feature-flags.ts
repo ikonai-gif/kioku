@@ -2,6 +2,13 @@
  * Feature flags — disable domains without redeploy.
  * Default: all enabled. Set env var to 'false' to disable.
  * Checked in route middleware, not storage layer (Bro2 guidance).
+ *
+ * NOTE on Luca: `LUCA_ENABLED` (here) is the LEGACY pre-V1a route-level flag.
+ * It is DISTINCT from `LUCA_V1A_ENABLED` (server/lib/luca/env.ts) which gates
+ * the V1a tool surface. They have OPPOSITE defaults — `LUCA_ENABLED` default
+ * ON, `LUCA_V1A_ENABLED` default OFF — so flipping one does not affect the
+ * other. If ops/dev wants to gate Luca tools, they must flip LUCA_V1A_ENABLED,
+ * NOT this flag. Audit D28 (luca_plan_audit_day_2.md) for full context.
  */
 export const flags = {
   MEETING_ROOM_ENABLED: process.env.MEETING_ROOM_ENABLED !== 'false',

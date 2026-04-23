@@ -1,4 +1,5 @@
-import { pgTable, text, integer, real, serial, bigint, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, bigint, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -469,3 +470,57 @@ export const meetingArtifacts = pgTable("meeting_artifacts", {
 export const insertMeetingArtifactSchema = createInsertSchema(meetingArtifacts).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertMeetingArtifact = z.infer<typeof insertMeetingArtifactSchema>;
 export type MeetingArtifact = typeof meetingArtifacts.$inferSelect;
+
+// ─── Luca V1a — tool_runs forensic (Day 2) ──────────────────────────────
+// Append-only audit log for every Luca tool invocation. Rows are never
+// updated in place (only inserted); terminal status transitions (ok/error/
+// timeout/memory_exceeded/disabled) land as a second row if the tool emits
+// a pending row first. This lets us diff pending→terminal for latency
+// analysis AND reproduce exactly what Luca tried for any turn.
+//
+// SF3: `code_sha = sha256(code + JSON.stringify(inputs ?? {}))` — V1
+// luca_run_code has inputs=undefined so semantically unchanged, but forward-
+// compat for V2 file_upload where same code against different file inputs
+// must NOT collide on retry-grouping lookups.
+export const toolRuns = pgTable("tool_runs", {
+  id:               uuid("id").primaryKey().defaultRandom(),
+  // Scope — both meetingId and turnId are set for meeting-room runs;
+  // standalone calls (future) may leave both null. `userId` is always set.
+  userId:           integer("user_id").notNull(),
+  agentId:          integer("agent_id"),
+  meetingId:        uuid("meeting_id"),
+  turnId:           uuid("turn_id"),
+  ctxKey:           varchar("ctx_key", { length: 128 }).notNull(),
+  // Tool surface
+  tool:             varchar("tool", { length: 64 }).notNull(),
+  codeSha:          varchar("code_sha", { length: 64 }).notNull(),   // sha256 hex
+  status:           varchar("status", { length: 32 }).notNull(),      // pending|ok|error|timeout|memory_exceeded|disabled
+  // Payload
+  input:            jsonb("input").notNull(),
+  output:           jsonb("output"),                                  // null while pending
+  errorDetail:      text("error_detail"),
+  // Timing
+  elapsedMs:        integer("elapsed_ms"),                            // null while pending
+  memoryPeakBytes:  bigint("memory_peak_bytes", { mode: "number" }),  // best-effort, may be null
+  networkAttempted: boolean("network_attempted").notNull().default(false),
+  createdAt:        timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  // Forensic lookup patterns
+  index("idx_tr_turn").on(t.turnId),
+  index("idx_tr_meeting_created").on(t.meetingId, t.createdAt),
+  index("idx_tr_user_created").on(t.userId, t.createdAt),
+  index("idx_tr_code_sha").on(t.codeSha),  // retry-grouping via SF3
+  index("idx_tr_tool_status").on(t.tool, t.status),  // error-rate telemetry
+  // Mirror of CHECK constraint in migrations/0005_luca_v1a_tool_runs.sql.
+  // Required so `drizzle-kit push` ends up with the SAME schema as a psql
+  // apply of 0005.sql (audit pass-3 D19). DB-level gate against typos in
+  // status; also documents the allowed RunCodeStatus ∪ {pending} domain.
+  check(
+    "tool_runs_status_valid",
+    sql`${t.status} IN ('pending','ok','error','timeout','memory_exceeded','disabled')`,
+  ),
+]);
+
+export const insertToolRunSchema = createInsertSchema(toolRuns).omit({ id: true, createdAt: true });
+export type InsertToolRun = z.infer<typeof insertToolRunSchema>;
+export type ToolRun = typeof toolRuns.$inferSelect;

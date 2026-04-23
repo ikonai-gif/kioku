@@ -26,6 +26,7 @@ import {
   __setPyodideRunnerForTests,
   getPyodideRunner,
   runCode,
+  sandboxKeyForTurn,
   toSandboxKey,
   type SandboxKey,
 } from "../../lib/luca/pyodide-runner";
@@ -91,6 +92,31 @@ describe("toSandboxKey", () => {
     expect(toSandboxKey("a-b_c")).toBe("a-b_c");
     expect(toSandboxKey("a_")).toBe("a_");
     expect(toSandboxKey("a-")).toBe("a-");
+  });
+});
+
+describe("sandboxKeyForTurn", () => {
+  it("produces a valid SandboxKey from UUID meeting+turn ids", () => {
+    const meetingId = "12345678-1234-1234-1234-123456789abc";
+    const turnId = "abcdef01-abcd-abcd-abcd-abcdef012345";
+    const key = sandboxKeyForTurn(meetingId, turnId);
+    expect(key).toBe("m_12345678123412341234123456789abc_t_abcdef01abcdabcdabcdabcdef012345");
+    // Re-run through toSandboxKey must succeed (proves regex compliance).
+    expect(() => toSandboxKey(key)).not.toThrow();
+    // Total length 2 + 32 + 3 + 32 = 69, under the 128 cap.
+    expect(key.length).toBe(69);
+  });
+
+  it("strips dashes from both ids deterministically", () => {
+    const k1 = sandboxKeyForTurn("aa-bb", "cc-dd");
+    const k2 = sandboxKeyForTurn("aabb", "ccdd");
+    expect(k1).toBe(k2);
+    expect(k1).toBe("m_aabb_t_ccdd");
+  });
+
+  it("rejects ids whose dash-stripped form violates regex", () => {
+    // Space in meetingId leaks through (we only strip dashes)
+    expect(() => sandboxKeyForTurn("bad id", "t1")).toThrow(/invalid_ctx_key/);
   });
 });
 

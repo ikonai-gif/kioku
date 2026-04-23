@@ -59,6 +59,14 @@ export interface TrustVerifier {
   /**
    * Return a verdict for the given sample. A verifier that can't judge
    * should return UNKNOWN (not throw) so the registry can try the next one.
+   *
+   * SECURITY (audit pass-3 D23): if a verifier DOES throw, the thrown
+   * Error's `.message` will be surfaced in `TrustResult.detail` which is
+   * returned to callers and may reach UI/logs. Throw messages MUST be
+   * generic (e.g. "canary mismatch", "signature detected") and MUST NOT
+   * include any user-influenced data from `sample.content` — even a
+   * prefix. The verifier must treat `sample.content` as secret-equivalent
+   * for error-message purposes.
    */
   verify(sample: TrustSample): Promise<TrustResult>;
 }

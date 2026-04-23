@@ -39,6 +39,26 @@ export interface LucaEnv {
 
   /** Brave Search API key. Day 5. */
   BRAVE_SEARCH_API_KEY: string | null;
+
+  /**
+   * Second-level master: enables the tool REGISTRY (Day 2+). Default false.
+   * Belt-and-braces — even if LUCA_V1A_ENABLED=true, tools don't ship unless
+   * this is also on. Lets ops enable runtime-only (WS, chat) without the
+   * tool surface while we debug individual tools.
+   */
+  LUCA_TOOLS_ENABLED: boolean;
+
+  /** Per-tool flags. Default false. All require LUCA_TOOLS_ENABLED=true. */
+  LUCA_TOOL_RUN_CODE_ENABLED: boolean;
+  LUCA_TOOL_ANALYZE_IMAGE_ENABLED: boolean;
+  LUCA_TOOL_SEARCH_ENABLED: boolean;
+  // Day 5 — untrusted-by-policy (TOOL_TRUST_POLICY). Flag reserved now so
+  // Day 5 PR can register without touching env.ts / isLucaToolEnabled union.
+  LUCA_TOOL_READ_URL_ENABLED: boolean;
+  LUCA_TOOL_READ_MEMORY_ENABLED: boolean;
+  LUCA_TOOL_WRITE_MEMORY_ENABLED: boolean;
+  LUCA_TOOL_READ_FILE_ENABLED: boolean;
+  LUCA_TOOL_UPLOAD_FILE_ENABLED: boolean;
 }
 
 export function readLucaEnv(): LucaEnv {
@@ -48,7 +68,35 @@ export function readLucaEnv(): LucaEnv {
     AWS_REGION: process.env.AWS_REGION ?? null,
     LUCA_DRIVE_ROOT_FOLDER: process.env.LUCA_DRIVE_ROOT_FOLDER ?? null,
     BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY ?? null,
+    LUCA_TOOLS_ENABLED: process.env.LUCA_TOOLS_ENABLED === "true",
+    LUCA_TOOL_RUN_CODE_ENABLED: process.env.LUCA_TOOL_RUN_CODE_ENABLED === "true",
+    LUCA_TOOL_ANALYZE_IMAGE_ENABLED: process.env.LUCA_TOOL_ANALYZE_IMAGE_ENABLED === "true",
+    LUCA_TOOL_SEARCH_ENABLED: process.env.LUCA_TOOL_SEARCH_ENABLED === "true",
+    LUCA_TOOL_READ_URL_ENABLED: process.env.LUCA_TOOL_READ_URL_ENABLED === "true",
+    LUCA_TOOL_READ_MEMORY_ENABLED: process.env.LUCA_TOOL_READ_MEMORY_ENABLED === "true",
+    LUCA_TOOL_WRITE_MEMORY_ENABLED: process.env.LUCA_TOOL_WRITE_MEMORY_ENABLED === "true",
+    LUCA_TOOL_READ_FILE_ENABLED: process.env.LUCA_TOOL_READ_FILE_ENABLED === "true",
+    LUCA_TOOL_UPLOAD_FILE_ENABLED: process.env.LUCA_TOOL_UPLOAD_FILE_ENABLED === "true",
   };
+}
+
+/**
+ * Is a specific tool enabled? Requires BOTH master + tools-master + per-tool.
+ * Three-level flag defense — any one of them off disables the tool.
+ */
+export function isLucaToolEnabled(
+  toolFlag:
+    | "LUCA_TOOL_RUN_CODE_ENABLED"
+    | "LUCA_TOOL_ANALYZE_IMAGE_ENABLED"
+    | "LUCA_TOOL_SEARCH_ENABLED"
+    | "LUCA_TOOL_READ_URL_ENABLED"
+    | "LUCA_TOOL_READ_MEMORY_ENABLED"
+    | "LUCA_TOOL_WRITE_MEMORY_ENABLED"
+    | "LUCA_TOOL_READ_FILE_ENABLED"
+    | "LUCA_TOOL_UPLOAD_FILE_ENABLED",
+): boolean {
+  const env = readLucaEnv();
+  return env.LUCA_V1A_ENABLED && env.LUCA_TOOLS_ENABLED && env[toolFlag];
 }
 
 export function isLucaEnabled(): boolean {
