@@ -524,3 +524,62 @@ export const toolRuns = pgTable("tool_runs", {
 export const insertToolRunSchema = createInsertSchema(toolRuns).omit({ id: true, createdAt: true });
 export type InsertToolRun = z.infer<typeof insertToolRunSchema>;
 export type ToolRun = typeof toolRuns.$inferSelect;
+
+// ─── Luca Day 6 — tool_approvals (human-in-the-loop gate) ───────────────
+// HIGH_STAKES_WRITE tool calls from Luca land here first (status=pending).
+// Kote's UI (Day 7) renders a 3-button card — Send / No / Edit — and hits
+// POST /api/luca/approvals/:id/decide. Gate then either runs the real
+// downstream tool handler (send/edit) or marks rejected/timeout and records
+// the outcome back to Luca's next turn as a synthetic tool_result.
+//
+// Lifecycle: pending → (approved|edited) → executed | pending → (rejected|
+// timeout) → no execution | pending → error (handler blew up during
+// execution after approval). Single-row lifecycle — UPDATEs flip status +
+// stamp decided_at/final_payload/executed_at/execution_result in place.
+//
+// Separate from tool_runs: tool_runs is SF3 dedup-oriented (pending+terminal
+// row pair). Approvals have a different state machine. When an approved
+// tool actually executes, we still write a tool_runs row for the execution
+// so forensic reads are uniform — approval table is the decision layer,
+// tool_runs is the execution layer.
+export const toolApprovals = pgTable("tool_approvals", {
+  id:              uuid("id").primaryKey().defaultRandom(),
+  // Scope
+  agentId:         integer("agent_id").notNull(),
+  userId:          integer("user_id").notNull(),
+  meetingId:       uuid("meeting_id"),
+  turnId:          uuid("turn_id"),
+  // Tool surface
+  toolName:        varchar("tool_name", { length: 64 }).notNull(),
+  // Payload: what Luca proposed vs. what was actually sent
+  draftPayload:    jsonb("draft_payload").notNull(),
+  finalPayload:    jsonb("final_payload"),   // null until decided; = draft on 'send', = edited on 'edit'
+  // Decision state
+  status:          varchar("status", { length: 32 }).notNull().default("pending"),
+  decisionNote:    text("decision_note"),    // optional Kote comment on reject/edit
+  // Forensic dedupe key — sha256(tool_name + stable-stringify(draft_payload))
+  codeSha:         varchar("code_sha", { length: 64 }).notNull(),
+  // Timing
+  createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  decidedAt:       timestamp("decided_at", { withTimezone: true }),
+  expiresAt:       timestamp("expires_at", { withTimezone: true }).notNull(),
+  executedAt:      timestamp("executed_at", { withTimezone: true }),
+  // Downstream execution outcome (= tool_result shape for next-turn replay)
+  executionResult: jsonb("execution_result"),
+}, (t) => [
+  index("idx_ta_pending_by_user").on(t.userId, t.createdAt),
+  index("idx_ta_expires").on(t.expiresAt),
+  index("idx_ta_agent_created").on(t.agentId, t.createdAt),
+  index("idx_ta_turn").on(t.turnId, t.createdAt),
+  index("idx_ta_dedupe").on(t.agentId, t.toolName, t.codeSha, t.createdAt),
+  // Mirror of CHECK constraint in migrations/0006_luca_tool_approvals.sql.
+  // Keeps `drizzle-kit push` output identical to a fresh psql apply.
+  check(
+    "tool_approvals_status_valid",
+    sql`${t.status} IN ('pending','approved','rejected','edited','timeout','error')`,
+  ),
+]);
+
+export const insertToolApprovalSchema = createInsertSchema(toolApprovals).omit({ id: true, createdAt: true });
+export type InsertToolApproval = z.infer<typeof insertToolApprovalSchema>;
+export type ToolApproval = typeof toolApprovals.$inferSelect;
