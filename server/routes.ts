@@ -3108,6 +3108,125 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // POST /api/partner/read-video — Video metadata + first-frame thumbnail description
+  //   Workflow:
+  //     1. Accept video upload (max 50MB).
+  //     2. ffprobe for duration + mime sanity.
+  //     3. ffmpeg grab frame at t=00:00:01 (or t=0 if duration < 1s) as JPEG.
+  //     4. Send that JPEG through GPT-4.1-mini vision for a short description.
+  //     5. Return { fileName, mimeType, sizeBytes, durationSec, thumbnailDescription }.
+  //   Luca then receives a text attachment like:
+  //     [Video: clip.mp4 — 12.4 MB, 34s — first frame shows: a person at a desk ...]
+  //   No video model, no persistent upload. Temp files cleaned on every path.
+  app.post("/api/partner/read-video", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const multer = (await import("multer")).default;
+    const upload = multer({
+      storage: multer.memoryStorage(),
+      limits: { fileSize: 50 * 1024 * 1024 },
+    }).single("file");
+
+    await new Promise<void>((resolve, reject) => {
+      upload(req as any, res as any, (err: any) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "File required" });
+    if (!file.mimetype || !file.mimetype.startsWith("video/")) {
+      return res.status(400).json({ error: "Must be a video file" });
+    }
+
+    const os = await import("os");
+    const path = await import("path");
+    const fs = await import("fs/promises");
+    const { execSync } = await import("child_process");
+    const crypto = await import("crypto");
+
+    const tmpRoot = path.join(os.tmpdir(), `kioku-video-${crypto.randomUUID()}`);
+    await fs.mkdir(tmpRoot, { recursive: true });
+    const srcExt = (file.originalname?.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "") || "mp4";
+    const srcPath = path.join(tmpRoot, `in.${srcExt}`);
+    const framePath = path.join(tmpRoot, "frame.jpg");
+
+    let durationSec: number | null = null;
+    let thumbnailDescription: string | null = null;
+    let warning: string | null = null;
+
+    try {
+      await fs.writeFile(srcPath, file.buffer);
+
+      // ── 1. Duration via ffprobe (best-effort) ──────────────────
+      try {
+        const probeOut = execSync(
+          `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${srcPath}"`,
+          { timeout: 10_000, encoding: "utf-8" },
+        ).trim();
+        const dur = parseFloat(probeOut);
+        if (!isNaN(dur) && isFinite(dur)) durationSec = Math.round(dur * 10) / 10;
+      } catch (err: any) {
+        warning = "Could not read video duration.";
+        logger.warn({ source: "read-video", error: err.message }, "ffprobe failed");
+      }
+
+      // ── 2. Grab a representative frame ─────────────────────────
+      const frameSeekSec = durationSec && durationSec > 1 ? Math.min(durationSec / 4, 2) : 0;
+      try {
+        execSync(
+          `ffmpeg -y -ss ${frameSeekSec} -i "${srcPath}" -frames:v 1 -vf scale="'min(1280,iw)':-2" -q:v 4 "${framePath}" 2>/dev/null`,
+          { timeout: 20_000 },
+        );
+      } catch (err: any) {
+        logger.warn({ source: "read-video", error: err.message }, "ffmpeg frame extract failed");
+        warning = warning ?? "Could not extract a thumbnail from the video.";
+      }
+
+      // ── 3. Vision the frame if we got one ──────────────────────
+      try {
+        const frameBytes = await fs.readFile(framePath).catch(() => null);
+        if (frameBytes) {
+          const b64 = frameBytes.toString("base64");
+          const OpenAI = (await import("openai")).default;
+          const openai = new OpenAI();
+          const response = await openai.chat.completions.create({
+            model: "gpt-4.1-mini",
+            messages: [{
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: "This is a single frame from a video the user shared. Describe what's visible in 1-2 sentences, naturally, as a friend would. Do NOT describe it as \"a frame\" or mention that it's a still — just describe the scene.",
+                },
+                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${b64}` } },
+              ],
+            }],
+            max_tokens: 200,
+          });
+          thumbnailDescription = response.choices[0]?.message?.content?.trim() || null;
+        }
+      } catch (err: any) {
+        logger.warn({ source: "read-video", error: err.message }, "vision failed");
+        warning = warning ?? "Could not describe the first frame.";
+      }
+    } finally {
+      // Cleanup temp dir — best-effort
+      fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
+
+    res.json({
+      fileName: file.originalname || "video",
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+      durationSec,
+      thumbnailDescription,
+      warning,
+    });
+  }));
+
   // ── Phase 6: Creative Hands — Writing + Image Generation ───────
 
   function buildCreativeSystemPrompt(type: string, style?: string, references?: string[]): string {
