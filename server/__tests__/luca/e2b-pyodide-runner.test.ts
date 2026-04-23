@@ -55,9 +55,15 @@ class FakeSandbox {
 
   // Scripted responses — `runCode` looks up by exact code string.
   private scripts = new Map<string, ScriptedResult>();
+  // Scripted throws — `runCode` throws this instead of returning.
+  private throws = new Map<string, Error>();
 
   script(code: string, result: ScriptedResult): void {
     this.scripts.set(code, result);
+  }
+
+  scriptThrow(code: string, err: Error): void {
+    this.throws.set(code, err);
   }
 
   async setTimeout(ms: number): Promise<void> {
@@ -93,6 +99,8 @@ class FakeSandbox {
       contextId: opts.context.id,
       timeoutMs: opts.timeoutMs,
     });
+    const thrown = this.throws.get(code);
+    if (thrown) throw thrown;
     const scripted = this.scripts.get(code) ?? {};
     return {
       logs: scripted.logs ?? { stdout: [], stderr: [] },
@@ -163,6 +171,53 @@ describe("E2BPyodideRunner", () => {
 
     expect(result.status).toBe("timeout");
     expect(result.errorDetail).toContain("5000");
+  });
+
+  it("throw-timeout: runCode throws Error named TimeoutError → status=timeout", async () => {
+    // Day-3 fix path: E2B's actual runtime behavior is to throw, not return
+    // an Execution with error.name. Simulate it and assert we don't leak a
+    // `run_code_infrastructure_error` up to the tool handler.
+    const sb = new FakeSandbox();
+    const err = new Error("Execution timed out after 5000ms");
+    err.name = "TimeoutError";
+    sb.scriptThrow("while True: pass", err);
+    const runner = new E2BPyodideRunner(makeFactory(sb));
+
+    const r = await runner.run({
+      ctxKey: toSandboxKey("thrown_t"),
+      code: "while True: pass",
+      timeoutMs: 5_000,
+    });
+    expect(r.status).toBe("timeout");
+    expect(r.errorDetail).toMatch(/5000/);
+    expect(r.errorDetail).toMatch(/timed out/i);
+  });
+
+  it("throw-timeout: substring match ('deadline exceeded') still maps to timeout", async () => {
+    const sb = new FakeSandbox();
+    sb.scriptThrow(
+      "sleep_long()",
+      new Error("rpc failed: deadline exceeded"),
+    );
+    const runner = new E2BPyodideRunner(makeFactory(sb));
+    const r = await runner.run({
+      ctxKey: toSandboxKey("thrown_d"),
+      code: "sleep_long()",
+      timeoutMs: 10_000,
+    });
+    expect(r.status).toBe("timeout");
+  });
+
+  it("throw-non-timeout: other errors still propagate as infra failure", async () => {
+    const sb = new FakeSandbox();
+    sb.scriptThrow(
+      "x",
+      new Error("ECONNREFUSED: sandbox unreachable"),
+    );
+    const runner = new E2BPyodideRunner(makeFactory(sb));
+    await expect(
+      runner.run({ ctxKey: toSandboxKey("thrown_x"), code: "x" }),
+    ).rejects.toThrow(/ECONNREFUSED/);
   });
 
   it("timeout heuristic: 'timed out' in error value remaps to timeout", async () => {

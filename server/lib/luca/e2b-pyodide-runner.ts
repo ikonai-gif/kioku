@@ -45,6 +45,10 @@ import {
   type Context as E2BContext,
   type Execution as E2BExecution,
 } from "@e2b/code-interpreter";
+// TimeoutError is re-exported from `e2b` under @e2b/code-interpreter, but
+// the class itself is defined in the base `e2b` package. Import directly
+// so `instanceof` checks work regardless of which entry point E2B uses.
+import { TimeoutError as E2BTimeoutError } from "e2b";
 
 import { LucaFeatureDisabledError, isLucaEnabled } from "./env";
 import logger from "../../logger";
@@ -170,9 +174,41 @@ export class E2BPyodideRunner implements PyodideRunner {
         requestTimeoutMs: Math.max(30_000, timeoutMs + 5_000),
       });
     } catch (err) {
-      // Network / sandbox-creation / setTimeout errors all land here. This
-      // is infrastructure failure, NOT user-code failure — mock runner
-      // throws in this case too. Tool-handler maps to
+      // Day-3 fix: E2B surfaces code-timeout by THROWING `TimeoutError`,
+      // NOT by returning an Execution with `error.name="TimeoutError"`.
+      // The in-Execution form is reserved for the Jupyter kernel's own
+      // soft timeouts, which are rare. We catch both paths here and map
+      // to `status: "timeout"` so Luca sees the expected terminal state
+      // instead of `run_code_infrastructure_error`.
+      //
+      // Matching strategy (defense-in-depth):
+      //   1. `instanceof TimeoutError` — canonical, works when E2B exports
+      //      the class on the runtime path we're using.
+      //   2. `err.name === "TimeoutError"` — survives class-identity
+      //      mismatches across bundled/nested copies of `e2b`.
+      //   3. Substring check on the message — final safety net for
+      //      wrapped / re-thrown cases (`Execution timed out`, `timed out`).
+      //
+      // Any other throw is still re-raised as infrastructure failure.
+      const elapsedMsOnThrow = Date.now() - start;
+      const msg = err instanceof Error ? err.message : String(err);
+      const name = err instanceof Error ? err.name : "";
+      const isTimeout =
+        err instanceof E2BTimeoutError ||
+        name === "TimeoutError" ||
+        /timed out|execution time exceeded|deadline exceeded/i.test(msg);
+      if (isTimeout) {
+        return {
+          status: "timeout",
+          stdout: "",
+          stderr: "",
+          plots: [],
+          elapsedMs: elapsedMsOnThrow,
+          errorDetail: `run_code_timeout: exceeded ${timeoutMs}ms (${msg})`,
+        };
+      }
+      // Network / sandbox-creation / setTimeout errors land here. Mock
+      // runner throws in this case too. Tool-handler maps to
       // `run_code_infrastructure_error`.
       throw err;
     }
