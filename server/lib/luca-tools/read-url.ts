@@ -66,6 +66,7 @@ import {
   LucaFeatureDisabledError,
 } from "../luca/env";
 import { isPrivateOrLoopbackHost } from "./analyze-image";
+import { getToolTrustLevel, type TrustLevel } from "./trust-policy";
 import type { SandboxKey } from "../luca/pyodide-runner";
 import logger from "../../logger";
 
@@ -687,6 +688,13 @@ export async function fetchUrlWithRedirects(
 export interface ReadUrlToolResult {
   status: "ok" | "error" | "timeout" | "disabled";
   content: string;
+  /**
+   * Day 5 TOOL_TRUST_POLICY: always `"UNTRUSTED"` for read_url — page
+   * content is attacker-controlled by construction. Present on every
+   * result regardless of status so downstream code never has to
+   * conditionally check.
+   */
+  trust_level: TrustLevel;
   final_url?: string;
   media_type?: string;
   bytes_read?: number;
@@ -713,11 +721,14 @@ export async function readUrlHandler(
   ctx: ReadUrlContext,
   deps: ReadUrlDeps = {},
 ): Promise<ReadUrlToolResult> {
+  const trustLevel = getToolTrustLevel("luca_read_url");
+
   // Three-level flag check first — no tool_runs row if tool shouldn't exist.
   if (!isLucaToolEnabled("LUCA_TOOL_READ_URL_ENABLED")) {
     return {
       status: "disabled",
       content: "",
+      trust_level: trustLevel,
       error: "luca_feature_disabled: read_url tool is not enabled",
     };
   }
@@ -730,6 +741,7 @@ export async function readUrlHandler(
     return {
       status: "error",
       content: "",
+      trust_level: trustLevel,
       error: ssrf.reason ?? "read_url.ssrf: URL rejected",
     };
   }
@@ -790,7 +802,7 @@ export async function readUrlHandler(
         "[luca.readUrl] failed to insert terminal tool_runs row after fetch fail",
       );
     }
-    return { status, content: "", error: msg };
+    return { status, content: "", trust_level: trustLevel, error: msg };
   }
 
   // Compact + truncate.
@@ -821,6 +833,7 @@ export async function readUrlHandler(
   return {
     status: "ok",
     content,
+    trust_level: trustLevel,
     final_url: fetched.finalUrl,
     media_type: fetched.mediaType,
     bytes_read: fetched.bytesRead,

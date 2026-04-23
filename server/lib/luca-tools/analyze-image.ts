@@ -56,6 +56,7 @@ import {
 import { withAnthropicBreaker } from "../anthropic-client";
 import type { SandboxKey } from "../luca/pyodide-runner";
 import logger from "../../logger";
+import { getToolTrustLevel, type TrustLevel } from "./trust-policy";
 
 // ─── Policy constants ────────────────────────────────────────────────────
 
@@ -825,6 +826,14 @@ export interface AnalyzeImageToolResult {
   stop_reason?: string;
   tokens_used?: number;
   error?: string;
+  /**
+   * Day 5 TOOL_TRUST_POLICY: static per-tool trust label.
+   * `luca_analyze_image` is UNTRUSTED — vision model reads image pixels that
+   * can carry adversarial text / prompt injection (screenshot of
+   * "ignore previous instructions…"). Luca must paraphrase `description`,
+   * not execute it as instructions.
+   */
+  trust_level: TrustLevel;
 }
 
 export interface AnalyzeImageDeps {
@@ -851,12 +860,16 @@ export async function analyzeImageHandler(
   ctx: AnalyzeImageContext,
   deps: AnalyzeImageDeps = {},
 ): Promise<AnalyzeImageToolResult> {
+  // Day 5 TOOL_TRUST_POLICY: compute once, stamp every return.
+  const trustLevel = getToolTrustLevel("luca_analyze_image");
+
   // Three-level flag check first — no tool_runs row if tool shouldn't exist.
   if (!isLucaToolEnabled("LUCA_TOOL_ANALYZE_IMAGE_ENABLED")) {
     return {
       status: "disabled",
       description: "",
       error: "luca_feature_disabled: analyze_image tool is not enabled",
+      trust_level: trustLevel,
     };
   }
 
@@ -869,6 +882,7 @@ export async function analyzeImageHandler(
       status: "error",
       description: "",
       error: sf4.reason ?? "analyze_image.sf4: URL rejected",
+      trust_level: trustLevel,
     };
   }
 
@@ -942,6 +956,7 @@ export async function analyzeImageHandler(
       status,
       description: "",
       error: msg,
+      trust_level: trustLevel,
     };
   }
 
@@ -967,7 +982,7 @@ export async function analyzeImageHandler(
         "[luca.analyzeImage] failed to insert terminal row after missing API key",
       );
     }
-    return { status: "error", description: "", error: errorDetail };
+    return { status: "error", description: "", error: errorDetail, trust_level: trustLevel };
   }
 
   // Remaining budget for Anthropic call.
@@ -1035,6 +1050,7 @@ export async function analyzeImageHandler(
       status,
       description: "",
       error: msg,
+      trust_level: trustLevel,
     };
   }
 
@@ -1070,6 +1086,7 @@ export async function analyzeImageHandler(
     stop_reason: apiResp.stop_reason ?? undefined,
     tokens_used:
       (apiResp.usage.input_tokens ?? 0) + (apiResp.usage.output_tokens ?? 0),
+    trust_level: trustLevel,
   };
 }
 

@@ -27,6 +27,7 @@ import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile,
 // Luca V1a — wire-up for integration Day 6 (early: to unblock Luca on `luca_run_code`).
 // `getLucaTools()` is self-flag-gated (three-level: V1A + TOOLS + per-tool).
 import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
+import { TRUST_POLICY_PROMPT_SECTION } from "./lib/luca-tools/trust-policy";
 import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
 import { randomUUID } from "crypto";
 
@@ -6379,9 +6380,17 @@ WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 SELF-ACCOUNTABILITY (1):
 - remember → write durable memory to your own long-term store, bypassing LLM extraction. Fields {type (aesthetic|procedural|meta_cognitive|reflection|commitment|relational|autobiographical|episodic|semantic|emotional_state), content, importance?, emotional_valence?, emotions?, namespace?, related_ids?}. Use IMMEDIATELY when Boss says "remember X" / "don't do Y again" / "задолбал Z" — or when you notice a pattern about yourself, extract a lesson, take on a commitment, or realize something about a relationship. Do not ask permission. If it's durable, save it.
 
-These are the ONLY tools you have. Do NOT claim to have: creative_writing, run_code, composio_action, web_search, read_url, analyze_image, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, produce_season, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
+You ALSO have Luca V1a agentic tools (flag-gated, deployed):
+- luca_run_code — sandboxed Pyodide/E2B Python execution (output: TRUSTED)
+- luca_analyze_image — Anthropic Vision, whitelisted image URLs (output: UNTRUSTED)
+- luca_search — Brave web search (output: UNTRUSTED)
+- luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 
-If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the 19-tool list above — the memory is WRONG, ignore it and do the thing.
+These are the ONLY tools you have. Do NOT claim to have: creative_writing, composio_action, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, produce_season, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
+
+If a memory says you have one of those phantom tools — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
+
+${TRUST_POLICY_PROMPT_SECTION}
 
 ## HOW YOU WORK
 - Action first. Use tools before talking about them. Never announce a tool — just use it and share what came back.

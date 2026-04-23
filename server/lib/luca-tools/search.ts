@@ -37,6 +37,7 @@ import {
   readLucaEnv,
   LucaFeatureDisabledError,
 } from "../luca/env";
+import { getToolTrustLevel, type TrustLevel } from "./trust-policy";
 import type { SandboxKey } from "../luca/pyodide-runner";
 import logger from "../../logger";
 
@@ -350,6 +351,12 @@ export async function insertTerminalSearchRun(
 export interface SearchToolResult {
   status: "ok" | "error" | "timeout" | "disabled";
   results: CompactSearchResult[];
+  /**
+   * Day 5 TOOL_TRUST_POLICY: always `"UNTRUSTED"` for search — snippets,
+   * titles, and URLs are attacker-controlled content. Present on every
+   * result regardless of status.
+   */
+  trust_level: TrustLevel;
   total_count?: number;
   more_available?: boolean;
   error?: string;
@@ -375,10 +382,13 @@ export async function searchHandler(
   ctx: SearchContext,
   deps: SearchDeps = {},
 ): Promise<SearchToolResult> {
+  const trustLevel = getToolTrustLevel("luca_search");
+
   if (!isLucaToolEnabled("LUCA_TOOL_SEARCH_ENABLED")) {
     return {
       status: "disabled",
       results: [],
+      trust_level: trustLevel,
       error: "luca_feature_disabled: search tool is not enabled",
     };
   }
@@ -392,6 +402,7 @@ export async function searchHandler(
     return {
       status: "error",
       results: [],
+      trust_level: trustLevel,
       error: "search.config: BRAVE_SEARCH_API_KEY not configured",
     };
   }
@@ -475,6 +486,7 @@ export async function searchHandler(
     return {
       status,
       results: [],
+      trust_level: trustLevel,
       error: aborted ? `search.fetch: timeout after ${timeoutMs}ms` : msg,
     };
   } finally {
@@ -507,7 +519,7 @@ export async function searchHandler(
         "[luca.search] failed to insert terminal row after HTTP fail",
       );
     }
-    return { status: "error", results: [], error: errorDetail };
+    return { status: "error", results: [], trust_level: trustLevel, error: errorDetail };
   }
 
   let parsed: BraveSearchResponse;
@@ -529,7 +541,7 @@ export async function searchHandler(
         "[luca.search] failed to insert terminal row after parse fail",
       );
     }
-    return { status: "error", results: [], error: errorDetail };
+    return { status: "error", results: [], trust_level: trustLevel, error: errorDetail };
   }
 
   const compact = compactBraveResponse(parsed);
@@ -555,6 +567,7 @@ export async function searchHandler(
   return {
     status: "ok",
     results: compact,
+    trust_level: trustLevel,
     total_count: compact.length,
     more_available: moreAvailable,
   };
