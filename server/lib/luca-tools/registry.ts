@@ -23,6 +23,11 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { isLucaToolEnabled } from "../luca/env";
 import { runCodeTool, runCodeHandler, type RunCodeContext } from "./run-code";
+import {
+  analyzeImageTool,
+  analyzeImageHandler,
+  type AnalyzeImageContext,
+} from "./analyze-image";
 
 // ─── Registry ────────────────────────────────────────────────────────────
 
@@ -38,7 +43,7 @@ interface LucaToolEntry {
 
 const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
   { spec: runCodeTool, flag: "LUCA_TOOL_RUN_CODE_ENABLED" },
-  // Day 3: { spec: analyzeImageTool, flag: "LUCA_TOOL_ANALYZE_IMAGE_ENABLED" },
+  { spec: analyzeImageTool, flag: "LUCA_TOOL_ANALYZE_IMAGE_ENABLED" },
   // Day 4: { spec: searchTool, flag: "LUCA_TOOL_SEARCH_ENABLED" },
   // Day 5: read_memory, write_memory, read_file, upload_file
 ];
@@ -74,12 +79,14 @@ export function getLucaTools(): Anthropic.Messages.Tool[] {
 export async function dispatchLucaTool(
   toolName: string,
   toolInput: unknown,
-  ctx: RunCodeContext,
+  ctx: RunCodeContext & AnalyzeImageContext,
 ): Promise<unknown> {
   switch (toolName) {
     case "luca_run_code":
       return runCodeHandler(toolInput, ctx);
-    // Day 3-5: analyze_image, web_search, read_url, memory, files
+    case "luca_analyze_image":
+      return analyzeImageHandler(toolInput, ctx);
+    // Day 4-5: web_search, read_url, memory, files
     default:
       throw new Error(`luca_tool_not_found: ${toolName}`);
   }
