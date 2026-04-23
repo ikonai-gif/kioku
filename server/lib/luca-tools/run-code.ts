@@ -144,10 +144,14 @@ export function parseRunCodeInput(raw: unknown): RunCodeToolInput {
 /**
  * SF3: code_sha = sha256(code + JSON.stringify(inputs ?? {})).
  *
- * V1 `inputs` is always undefined. `JSON.stringify(undefined)` returns the
- * JS string `"undefined"` (NOT undefined) — we preserve that behavior
- * explicitly so V2 file_upload can pass `inputs` without breaking V1
- * retry-grouping semantics.
+ * V1 `inputs` is always undefined. Nullish coalesce `?? {}` converts it to
+ * the empty object, so JSON.stringify returns the JS string `"{}"`. V2
+ * `luca_upload_file` will pass real `inputs` (file metadata) and get its
+ * own distinct sha. Audit pass-3 D21: collision-resistant because
+ * JSON.stringify(object|array) always starts with `{` or `[` — a
+ * malicious `code` ending with a valid JSON literal cannot silently
+ * merge with a non-empty inputs object because inputs-stringified length
+ * is always ≥ 2 and starts with `{`/`[`, preventing boundary ambiguity.
  */
 export function computeCodeSha(
   code: string,
