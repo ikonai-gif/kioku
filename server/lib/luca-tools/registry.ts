@@ -33,6 +33,11 @@ import {
   searchHandler,
   type SearchContext,
 } from "./search";
+import {
+  readUrlTool,
+  readUrlHandler,
+  type ReadUrlContext,
+} from "./read-url";
 
 // ─── Registry ────────────────────────────────────────────────────────────
 
@@ -50,7 +55,8 @@ const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
   { spec: runCodeTool, flag: "LUCA_TOOL_RUN_CODE_ENABLED" },
   { spec: analyzeImageTool, flag: "LUCA_TOOL_ANALYZE_IMAGE_ENABLED" },
   { spec: searchTool, flag: "LUCA_TOOL_SEARCH_ENABLED" },
-  // Day 5: read_memory, write_memory, read_file, upload_file
+  { spec: readUrlTool, flag: "LUCA_TOOL_READ_URL_ENABLED" },
+  // Day 5+: read_memory, write_memory, read_file, upload_file
 ];
 
 /**
@@ -84,7 +90,7 @@ export function getLucaTools(): Anthropic.Messages.Tool[] {
 export async function dispatchLucaTool(
   toolName: string,
   toolInput: unknown,
-  ctx: RunCodeContext & AnalyzeImageContext & SearchContext,
+  ctx: RunCodeContext & AnalyzeImageContext & SearchContext & ReadUrlContext,
 ): Promise<unknown> {
   switch (toolName) {
     case "luca_run_code":
@@ -93,7 +99,9 @@ export async function dispatchLucaTool(
       return analyzeImageHandler(toolInput, ctx);
     case "luca_search":
       return searchHandler(toolInput, ctx);
-    // Day 5: read_url, memory, files
+    case "luca_read_url":
+      return readUrlHandler(toolInput, ctx);
+    // Day 5+: memory, files
     default:
       throw new Error(`luca_tool_not_found: ${toolName}`);
   }
