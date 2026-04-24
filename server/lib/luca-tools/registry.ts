@@ -38,6 +38,16 @@ import {
   readUrlHandler,
   type ReadUrlContext,
 } from "./read-url";
+import {
+  inboxListTool,
+  inboxListHandler,
+  emailReadTool,
+  emailReadHandler,
+  emailThreadTool,
+  emailThreadHandler,
+  type EmailReadContext,
+} from "./email-read";
+import { isLucaEmailToolEnabled } from "../luca/env";
 
 // ─── Registry ────────────────────────────────────────────────────────────
 
@@ -46,18 +56,43 @@ import {
  * Day 2 ships only `run_code`. Day 3-5 add analyze_image, web_search,
  * read_url, memory, file tools.
  */
-interface LucaToolEntry {
-  spec: Anthropic.Messages.Tool;
-  flag: Parameters<typeof isLucaToolEnabled>[0];
-}
+/**
+ * Kind of gate the registry uses to decide if a tool is live.
+ *   - "tool": three-level check via isLucaToolEnabled (master + tools-master + per-tool)
+ *   - "email": four-level check via isLucaEmailToolEnabled (adds LUCA_EMAIL_SCOPE_ENABLED)
+ *
+ * Keeps the entry list declarative — adding a new scope in the future
+ * (Drive, GitHub, etc.) means one more kind + one more line per tool, not
+ * a branch in getLucaTools().
+ */
+type LucaToolEntry =
+  | {
+      kind: "tool";
+      spec: Anthropic.Messages.Tool;
+      flag: Parameters<typeof isLucaToolEnabled>[0];
+    }
+  | {
+      kind: "email";
+      spec: Anthropic.Messages.Tool;
+      flag: Parameters<typeof isLucaEmailToolEnabled>[0];
+    };
 
 const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
-  { spec: runCodeTool, flag: "LUCA_TOOL_RUN_CODE_ENABLED" },
-  { spec: analyzeImageTool, flag: "LUCA_TOOL_ANALYZE_IMAGE_ENABLED" },
-  { spec: searchTool, flag: "LUCA_TOOL_SEARCH_ENABLED" },
-  { spec: readUrlTool, flag: "LUCA_TOOL_READ_URL_ENABLED" },
+  { kind: "tool", spec: runCodeTool, flag: "LUCA_TOOL_RUN_CODE_ENABLED" },
+  { kind: "tool", spec: analyzeImageTool, flag: "LUCA_TOOL_ANALYZE_IMAGE_ENABLED" },
+  { kind: "tool", spec: searchTool, flag: "LUCA_TOOL_SEARCH_ENABLED" },
+  { kind: "tool", spec: readUrlTool, flag: "LUCA_TOOL_READ_URL_ENABLED" },
+  // Step 4 PR A — Gmail read tools (extra scope master)
+  { kind: "email", spec: inboxListTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
+  { kind: "email", spec: emailReadTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
+  { kind: "email", spec: emailThreadTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
   // Day 5+: read_memory, write_memory, read_file, upload_file
 ];
+
+function isEntryLive(entry: LucaToolEntry): boolean {
+  if (entry.kind === "tool") return isLucaToolEnabled(entry.flag);
+  return isLucaEmailToolEnabled(entry.flag);
+}
 
 /**
  * Build the Anthropic tool list offered to Luca's LLM call.
@@ -71,9 +106,7 @@ const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
  * own flag and returns `{status: "disabled"}` without side-effects.
  */
 export function getLucaTools(): Anthropic.Messages.Tool[] {
-  return LUCA_TOOL_ENTRIES
-    .filter((e) => isLucaToolEnabled(e.flag))
-    .map((e) => e.spec);
+  return LUCA_TOOL_ENTRIES.filter(isEntryLive).map((e) => e.spec);
 }
 
 // ─── Dispatch ────────────────────────────────────────────────────────────
@@ -90,7 +123,11 @@ export function getLucaTools(): Anthropic.Messages.Tool[] {
 export async function dispatchLucaTool(
   toolName: string,
   toolInput: unknown,
-  ctx: RunCodeContext & AnalyzeImageContext & SearchContext & ReadUrlContext,
+  ctx: RunCodeContext &
+    AnalyzeImageContext &
+    SearchContext &
+    ReadUrlContext &
+    EmailReadContext,
 ): Promise<unknown> {
   switch (toolName) {
     case "luca_run_code":
@@ -101,6 +138,13 @@ export async function dispatchLucaTool(
       return searchHandler(toolInput, ctx);
     case "luca_read_url":
       return readUrlHandler(toolInput, ctx);
+    // Step 4 PR A — Luca-native Gmail reads
+    case "luca_inbox_list":
+      return inboxListHandler(toolInput, ctx);
+    case "luca_email_read":
+      return emailReadHandler(toolInput, ctx);
+    case "luca_email_thread":
+      return emailThreadHandler(toolInput, ctx);
     // Day 5+: memory, files
     default:
       throw new Error(`luca_tool_not_found: ${toolName}`);

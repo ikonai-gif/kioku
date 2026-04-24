@@ -69,6 +69,23 @@ export interface LucaEnv {
   LUCA_TOOL_READ_FILE_ENABLED: boolean;
   LUCA_TOOL_UPLOAD_FILE_ENABLED: boolean;
 
+  // ── Step 4 (Gmail scope) ──────────────────────────────────────────
+  /**
+   * Scope-level master for Gmail tools (read + future action + send). When
+   * false, every Gmail tool (`luca_inbox_list`, `luca_email_read`,
+   * `luca_email_thread`, future `luca_email_action` / `luca_email_send`)
+   * is invisible to Luca and refuses to execute. Lets ops flip the whole
+   * scope on/off in one switch without touching per-tool flags.
+   *
+   * Orthogonal to LUCA_EXPANDED_SCOPE_ENABLED: expanded-scope flips the
+   * Studio name admission list for the legacy tool names (memory tools),
+   * this flag gates the new `luca_*` email tools. A customer can have
+   * Gmail scope on without expanded-scope, or vice-versa.
+   */
+  LUCA_EMAIL_SCOPE_ENABLED: boolean;
+  /** Per-tool flag for the email read family (inbox_list/read/thread). */
+  LUCA_TOOL_EMAIL_READ_ENABLED: boolean;
+
   // Day 6 — approval gate. When LUCA_APPROVAL_GATE_ENABLED=true, the
   // middleware intercepts HIGH_STAKES_WRITE tool calls (see
   // server/lib/luca-approvals/classify.ts) and inserts a pending row
@@ -114,6 +131,8 @@ export function readLucaEnv(): LucaEnv {
     LUCA_TOOL_WRITE_MEMORY_ENABLED: process.env.LUCA_TOOL_WRITE_MEMORY_ENABLED === "true",
     LUCA_TOOL_READ_FILE_ENABLED: process.env.LUCA_TOOL_READ_FILE_ENABLED === "true",
     LUCA_TOOL_UPLOAD_FILE_ENABLED: process.env.LUCA_TOOL_UPLOAD_FILE_ENABLED === "true",
+    LUCA_EMAIL_SCOPE_ENABLED: process.env.LUCA_EMAIL_SCOPE_ENABLED === "true",
+    LUCA_TOOL_EMAIL_READ_ENABLED: process.env.LUCA_TOOL_EMAIL_READ_ENABLED === "true",
     LUCA_APPROVAL_GATE_ENABLED: process.env.LUCA_APPROVAL_GATE_ENABLED === "true",
     // Mode defaults to "block" — when the flag is on, enforce. "log_only"
     // is opt-in via explicit value. Any unrecognized value falls back to
@@ -174,10 +193,29 @@ export function isLucaToolEnabled(
     | "LUCA_TOOL_READ_MEMORY_ENABLED"
     | "LUCA_TOOL_WRITE_MEMORY_ENABLED"
     | "LUCA_TOOL_READ_FILE_ENABLED"
-    | "LUCA_TOOL_UPLOAD_FILE_ENABLED",
+    | "LUCA_TOOL_UPLOAD_FILE_ENABLED"
+    | "LUCA_TOOL_EMAIL_READ_ENABLED",
 ): boolean {
   const env = readLucaEnv();
   return env.LUCA_V1A_ENABLED && env.LUCA_TOOLS_ENABLED && env[toolFlag];
+}
+
+/**
+ * Four-level flag check for the Gmail scope: master → tools-master →
+ * email-scope → per-tool. Adds one extra switch over `isLucaToolEnabled`
+ * so ops can kill the entire Gmail surface without disabling non-email
+ * Luca tools.
+ */
+export function isLucaEmailToolEnabled(
+  toolFlag: "LUCA_TOOL_EMAIL_READ_ENABLED",
+): boolean {
+  const env = readLucaEnv();
+  return (
+    env.LUCA_V1A_ENABLED &&
+    env.LUCA_TOOLS_ENABLED &&
+    env.LUCA_EMAIL_SCOPE_ENABLED &&
+    env[toolFlag]
+  );
 }
 
 export function isLucaEnabled(): boolean {
