@@ -12,6 +12,7 @@ import {
 } from "./ws";
 import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, abortRoomTurn, isRoomTurnActive, getPartnerToolsForAgent, getLucaStudioToolNames } from "./deliberation";
 import { readLucaEnv } from "./lib/luca/env";
+import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
@@ -2705,63 +2706,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
     try {
-      // 1. Env-effective scope
-      const env = readLucaEnv();
-      // 2. Resolve Luca agent (partner in room 151, or by name)
-      const lucaAgent = { name: "Luca" as const };
-      const tools = getPartnerToolsForAgent(lucaAgent);
-      const studioNames = Array.from(getLucaStudioToolNames());
-      const v1aNames = tools
-        .map(t => t.name)
-        .filter(n => n.startsWith("luca_"));
-      // 3. Observed-firing window: tools that actually fired in room 151
-      //    in the last 24 hours (ground truth from tool_activity_log).
-      const since = Date.now() - 24 * 60 * 60 * 1000;
-      const firedR = await pool.query(
-        `SELECT tool, COUNT(*)::int AS fire_count,
-                MAX(started_at) AS last_fired_at,
-                SUM(CASE WHEN status = 'done'  THEN 1 ELSE 0 END)::int AS done_count,
-                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::int AS error_count
-           FROM tool_activity_log
-          WHERE room_id = 151 AND started_at >= $1
-          GROUP BY tool
-          ORDER BY last_fired_at DESC`,
-        [since]
-      );
-      const observed = firedR.rows.map(r => ({
-        tool: r.tool,
-        fire_count: r.fire_count,
-        done_count: r.done_count,
-        error_count: r.error_count,
-        last_fired_at: Number(r.last_fired_at),
-      }));
-      const observedSet = new Set(observed.map(o => o.tool));
-      // 4. Build truth table: schema-advertised vs observed-firing
-      const schemaNames = tools.map(t => t.name);
-      const truthTable = schemaNames.map(name => ({
-        tool: name,
-        category: name.startsWith("luca_") ? "v1a" : "base",
-        in_schema: true,
-        observed_firing_24h: observedSet.has(name),
-        observed: observed.find(o => o.tool === name) ?? null,
-      }));
-      res.json({
-        generated_at: new Date().toISOString(),
-        env_flags: {
-          LUCA_V1A_ENABLED: !!env.LUCA_V1A_ENABLED,
-          LUCA_EXPANDED_SCOPE_ENABLED: !!env.LUCA_EXPANDED_SCOPE_ENABLED,
-          LUCA_APPROVAL_GATE_ENABLED: !!env.LUCA_APPROVAL_GATE_ENABLED,
-          LUCA_APPROVAL_GATE_MODE: env.LUCA_APPROVAL_GATE_MODE ?? null,
-        },
-        scope_summary: {
-          schema_total: schemaNames.length,
-          studio_base: studioNames.length,
-          v1a: v1aNames.length,
-          observed_firing_24h: observed.length,
-        },
-        truth_table: truthTable,
-        observed_firing_24h: observed,
-      });
+      // Delegated to the pure collector so the scheduler jobs see the
+      // exact same shape the admin endpoint does. roomId/windowMs can be
+      // overridden via querystring for debugging.
+      const roomId = req.query.roomId ? Number(req.query.roomId) : undefined;
+      const windowMs = req.query.windowMs ? Number(req.query.windowMs) : undefined;
+      const truth = await collectCapabilitiesTruth({ roomId, windowMs });
+      res.json(truth);
     } catch (e: any) {
       logger.error({ component: "admin", event: "luca_capabilities_failed", err: e?.message }, "[admin] luca-capabilities failed");
       res.status(500).json({ error: e?.message || "capabilities query failed" });
