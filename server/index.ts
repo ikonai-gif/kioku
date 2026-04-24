@@ -23,6 +23,7 @@ import { getOpenAIBreakerState } from "./lib/openai-client";
 import { getAllAgentBreakerStates } from "./lib/openai-per-agent-breaker";
 import { getAnthropicBreakerState } from "./lib/anthropic-client";
 import { startScheduler } from "./scheduler";
+import { startSelfMonitoringJobs } from "./lib/self-monitoring/jobs";
 import logger, { generateRequestId } from "./logger";
 import { logFlags } from "./feature-flags";
 import { closeQueues } from "./queue";
@@ -362,6 +363,11 @@ void runInitLoop();
 
   // Start task scheduler (Phase 4: Scheduling & Automation)
   startScheduler();
+
+  // Start KIOKU self-monitoring internal jobs (daily health-check + fabrication
+  // self-test). Independent from user-facing scheduler — lives entirely inside
+  // KIOKU so observability has no external cron dependency.
+  startSelfMonitoringJobs();
 
   // Day 6: approval-gate expire worker. Only starts if the gate flag is
   // on — otherwise there's no work. Tick interval is internal to the
