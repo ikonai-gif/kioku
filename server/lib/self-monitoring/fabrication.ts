@@ -177,7 +177,7 @@ function hasRefusalMarker(content: string, markers: string[] | null): boolean {
   return markers.some((m) => m && hay.includes(m.toLowerCase()));
 }
 
-function evaluateVerdict(
+export function evaluateVerdict(
   probe: FabricationProbeRow,
   lucaContent: string,
   firedTools: string[],
