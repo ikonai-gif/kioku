@@ -71,9 +71,33 @@ export function isDue(job: InternalJob, now: Date): boolean {
   );
 }
 
+/**
+ * In-process guard to suppress duplicate "firing" log lines within the
+ * two-minute isDue window (target minute + following minute). DB-level
+ * dedup still runs — this is purely log-noise mitigation per BRO1 N-1.
+ * Key: `${job_id}:${YYYY-MM-DD}` in UTC; cleared when the day changes.
+ */
+const firedToday = new Set<string>();
+let firedTodayDay: string | null = null;
+
+function fireKey(jobId: string, now: Date): string {
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(now.getUTCDate()).padStart(2, "0");
+  const day = `${y}-${m}-${d}`;
+  if (firedTodayDay !== day) {
+    firedToday.clear();
+    firedTodayDay = day;
+  }
+  return `${jobId}:${day}`;
+}
+
 export async function tick(now: Date = new Date()): Promise<void> {
   for (const job of JOBS) {
     if (!isDue(job, now)) continue;
+    const key = fireKey(job.id, now);
+    if (firedToday.has(key)) continue;
+    firedToday.add(key);
     logger.info(
       { component: "jobs", job_id: job.id, utc: now.toISOString() },
       `[jobs] firing ${job.id}`,
@@ -116,4 +140,12 @@ export function startJobScheduler(): void {
 }
 
 // For tests.
-export const __test__ = { JOBS, isDue, tick };
+export const __test__ = {
+  JOBS,
+  isDue,
+  tick,
+  resetFiredToday: () => {
+    firedToday.clear();
+    firedTodayDay = null;
+  },
+};

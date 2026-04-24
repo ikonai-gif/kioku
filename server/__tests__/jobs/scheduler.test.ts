@@ -91,6 +91,7 @@ describe("jobs/scheduler · tick", () => {
   beforeEach(() => {
     savedJobs = sched.JOBS.splice(0, sched.JOBS.length);
     runWithClaimMock.mockReset();
+    sched.resetFiredToday();
   });
   afterEach(() => {
     sched.JOBS.splice(0, sched.JOBS.length, ...savedJobs);
@@ -165,6 +166,44 @@ describe("jobs/scheduler · tick", () => {
     });
     await sched.tick(new Date(Date.UTC(2026, 3, 24, 13, 0)));
     expect(notifyJobMock.mock.calls.length).toBe(0);
+  });
+
+  it("suppresses duplicate firings within the two-minute window", async () => {
+    // BRO1 N-1: with tick-window (minute and minute+1), a second tick
+    // landing inside the same window must NOT re-invoke runWithClaim.
+    let calls = 0;
+    runWithClaimMock.mockImplementation(async () => {
+      calls += 1;
+      return { ran: true, status: "ok", runId: calls, durationMs: 5 };
+    });
+    sched.JOBS.push({
+      id: "dup-guard-job",
+      utcHour: 13,
+      utcMinute: 0,
+      schedule: "daily",
+      run: async () => ({}),
+    });
+    await sched.tick(new Date(Date.UTC(2026, 3, 24, 13, 0))); // minute
+    await sched.tick(new Date(Date.UTC(2026, 3, 24, 13, 1))); // minute+1 — same window
+    expect(calls).toBe(1);
+  });
+
+  it("fires again the next UTC day", async () => {
+    let calls = 0;
+    runWithClaimMock.mockImplementation(async () => {
+      calls += 1;
+      return { ran: true, status: "ok", runId: calls, durationMs: 5 };
+    });
+    sched.JOBS.push({
+      id: "cross-day-job",
+      utcHour: 13,
+      utcMinute: 0,
+      schedule: "daily",
+      run: async () => ({}),
+    });
+    await sched.tick(new Date(Date.UTC(2026, 3, 24, 13, 0)));
+    await sched.tick(new Date(Date.UTC(2026, 3, 25, 13, 0))); // next day
+    expect(calls).toBe(2);
   });
 });
 
