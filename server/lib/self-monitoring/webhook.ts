@@ -48,24 +48,47 @@ function toSlackBody(p: AlertPayload): unknown {
   return { text: lines.join("\n") };
 }
 
+// Discord embed field limits (docs.discord.com):
+//   field.name  ≤ 256 chars
+//   field.value ≤ 1024 chars
+//   embed.title ≤ 256, description ≤ 4096, up to 25 fields.
+// BRO1 M-7: enforce explicitly; we had no slice() so any oversized drift
+// context would 400 silently.
+const DISCORD_FIELD_NAME_MAX = 256;
+const DISCORD_FIELD_VALUE_MAX = 1024;
+const DISCORD_TITLE_MAX = 256;
+const DISCORD_DESCRIPTION_MAX = 4096;
+const DISCORD_FIELDS_MAX = 25;
+
 function toDiscordBody(p: AlertPayload): unknown {
   const color =
     p.severity === "critical" ? 0xe74c3c :
     p.severity === "warn"     ? 0xf1c40f :
                                 0x3498db;
+  const title = `[KIOKU · ${p.severity.toUpperCase()}] ${p.title}`.slice(
+    0,
+    DISCORD_TITLE_MAX,
+  );
+  const description = String(p.detail ?? "").slice(0, DISCORD_DESCRIPTION_MAX);
+  const fields = p.context
+    ? Object.entries(p.context)
+        .slice(0, DISCORD_FIELDS_MAX)
+        .map(([name, value]) => ({
+          name: String(name).slice(0, DISCORD_FIELD_NAME_MAX),
+          value: ("```" + JSON.stringify(value) + "```").slice(
+            0,
+            DISCORD_FIELD_VALUE_MAX,
+          ),
+          inline: false,
+        }))
+    : [];
   return {
     embeds: [
       {
-        title: `[KIOKU · ${p.severity.toUpperCase()}] ${p.title}`,
-        description: p.detail,
+        title,
+        description,
         color,
-        fields: p.context
-          ? Object.entries(p.context).map(([name, value]) => ({
-              name,
-              value: "```" + JSON.stringify(value) + "```",
-              inline: false,
-            }))
-          : [],
+        fields,
         timestamp: new Date().toISOString(),
       },
     ],
@@ -131,8 +154,18 @@ export async function sendAlert(
     });
     if (!resp.ok) {
       const txt = await resp.text().catch(() => "");
+      // M-7: include probe/alert context so ops can correlate a non-2xx with
+      // which drift event tripped the webhook limit.
       logger.warn(
-        { component: "self-monitoring", event: "webhook_non_2xx", status: resp.status, body: txt.slice(0, 200) },
+        {
+          component: "self-monitoring",
+          event: "webhook_non_2xx",
+          status: resp.status,
+          body: txt.slice(0, 200),
+          format,
+          severity: payload.severity,
+          title: payload.title,
+        },
         "[self-monitoring] webhook returned non-2xx",
       );
       return { delivered: false, reason: "non_2xx", detail: `status=${resp.status}` };
@@ -140,7 +173,14 @@ export async function sendAlert(
     return { delivered: true, status: resp.status };
   } catch (err: any) {
     logger.warn(
-      { component: "self-monitoring", event: "webhook_network_error", err: err?.message },
+      {
+        component: "self-monitoring",
+        event: "webhook_network_error",
+        err: err?.message,
+        format,
+        severity: payload.severity,
+        title: payload.title,
+      },
       "[self-monitoring] webhook network error",
     );
     return { delivered: false, reason: "network_error", detail: err?.message };

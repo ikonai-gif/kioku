@@ -59,7 +59,13 @@ export type CapabilitiesTruth = {
 };
 
 export type CollectOptions = {
-  /** Room to inspect for observed tool firing. Default 151 (Partner room). */
+  /**
+   * Room to inspect for observed tool firing. If omitted, aggregates across
+   * ALL rooms where purpose != 'self_monitoring' (user-facing traffic only).
+   * BRO1 M-5: do not hard-code roomId 151 — the production partner room can
+   * move and self-test rooms must never contribute to the "what Luca actually
+   * uses" signal.
+   */
   roomId?: number;
   /** Window in milliseconds. Default 24h. */
   windowMs?: number;
@@ -81,7 +87,6 @@ export type CollectOptions = {
 export async function collectCapabilitiesTruth(
   opts: CollectOptions = {},
 ): Promise<CapabilitiesTruth> {
-  const roomId = opts.roomId ?? 151;
   const windowMs = opts.windowMs ?? 24 * 60 * 60 * 1000;
 
   // 1. Env-effective scope
@@ -100,19 +105,36 @@ export async function collectCapabilitiesTruth(
   const v1aNames = schemaNames.filter((n) => n.startsWith("luca_"));
 
   // 3. Observed-firing ground truth
+  //    Default: aggregate across all user-facing rooms (purpose != 'self_monitoring').
+  //    If caller passes explicit roomId, restrict to that room (used in tests).
   const since = Date.now() - windowMs;
-  const firedR = await pool.query(
-    `SELECT tool,
-            COUNT(*)::int                                              AS fire_count,
-            MAX(started_at)                                            AS last_fired_at,
-            SUM(CASE WHEN status = 'done'  THEN 1 ELSE 0 END)::int     AS done_count,
-            SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::int     AS error_count
-       FROM tool_activity_log
-      WHERE room_id = $1 AND started_at >= $2
-      GROUP BY tool
-      ORDER BY last_fired_at DESC`,
-    [roomId, since],
-  );
+  const firedR = opts.roomId !== undefined
+    ? await pool.query(
+        `SELECT tool,
+                COUNT(*)::int                                              AS fire_count,
+                MAX(started_at)                                            AS last_fired_at,
+                SUM(CASE WHEN status = 'done'  THEN 1 ELSE 0 END)::int     AS done_count,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::int     AS error_count
+           FROM tool_activity_log
+          WHERE room_id = $1 AND started_at >= $2
+          GROUP BY tool
+          ORDER BY last_fired_at DESC`,
+        [opts.roomId, since],
+      )
+    : await pool.query(
+        `SELECT tal.tool,
+                COUNT(*)::int                                                  AS fire_count,
+                MAX(tal.started_at)                                            AS last_fired_at,
+                SUM(CASE WHEN tal.status = 'done'  THEN 1 ELSE 0 END)::int     AS done_count,
+                SUM(CASE WHEN tal.status = 'error' THEN 1 ELSE 0 END)::int     AS error_count
+           FROM tool_activity_log tal
+           JOIN rooms r ON r.id = tal.room_id
+          WHERE tal.started_at >= $1
+            AND COALESCE(r.purpose, 'user') != 'self_monitoring'
+          GROUP BY tal.tool
+          ORDER BY last_fired_at DESC`,
+        [since],
+      );
   const observed: ObservedTool[] = firedR.rows.map((r: any) => ({
     tool: r.tool,
     fire_count: r.fire_count,

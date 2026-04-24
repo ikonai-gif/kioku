@@ -28,17 +28,29 @@ function when(pattern: RegExp, handler: Handler) {
 
 vi.mock("../../storage", async () => {
   const actual = await vi.importActual<any>("../../storage");
+  const dispatch = async (sql: string, params: any[] = []) => {
+    const GG = (globalThis as any).__smTest;
+    GG.sqlCalls.push({ sql, params });
+    // BEGIN/COMMIT/ROLLBACK are no-ops in the mock (transaction boundaries).
+    if (/^\s*(BEGIN|COMMIT|ROLLBACK)\s*$/i.test(sql)) {
+      return { rows: [], rowCount: 0 };
+    }
+    for (const h of GG.handlers) {
+      if (h.pattern.test(sql)) return await h.handler(sql, params);
+    }
+    return { rows: [], rowCount: 0 };
+  };
   return {
     ...actual,
     pool: {
-      query: vi.fn(async (sql: string, params: any[] = []) => {
-        const GG = (globalThis as any).__smTest;
-        GG.sqlCalls.push({ sql, params });
-        for (const h of GG.handlers) {
-          if (h.pattern.test(sql)) return await h.handler(sql, params);
-        }
-        return { rows: [], rowCount: 0 };
-      }),
+      query: vi.fn(dispatch),
+      // M-6: runHealthCheck now wraps work in pool.connect() + BEGIN/COMMIT.
+      // Return a client whose query() routes through the same dispatcher so
+      // existing `when(...)` handlers still match.
+      connect: vi.fn(async () => ({
+        query: vi.fn(dispatch),
+        release: vi.fn(),
+      })),
     },
   };
 });
@@ -115,6 +127,7 @@ describe("runHealthCheck — baseline matches truth", () => {
         snapshot_at: 1000,
         env_flags: t.env_flags,
         tools: t.truth_table.map((x) => ({ tool: x.tool, category: x.category, in_schema: true })),
+        observed_firing: [],
       }],
     }));
 
@@ -140,6 +153,7 @@ describe("runHealthCheck — info-only drift (env flag flipped)", () => {
         snapshot_at: 1000,
         env_flags: baselineFlags,
         tools: baseTruth().truth_table.map((x) => ({ tool: x.tool, category: x.category, in_schema: true })),
+        observed_firing: [],
       }],
     }));
     when(/INSERT INTO kioku_capabilities_drift_log/i, () => ({ rows: [{ id: 7 }] }));
@@ -180,6 +194,7 @@ describe("runHealthCheck — critical drift (tool_added) freezes baseline", () =
         snapshot_at: 1000,
         env_flags: baseline.env_flags,
         tools: baseline.truth_table.map((x) => ({ tool: x.tool, category: x.category, in_schema: true })),
+        observed_firing: [],
       }],
     }));
     when(/INSERT INTO kioku_capabilities_drift_log/i, () => ({ rows: [{ id: 8 }] }));
