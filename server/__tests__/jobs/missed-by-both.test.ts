@@ -135,6 +135,36 @@ describe("missed-by-both · runMissedByBothReview", () => {
     expect(notified[0].severity).toBe("critical");
   });
 
+  it("alerts critical on implicit path non-ENOENT error (EACCES / EISDIR)", async () => {
+    // BRO1 N1 on PR #69: silent fall-through is ONLY for ENOENT on the
+    // default cwd/docs path. Any other error (EACCES, EISDIR, …) must
+    // surface loudly even on the implicit path.
+    const { mkdtempSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmp = mkdtempSync(join(tmpdir(), "mbb-eisdir-"));
+    // Create docs/missed_by_both.md as a DIRECTORY — readFile will EISDIR.
+    mkdirSync(join(tmp, "docs"), { recursive: true });
+    mkdirSync(join(tmp, "docs", "missed_by_both.md"));
+    const origCwd = process.cwd();
+    try {
+      process.chdir(tmp);
+      const notified: any[] = [];
+      await expect(
+        runMissedByBothReview({
+          notify: async (p) => {
+            notified.push(p);
+            return { delivered: true, status: 204 };
+          },
+        }),
+      ).rejects.toThrow();
+      expect(notified).toHaveLength(1);
+      expect(notified[0].severity).toBe("critical");
+    } finally {
+      process.chdir(origCwd);
+    }
+  });
+
   it("falls back to inline snapshot when implicit cwd docs path misses (prod bundle)", async () => {
     // Step 3 follow-up: simulate production by chdir'ing to a dir where
     // docs/missed_by_both.md does NOT exist. Implicit miss should silently

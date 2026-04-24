@@ -166,13 +166,15 @@ export async function runMissedByBothReview(
     try {
       content = await fs.readFile(mdPath, "utf8");
     } catch (err: any) {
-      // If an explicit path was given and missed, that's operator error —
-      // surface it. Otherwise (implicit fallbackPath miss on prod), fall
-      // through to the inline snapshot silently.
-      if (explicitPath) {
+      // Silent fall-through ONLY for implicit ENOENT on the default cwd/docs
+      // path — that's the expected prod state. Anything else (explicit path,
+      // EACCES, EISDIR, …) is operator/env error — surface it loudly.
+      // BRO1 review N1 on PR #69.
+      const isImplicitMissing = !explicitPath && err?.code === "ENOENT";
+      if (!isImplicitMissing) {
         await notify({
           severity: "critical",
-          title: "Missed-by-both review — file not found",
+          title: "Missed-by-both review — file not readable",
           detail: `${err?.code ?? "error"}: ${err?.message ?? err}`,
           context: { mdPath },
         });
