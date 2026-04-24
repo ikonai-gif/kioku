@@ -2873,6 +2873,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: internal jobs (Step 3) ──────────────────────────────────────────
+  // Manual-trigger + status for the Step 3 job scheduler (daily-backup,
+  // missed-by-both annual review). Run-endpoint bypasses the day-claim so
+  // operators can re-run after fixing a failure; regular scheduled ticks
+  // respect the kioku_job_runs unique constraint.
+
+  app.get("/api/admin/jobs/status", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const r = await pool.query(
+        `SELECT job_id, utc_day, fired_at, finished_at, duration_ms, status, error, detail
+           FROM kioku_job_runs
+           ORDER BY fired_at DESC
+           LIMIT 50`,
+      );
+      res.json({ runs: r.rows });
+    } catch (e: any) {
+      logger.error({ source: "jobs", err: e?.message }, "[admin] jobs/status failed");
+      res.status(500).json({ error: e?.message || "status failed" });
+    }
+  }));
+
+  app.post("/api/admin/jobs/run-backup", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const { runDailyBackup } = await import("./lib/jobs/daily-backup");
+      const detail = await runDailyBackup();
+      res.json({ ok: true, detail });
+    } catch (e: any) {
+      logger.error({ source: "jobs", err: e?.message }, "[admin] run-backup failed");
+      res.status(500).json({ error: e?.message || "backup failed" });
+    }
+  }));
+
+  app.post("/api/admin/jobs/run-missed-by-both", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const { runMissedByBothReview } = await import("./lib/jobs/missed-by-both");
+      const result = await runMissedByBothReview();
+      res.json({ ok: true, result });
+    } catch (e: any) {
+      logger.error({ source: "jobs", err: e?.message }, "[admin] run-missed-by-both failed");
+      res.status(500).json({ error: e?.message || "missed-by-both failed" });
+    }
+  }));
+
   app.get("/api/admin/status", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
