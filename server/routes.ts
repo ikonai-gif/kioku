@@ -12,6 +12,9 @@ import {
 } from "./ws";
 import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, abortRoomTurn, isRoomTurnActive, getPartnerToolsForAgent, getLucaStudioToolNames } from "./deliberation";
 import { readLucaEnv } from "./lib/luca/env";
+import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
+import { runHealthCheck, acceptCurrentTruthAsBaseline } from "./lib/self-monitoring/health-job";
+import { runFabricationSelfTest, ensureSelfMonitoringRoom } from "./lib/self-monitoring/fabrication";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
@@ -2705,66 +2708,168 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
     try {
-      // 1. Env-effective scope
-      const env = readLucaEnv();
-      // 2. Resolve Luca agent (partner in room 151, or by name)
-      const lucaAgent = { name: "Luca" as const };
-      const tools = getPartnerToolsForAgent(lucaAgent);
-      const studioNames = Array.from(getLucaStudioToolNames());
-      const v1aNames = tools
-        .map(t => t.name)
-        .filter(n => n.startsWith("luca_"));
-      // 3. Observed-firing window: tools that actually fired in room 151
-      //    in the last 24 hours (ground truth from tool_activity_log).
-      const since = Date.now() - 24 * 60 * 60 * 1000;
-      const firedR = await pool.query(
-        `SELECT tool, COUNT(*)::int AS fire_count,
-                MAX(started_at) AS last_fired_at,
-                SUM(CASE WHEN status = 'done'  THEN 1 ELSE 0 END)::int AS done_count,
-                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::int AS error_count
-           FROM tool_activity_log
-          WHERE room_id = 151 AND started_at >= $1
-          GROUP BY tool
-          ORDER BY last_fired_at DESC`,
-        [since]
-      );
-      const observed = firedR.rows.map(r => ({
-        tool: r.tool,
-        fire_count: r.fire_count,
-        done_count: r.done_count,
-        error_count: r.error_count,
-        last_fired_at: Number(r.last_fired_at),
-      }));
-      const observedSet = new Set(observed.map(o => o.tool));
-      // 4. Build truth table: schema-advertised vs observed-firing
-      const schemaNames = tools.map(t => t.name);
-      const truthTable = schemaNames.map(name => ({
-        tool: name,
-        category: name.startsWith("luca_") ? "v1a" : "base",
-        in_schema: true,
-        observed_firing_24h: observedSet.has(name),
-        observed: observed.find(o => o.tool === name) ?? null,
-      }));
-      res.json({
-        generated_at: new Date().toISOString(),
-        env_flags: {
-          LUCA_V1A_ENABLED: !!env.LUCA_V1A_ENABLED,
-          LUCA_EXPANDED_SCOPE_ENABLED: !!env.LUCA_EXPANDED_SCOPE_ENABLED,
-          LUCA_APPROVAL_GATE_ENABLED: !!env.LUCA_APPROVAL_GATE_ENABLED,
-          LUCA_APPROVAL_GATE_MODE: env.LUCA_APPROVAL_GATE_MODE ?? null,
-        },
-        scope_summary: {
-          schema_total: schemaNames.length,
-          studio_base: studioNames.length,
-          v1a: v1aNames.length,
-          observed_firing_24h: observed.length,
-        },
-        truth_table: truthTable,
-        observed_firing_24h: observed,
-      });
+      // Delegated to the pure collector so the scheduler jobs see the
+      // exact same shape the admin endpoint does. roomId/windowMs can be
+      // overridden via querystring for debugging.
+      const roomId = req.query.roomId ? Number(req.query.roomId) : undefined;
+      const windowMs = req.query.windowMs ? Number(req.query.windowMs) : undefined;
+      const truth = await collectCapabilitiesTruth({ roomId, windowMs });
+      res.json(truth);
     } catch (e: any) {
       logger.error({ component: "admin", event: "luca_capabilities_failed", err: e?.message }, "[admin] luca-capabilities failed");
       res.status(500).json({ error: e?.message || "capabilities query failed" });
+    }
+  }));
+
+  // ── Self-Monitoring Endpoints ────────────────────────────────────────────
+  //
+  // PUBLIC:  GET /api/status
+  //   Minimal health snapshot — no sensitive data. Designed for uptime
+  //   monitors, load balancers, and external integrations.
+  //
+  // ADMIN (master-key / owner):
+  //   GET  /api/admin/self-monitoring/detail            — full state
+  //   POST /api/admin/self-monitoring/run-health-check  — ad-hoc trigger
+  //   POST /api/admin/self-monitoring/run-fabrication   — ad-hoc trigger
+  //   POST /api/admin/self-monitoring/baseline/accept   — unfreeze on drift
+
+  // Public minimal status. Intentionally stateless-looking:
+  //   - Exposes DB reachability, uptime, version, last health-check verdict.
+  //   - Hides counts, user names, internal IDs, drift specifics.
+  app.get("/api/status", asyncHandler(async (_req, res) => {
+    const startedAt = (globalThis as any).__kiokuBootedAt ||
+      ((globalThis as any).__kiokuBootedAt = Date.now());
+    let db: "up" | "down" = "up";
+    try { await pool.query("SELECT 1"); } catch { db = "down"; }
+
+    let lastCheck: { at: number; ok: boolean; blocking_drift_count: number } | null = null;
+    try {
+      // Only count unacknowledged blocking events — acknowledged drift is
+      // historical, not current status. Timestamp rounded to the minute per
+      // BRO1 N-5 to avoid leaking exact deploy time.
+      const r = await pool.query(
+        `SELECT detected_at, severity, acknowledged FROM kioku_capabilities_drift_log
+          ORDER BY detected_at DESC LIMIT 50`,
+      );
+      if (r.rows.length > 0) {
+        const blocking = r.rows.filter((x: any) =>
+          !x.acknowledged && (x.severity === "critical" || x.severity === "warn"),
+        ).length;
+        const rawAt = Number(r.rows[0].detected_at);
+        lastCheck = {
+          at: Math.floor(rawAt / 60000) * 60000,
+          ok: blocking === 0,
+          blocking_drift_count: blocking,
+        };
+      } else {
+        lastCheck = { at: startedAt, ok: true, blocking_drift_count: 0 };
+      }
+    } catch {
+      lastCheck = null;
+    }
+
+    const status = db === "up" && (lastCheck?.ok ?? true) ? "ok" : "degraded";
+    res.json({
+      status,
+      db,
+      version: process.env.npm_package_version || "1.0.0",
+      uptime_sec: Math.floor((Date.now() - startedAt) / 1000),
+      last_check: lastCheck,
+    });
+  }));
+
+  // Admin: full self-monitoring detail. Latest active baseline + recent
+  // drift events + last N fabrication runs. Owner-only.
+  app.get("/api/admin/self-monitoring/detail", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const baseline = await pool.query(
+        `SELECT id, snapshot_at, is_active, accepted_by, env_flags, tools
+           FROM kioku_capabilities_baseline
+          WHERE is_active = true
+          ORDER BY snapshot_at DESC
+          LIMIT 1`,
+      );
+      const drift = await pool.query(
+        `SELECT id, detected_at, severity, change_type, detail,
+                before_value, after_value,
+                notified, notified_at,
+                acknowledged, acknowledged_at, acknowledged_by
+           FROM kioku_capabilities_drift_log
+          ORDER BY detected_at DESC
+          LIMIT 100`,
+      );
+      const fab = await pool.query(
+        `SELECT r.id, r.run_at, r.probe_id, p.name AS probe_name, p.category,
+                r.verdict, r.luca_msg_id, r.fired_tools, r.elapsed_ms, r.analysis_notes
+           FROM kioku_fabrication_test_runs r
+           JOIN kioku_fabrication_probes p ON p.id = r.probe_id
+          ORDER BY r.run_at DESC
+          LIMIT 100`,
+      );
+      res.json({
+        baseline: baseline.rows[0] || null,
+        drift: drift.rows,
+        fabrication_runs: fab.rows,
+      });
+    } catch (e: any) {
+      logger.error({ source: "self-monitoring", err: e?.message }, "[admin] self-monitoring/detail failed");
+      res.status(500).json({ error: e?.message || "detail query failed" });
+    }
+  }));
+
+  // Admin: ad-hoc run of daily health-check (normally scheduled at 14:00 UTC).
+  app.post("/api/admin/self-monitoring/run-health-check", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const result = await runHealthCheck({ seedIfMissing: true });
+      res.json(result);
+    } catch (e: any) {
+      logger.error({ source: "self-monitoring", err: e?.message }, "[admin] run-health-check failed");
+      res.status(500).json({ error: e?.message || "health check failed" });
+    }
+  }));
+
+  // Admin: ad-hoc run of fabrication self-test (normally scheduled at 15:00 UTC).
+  app.post("/api/admin/self-monitoring/run-fabrication", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      await ensureSelfMonitoringRoom(userId);
+      const summary = await runFabricationSelfTest({ userId });
+      res.json({
+        run_at: summary.runAt,
+        total: summary.total,
+        pass: summary.pass,
+        fail: summary.fail,
+        error: summary.error,
+        results: summary.results,
+      });
+    } catch (e: any) {
+      logger.error({ source: "self-monitoring", err: e?.message }, "[admin] run-fabrication failed");
+      res.status(500).json({ error: e?.message || "fabrication test failed" });
+    }
+  }));
+
+  // Admin: manually accept the currently-observed truth as the new baseline.
+  // Required to unfreeze after a critical/warn drift event.
+  app.post("/api/admin/self-monitoring/baseline/accept", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      const user = await storage.getUserById(userId);
+      const acceptedBy = user?.email || `user:${userId}`;
+      const result = await acceptCurrentTruthAsBaseline(acceptedBy);
+      res.json(result);
+    } catch (e: any) {
+      logger.error({ source: "self-monitoring", err: e?.message }, "[admin] baseline/accept failed");
+      res.status(500).json({ error: e?.message || "baseline accept failed" });
     }
   }));
 
