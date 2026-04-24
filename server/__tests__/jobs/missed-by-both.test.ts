@@ -119,7 +119,8 @@ describe("missed-by-both · runMissedByBothReview", () => {
     expect((result.buckets as any[]).length).toBeGreaterThan(0);
   });
 
-  it("alerts critical if file cannot be read", async () => {
+  it("alerts critical if explicit file path cannot be read", async () => {
+    // Explicit path miss is operator error — must surface as critical.
     const notified: any[] = [];
     await expect(
       runMissedByBothReview({
@@ -132,5 +133,52 @@ describe("missed-by-both · runMissedByBothReview", () => {
     ).rejects.toThrow();
     expect(notified).toHaveLength(1);
     expect(notified[0].severity).toBe("critical");
+  });
+
+  it("falls back to inline snapshot when implicit cwd docs path misses (prod bundle)", async () => {
+    // Step 3 follow-up: simulate production by chdir'ing to a dir where
+    // docs/missed_by_both.md does NOT exist. Implicit miss should silently
+    // fall through to MISSED_BY_BOTH_CONTENT — no critical notify, no throw.
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const tmp = mkdtempSync(join(tmpdir(), "mbb-test-"));
+    const origCwd = process.cwd();
+    try {
+      process.chdir(tmp);
+      const notified: any[] = [];
+      const result = await runMissedByBothReview({
+        notify: async (p) => {
+          notified.push(p);
+          return { delivered: true, status: 204 };
+        },
+      });
+      expect(notified).toHaveLength(1);
+      expect(notified[0].severity).toBe("info");
+      expect(notified[0].title).toMatch(/annual review/);
+      // Inline content contains real entries — parse must find > 0.
+      expect((result.total as number)).toBeGreaterThan(0);
+    } finally {
+      process.chdir(origCwd);
+    }
+  });
+});
+
+describe("missed-by-both · inline content snapshot", () => {
+  it("inlined MISSED_BY_BOTH_CONTENT matches the canonical markdown on disk", async () => {
+    // Guard against drift: CI should fail if someone edits docs/ without
+    // rerunning scripts/gen-missed-by-both-content.mjs.
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { MISSED_BY_BOTH_CONTENT } = await import("../../lib/jobs/missed-by-both-content");
+    const diskPath = join(process.cwd(), "docs/missed_by_both.md");
+    let onDisk: string;
+    try {
+      onDisk = readFileSync(diskPath, "utf8");
+    } catch {
+      // Only enforce in environments where the markdown is checked out.
+      return;
+    }
+    expect(MISSED_BY_BOTH_CONTENT).toBe(onDisk);
   });
 });

@@ -20,6 +20,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { MISSED_BY_BOTH_CONTENT } from "./missed-by-both-content";
 import { notifyJob } from "./jobs-webhook";
 
 export const MISSED_BY_BOTH_JOB_ID = "missed-by-both-annual-review";
@@ -145,24 +146,39 @@ export async function runMissedByBothReview(
 ): Promise<Record<string, unknown>> {
   const notify = opts.notify ?? notifyJob;
 
+  // Precedence:
+  //   1. explicit mdContentOverride (tests)
+  //   2. explicit mdPathOverride (tests / ops)
+  //   3. MISSED_BY_BOTH_PATH env (ops)
+  //   4. docs/missed_by_both.md on disk (local dev)
+  //   5. MISSED_BY_BOTH_CONTENT inline snapshot (production bundle)
+  //
+  // Prod bundles (dist/index.cjs) don't ship docs/ next to them, so step 4
+  // will ENOENT on Railway — we fall through to the inline snapshot. That
+  // snapshot is kept in sync via scripts/gen-missed-by-both-content.mjs.
   let content: string;
   if (opts.mdContentOverride !== undefined) {
     content = opts.mdContentOverride;
   } else {
+    const explicitPath = opts.mdPathOverride ?? process.env.MISSED_BY_BOTH_PATH;
     const fallbackPath = path.resolve(process.cwd(), "docs/missed_by_both.md");
-    const mdPath = opts.mdPathOverride
-      ?? process.env.MISSED_BY_BOTH_PATH
-      ?? fallbackPath;
+    const mdPath = explicitPath ?? fallbackPath;
     try {
       content = await fs.readFile(mdPath, "utf8");
     } catch (err: any) {
-      await notify({
-        severity: "critical",
-        title: "Missed-by-both review — file not found",
-        detail: `${err?.code ?? "error"}: ${err?.message ?? err}`,
-        context: { mdPath },
-      });
-      throw err;
+      // If an explicit path was given and missed, that's operator error —
+      // surface it. Otherwise (implicit fallbackPath miss on prod), fall
+      // through to the inline snapshot silently.
+      if (explicitPath) {
+        await notify({
+          severity: "critical",
+          title: "Missed-by-both review — file not found",
+          detail: `${err?.code ?? "error"}: ${err?.message ?? err}`,
+          context: { mdPath },
+        });
+        throw err;
+      }
+      content = MISSED_BY_BOTH_CONTENT;
     }
   }
 
