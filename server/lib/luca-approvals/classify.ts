@@ -62,6 +62,10 @@ export type LucaAdmissibleTool =
   | "luca_analyze_image"
   | "luca_search"
   | "luca_read_url"
+  // Step 4 PR A — Luca-native Gmail read tools (READ_ONLY)
+  | "luca_inbox_list"
+  | "luca_email_read"
+  | "luca_email_thread"
   // Media (15)
   | "generate_image"
   | "generate_video"
@@ -127,6 +131,16 @@ export const TOOL_WRITE_CLASS = {
   luca_search:          "READ_ONLY",
   // SSRF-fenced URL reader. HTTP GET with defenses; no side-effects.
   luca_read_url:        "READ_ONLY",
+
+  // ─── Step 4 PR A — Luca-native Gmail reads ( READ_ONLY ) ──────────────
+  // Same class as the legacy `inbox_list` / `inbox_read` / `read_email_thread`
+  // names above: pure Gmail API GET calls, no label modification, no send.
+  // Content is UNTRUSTED (trust-policy.ts) but that's orthogonal to the
+  // write class — READ_ONLY is about side-effects, not about whether the
+  // bytes are attacker-controlled.
+  luca_inbox_list:      "READ_ONLY",
+  luca_email_read:      "READ_ONLY",
+  luca_email_thread:    "READ_ONLY",
 
   // ─── Media generation — LOW (costs some $$ but ephemeral URLs) ────
   // Returns data URI / signed URL to Luca. Kote sees output in chat.

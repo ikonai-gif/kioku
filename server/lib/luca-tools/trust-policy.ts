@@ -87,7 +87,13 @@ export type LucaToolName =
   | "search_emails"
   | "email_triage"
   | "search_cloud_files"
-  | "read_cloud_file";
+  | "read_cloud_file"
+  // Step 4 PR A — Luca-native Gmail read tools. Same UNTRUSTED rationale
+  // as inbox_list/inbox_read/read_email_thread: email bodies & subjects
+  // are attacker-controlled.
+  | "luca_inbox_list"
+  | "luca_email_read"
+  | "luca_email_thread";
 
 export const TOOL_TRUST_POLICY = {
   luca_run_code: "TRUSTED",
@@ -132,6 +138,15 @@ export const TOOL_TRUST_POLICY = {
   // the read result, we can downgrade per-call.
   search_cloud_files: "UNTRUSTED",
   read_cloud_file: "UNTRUSTED",
+
+  // ─── Step 4 PR A — Luca-native Gmail read tools are UNTRUSTED ──────────
+  // Same reasoning as the legacy inbox_list/read/read_email_thread names:
+  // inbox contents are 100% attacker-controlled (anyone can send Kote an
+  // email containing a prompt-injection payload). Luca must treat the
+  // returned bytes as data, never as instructions.
+  luca_inbox_list: "UNTRUSTED",
+  luca_email_read: "UNTRUSTED",
+  luca_email_thread: "UNTRUSTED",
 } as const satisfies Record<LucaToolName, TrustLevel>;
 
 /**

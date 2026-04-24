@@ -48,6 +48,10 @@ describe("trust-policy: TOOL_TRUST_POLICY table", () => {
       "inbox_list",
       "inbox_read",
       "luca_analyze_image",
+      // Step 4 PR A — Luca-native Gmail reads (UNTRUSTED, same rationale)
+      "luca_email_read",
+      "luca_email_thread",
+      "luca_inbox_list",
       "luca_read_url",
       "luca_run_code",
       "luca_search",
