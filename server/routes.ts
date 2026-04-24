@@ -2744,14 +2744,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     let lastCheck: { at: number; ok: boolean; blocking_drift_count: number } | null = null;
     try {
+      // Only count unacknowledged blocking events — acknowledged drift is
+      // historical, not current status. Timestamp rounded to the minute per
+      // BRO1 N-5 to avoid leaking exact deploy time.
       const r = await pool.query(
-        `SELECT created_at, severity FROM kioku_capabilities_drift_log
-          ORDER BY created_at DESC LIMIT 50`,
+        `SELECT detected_at, severity, acknowledged FROM kioku_capabilities_drift_log
+          ORDER BY detected_at DESC LIMIT 50`,
       );
       if (r.rows.length > 0) {
-        const blocking = r.rows.filter((x: any) => x.severity === "critical" || x.severity === "warn").length;
+        const blocking = r.rows.filter((x: any) =>
+          !x.acknowledged && (x.severity === "critical" || x.severity === "warn"),
+        ).length;
+        const rawAt = Number(r.rows[0].detected_at);
         lastCheck = {
-          at: Number(r.rows[0].created_at),
+          at: Math.floor(rawAt / 60000) * 60000,
           ok: blocking === 0,
           blocking_drift_count: blocking,
         };
@@ -2780,17 +2786,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
     try {
       const baseline = await pool.query(
-        `SELECT id, snapshot_at, is_active, created_by, env_flags, tools
+        `SELECT id, snapshot_at, is_active, accepted_by, env_flags, tools
            FROM kioku_capabilities_baseline
           WHERE is_active = true
           ORDER BY snapshot_at DESC
           LIMIT 1`,
       );
       const drift = await pool.query(
-        `SELECT id, created_at, severity, kind, tool_name, env_flag, details,
-                acknowledged_at, acknowledged_by
+        `SELECT id, detected_at, severity, change_type, detail,
+                before_value, after_value,
+                notified, notified_at,
+                acknowledged, acknowledged_at, acknowledged_by
            FROM kioku_capabilities_drift_log
-          ORDER BY created_at DESC
+          ORDER BY detected_at DESC
           LIMIT 100`,
       );
       const fab = await pool.query(
