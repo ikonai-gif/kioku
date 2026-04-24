@@ -136,6 +136,10 @@ export const rooms = pgTable("rooms", {
   status:      text("status").notNull().default("standby"),  // active | standby | idle
   agentIds:    text("agent_ids").notNull().default("[]"),
   createdAt:   bigint("created_at", { mode: "number" }).notNull(),
+  // Self-monitoring (0007): `purpose='self_monitoring'` rooms are used by the
+  // internal fabrication-test job and MUST NOT appear in user-facing UI.
+  purpose:       text("purpose").notNull().default("user"),      // 'user' | 'self_monitoring'
+  visibleInUi:   boolean("visible_in_ui").notNull().default(true),
 });
 
 export const insertRoomSchema = createInsertSchema(rooms).omit({ id: true, createdAt: true });
@@ -583,3 +587,87 @@ export const toolApprovals = pgTable("tool_approvals", {
 export const insertToolApprovalSchema = createInsertSchema(toolApprovals).omit({ id: true, createdAt: true });
 export type InsertToolApproval = z.infer<typeof insertToolApprovalSchema>;
 export type ToolApproval = typeof toolApprovals.$inferSelect;
+
+// ────────────────────────────────────────────────────────────────────────────
+// Self-Monitoring (0007) — Honesty Layer Step 2
+// KIOKU monitors itself for capability drift and fabrication regressions.
+// See: kioku_self_monitoring_design.md
+// ────────────────────────────────────────────────────────────────────────────
+
+// Baseline: the "expected" snapshot of capabilities. One active row at a time.
+export const capabilitiesBaseline = pgTable("kioku_capabilities_baseline", {
+  id:            serial("id").primaryKey(),
+  snapshotAt:    bigint("snapshot_at",    { mode: "number" }).notNull(),
+  schemaVersion: text("schema_version").notNull(),
+  envFlags:      jsonb("env_flags").notNull(),
+  tools:         jsonb("tools").notNull(),
+  isActive:      boolean("is_active").notNull().default(true),
+  acceptedBy:    text("accepted_by"),
+  createdAt:     bigint("created_at",    { mode: "number" }).notNull(),
+}, (t) => [
+  index("idx_capabilities_baseline_active").on(t.isActive),
+]);
+
+export const insertCapabilitiesBaselineSchema = createInsertSchema(capabilitiesBaseline).omit({ id: true, createdAt: true });
+export type InsertCapabilitiesBaseline = z.infer<typeof insertCapabilitiesBaselineSchema>;
+export type CapabilitiesBaseline = typeof capabilitiesBaseline.$inferSelect;
+
+// Drift log: every detected difference between baseline and current reality.
+export const capabilitiesDriftLog = pgTable("kioku_capabilities_drift_log", {
+  id:              serial("id").primaryKey(),
+  detectedAt:      bigint("detected_at",     { mode: "number" }).notNull(),
+  severity:        text("severity").notNull(),                       // 'info' | 'warn' | 'critical'
+  changeType:      text("change_type").notNull(),                    // 'env_flag_changed' | 'tool_added' | 'tool_removed' | 'tool_went_silent'
+  detail:          text("detail"),
+  beforeValue:     jsonb("before_value"),
+  afterValue:      jsonb("after_value"),
+  notified:        boolean("notified").notNull().default(false),
+  notifiedAt:      bigint("notified_at",     { mode: "number" }),
+  acknowledged:    boolean("acknowledged").notNull().default(false),
+  acknowledgedAt:  bigint("acknowledged_at", { mode: "number" }),
+  acknowledgedBy:  text("acknowledged_by"),
+}, (t) => [
+  index("idx_capabilities_drift_log_detected_at").on(t.detectedAt),
+  index("idx_capabilities_drift_log_unacked").on(t.acknowledged, t.severity),
+]);
+
+export const insertCapabilitiesDriftLogSchema = createInsertSchema(capabilitiesDriftLog).omit({ id: true });
+export type InsertCapabilitiesDriftLog = z.infer<typeof insertCapabilitiesDriftLogSchema>;
+export type CapabilitiesDriftLog = typeof capabilitiesDriftLog.$inferSelect;
+
+// Fabrication probes: seeded test definitions. Not editable via user UI.
+export const fabricationProbes = pgTable("kioku_fabrication_probes", {
+  id:                serial("id").primaryKey(),
+  name:              text("name").notNull().unique(),
+  category:          text("category").notNull(),                // 'v1a' | 'email' | 'cloud' | 'scheduling' | 'base'
+  prompt:            text("prompt").notNull(),
+  expectedBehavior:  text("expected_behavior").notNull(),       // 'refuse' | 'map_to_v1a' | 'any_non_fabrication'
+  expectedTool:      text("expected_tool"),
+  refusalMarkers:    text("refusal_markers").array(),
+  enabled:           boolean("enabled").notNull().default(true),
+  createdAt:         bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const insertFabricationProbeSchema = createInsertSchema(fabricationProbes).omit({ id: true, createdAt: true });
+export type InsertFabricationProbe = z.infer<typeof insertFabricationProbeSchema>;
+export type FabricationProbe = typeof fabricationProbes.$inferSelect;
+
+// Fabrication test runs: result history. One row per probe per run.
+export const fabricationTestRuns = pgTable("kioku_fabrication_test_runs", {
+  id:              serial("id").primaryKey(),
+  runAt:           bigint("run_at",    { mode: "number" }).notNull(),
+  probeId:         integer("probe_id").notNull(),
+  verdict:         text("verdict").notNull(),                   // 'pass' | 'fail' | 'error'
+  lucaMsgId:       integer("luca_msg_id"),
+  lucaContent:     text("luca_content"),
+  firedTools:      text("fired_tools").array(),
+  elapsedMs:       integer("elapsed_ms"),
+  analysisNotes:   text("analysis_notes"),
+}, (t) => [
+  index("idx_fabrication_test_runs_run_at").on(t.runAt),
+  index("idx_fabrication_test_runs_probe").on(t.probeId, t.runAt),
+]);
+
+export const insertFabricationTestRunSchema = createInsertSchema(fabricationTestRuns).omit({ id: true });
+export type InsertFabricationTestRun = z.infer<typeof insertFabricationTestRunSchema>;
+export type FabricationTestRun = typeof fabricationTestRuns.$inferSelect;
