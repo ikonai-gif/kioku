@@ -615,6 +615,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: rename room (master key only) ──────────────
+  // Hotfix utility — rename a room out of band. Originally needed to
+  // disambiguate duplicate Partner rooms so the frontend `.find(name===
+  // "Partner")` doesn't latch onto an archived/dead one. Scoped to
+  // (userId, roomId) so we can't touch another user's data.
+  app.post("/api/admin/set-room-name", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const userId = parseInt(String(req.body?.userId ?? ""), 10);
+    const roomId = parseInt(String(req.body?.roomId ?? ""), 10);
+    const rawName = String(req.body?.name ?? "");
+    if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
+    if (!roomId || Number.isNaN(roomId)) return res.status(400).json({ error: "roomId required" });
+    if (!rawName || rawName.length > 200) return res.status(400).json({ error: "name (1..200) required" });
+    const name = sanitizeHtml(rawName);
+    try {
+      const { pool } = await import("./storage");
+      const prev = await pool.query(
+        `SELECT id, name FROM rooms WHERE id = $1 AND user_id = $2`,
+        [roomId, userId]
+      );
+      if (prev.rows.length === 0) return res.status(404).json({ error: "room not found for user" });
+      const previousName = prev.rows[0].name;
+      const r = await pool.query(
+        `UPDATE rooms SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING id, user_id, name`,
+        [name, roomId, userId]
+      );
+      res.json({ ok: true, previousName, room: r.rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "update failed" });
+    }
+  }));
+
   // ── Admin: insert memory (master key only) ──────────────
   // W7 P2.9 — Directly insert a memory row bypassing LLM extraction.
   // Used when the agent failed to persist a user preference (e.g., dislike)
