@@ -50,7 +50,10 @@ export const helmetMiddleware = helmet({
       styleSrc:       ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc:        ["'self'", "https://fonts.gstatic.com"],
       imgSrc:         ["'self'", "data:", "https:"],
-      connectSrc:     ["'self'", "https://usekioku.com", "https://api.openai.com", "https://js.stripe.com"],
+      // wss://usekioku.com required for Partner chat WebSocket (Luca real-time)
+      // Browser CSP enforcement of 'self' for WS is inconsistent across Chromium versions —
+      // explicit wss:// origin avoids "Refused to connect" errors on hardened Chromium builds.
+      connectSrc:     ["'self'", "https://usekioku.com", "wss://usekioku.com", "https://api.openai.com", "https://js.stripe.com"],
       mediaSrc:       ["'self'", "blob:", "data:", "https:"],
       frameSrc:       ["https://js.stripe.com"],
       frameAncestors: ["'none'"],
