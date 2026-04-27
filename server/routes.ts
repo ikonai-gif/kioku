@@ -615,6 +615,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── Admin: apply pending migration files (master key only) ─────────
+  // Emergency utility — run a specific migrations/NNNN_*.sql file against
+  // the live DB. Production for KIOKU has no out-of-band migration runner;
+  // when a Drizzle schema change ships without the matching ALTER reaching
+  // Postgres, every SELECT on the affected table 500s (e.g. /api/rooms after
+  // PR #62 added rooms.purpose / visible_in_ui).
+  //
+  // Idempotent by design: only files that use IF NOT EXISTS / ON CONFLICT
+  // should be applied via this. Wrap in a transaction so partial failures
+  // roll back. Allow-list of filenames — not arbitrary SQL.
+  app.post("/api/admin/apply-migration", asyncHandler(async (req, res) => {
+    const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const filename = String(req.body?.filename ?? "");
+    const ALLOWED = new Set(["0007_self_monitoring.sql"]);
+    if (!ALLOWED.has(filename)) return res.status(400).json({ error: "filename not in allow-list", allowed: Array.from(ALLOWED) });
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const filePath = path.join(process.cwd(), "migrations", filename);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: "migration file not found on server", filePath });
+      const sqlText = fs.readFileSync(filePath, "utf8");
+      const { pool } = await import("./storage");
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(sqlText);
+        await client.query("COMMIT");
+        res.json({ ok: true, filename, bytes: sqlText.length });
+      } catch (e: any) {
+        await client.query("ROLLBACK").catch(() => {});
+        res.status(500).json({ error: "migration failed", message: e?.message, filename });
+      } finally {
+        client.release();
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "apply failed" });
+    }
+  }));
+
   // ── Admin: rename room (master key only) ──────────────
   // Hotfix utility — rename a room out of band. Originally needed to
   // disambiguate duplicate Partner rooms so the frontend `.find(name===
