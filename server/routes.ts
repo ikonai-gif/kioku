@@ -629,25 +629,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const mk = (req.headers["x-master-key"] as string) || (req.query.key as string) || "";
     const masterKey = process.env.KIOKU_MASTER_KEY;
     if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
-    const filename = String(req.body?.filename ?? "");
-    const ALLOWED = new Set(["0007_self_monitoring.sql"]);
-    if (!ALLOWED.has(filename)) return res.status(400).json({ error: "filename not in allow-list", allowed: Array.from(ALLOWED) });
+    const sqlText = String(req.body?.sql ?? "");
+    const filename = String(req.body?.filename ?? "unnamed");
+    if (!sqlText || sqlText.length < 20 || sqlText.length > 200_000) {
+      return res.status(400).json({ error: "sql body required (20..200000 bytes)" });
+    }
+    // Allow-list by SHA-256 of the SQL text — not arbitrary SQL.
+    // Caller must supply an exact known migration file content.
+    const ALLOWED_HASHES: Record<string, string> = {
+      "9e83d3d88018a04885bf6a6d4374273cbf497e2f2cbafeebd6c21cb2ea0c187a": "0007_self_monitoring.sql",
+    };
+    const crypto = await import("crypto");
+    const hash = crypto.createHash("sha256").update(sqlText, "utf8").digest("hex");
+    if (!ALLOWED_HASHES[hash]) {
+      return res.status(400).json({
+        error: "sql hash not in allow-list",
+        provided_hash: hash,
+        allowed_hashes: Object.keys(ALLOWED_HASHES),
+      });
+    }
+    const matchedFilename = ALLOWED_HASHES[hash];
     try {
-      const fs = await import("fs");
-      const path = await import("path");
-      const filePath = path.join(process.cwd(), "migrations", filename);
-      if (!fs.existsSync(filePath)) return res.status(404).json({ error: "migration file not found on server", filePath });
-      const sqlText = fs.readFileSync(filePath, "utf8");
       const { pool } = await import("./storage");
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
         await client.query(sqlText);
         await client.query("COMMIT");
-        res.json({ ok: true, filename, bytes: sqlText.length });
+        res.json({ ok: true, filename: matchedFilename, bytes: sqlText.length, hash });
       } catch (e: any) {
         await client.query("ROLLBACK").catch(() => {});
-        res.status(500).json({ error: "migration failed", message: e?.message, filename });
+        res.status(500).json({ error: "migration failed", message: e?.message, filename: matchedFilename });
       } finally {
         client.release();
       }
