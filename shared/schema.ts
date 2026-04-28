@@ -589,6 +589,32 @@ export type InsertToolApproval = z.infer<typeof insertToolApprovalSchema>;
 export type ToolApproval = typeof toolApprovals.$inferSelect;
 
 // ────────────────────────────────────────────────────────────────────────────
+// LEO PR-A — luca_telegram_log (0010)
+// Forensic audit row per `send_telegram_message` tool call. Mirrors
+// migrations/0010_luca_telegram_log.sql; comments on the SQL side carry the
+// long-form rationale. The tool is fail-silent — this is how we observe
+// what it actually did (delivered / error / deferred by quiet-hours).
+// ────────────────────────────────────────────────────────────────────────────
+export const lucaTelegramLog = pgTable("luca_telegram_log", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  userId:    integer("user_id").notNull(),
+  sentAt:    timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  message:   text("message").notNull(),
+  urgency:   varchar("urgency", { length: 8 }).notNull(),
+  delivered: boolean("delivered").notNull().default(false),
+  error:     text("error"),
+  reason:    text("reason"),
+}, (t) => [
+  index("idx_luca_telegram_log_user_sent").on(t.userId, t.sentAt),
+  // Mirror of CHECK constraint in migrations/0010_luca_telegram_log.sql.
+  check("luca_telegram_log_urgency_valid", sql`${t.urgency} IN ('high','normal','low')`),
+]);
+
+export const insertLucaTelegramLogSchema = createInsertSchema(lucaTelegramLog).omit({ id: true, sentAt: true });
+export type InsertLucaTelegramLog = z.infer<typeof insertLucaTelegramLogSchema>;
+export type LucaTelegramLog = typeof lucaTelegramLog.$inferSelect;
+
+// ────────────────────────────────────────────────────────────────────────────
 // Self-Monitoring (0007) — Honesty Layer Step 2
 // KIOKU monitors itself for capability drift and fabrication regressions.
 // See: kioku_self_monitoring_design.md

@@ -116,7 +116,10 @@ export type LucaAdmissibleTool =
   // risk class as luca_analyze_image / luca_read_url — fetch remote
   // content, no writes.
   | "watch_video"
-  | "listen_audio";
+  | "listen_audio"
+  // LEO PR-A — Telegram outreach to BOSS. HIGH by name; tiered downgrade
+  // in classifyToolCall reads `urgency` field (high → LOW_STAKES_WRITE).
+  | "send_telegram_message";
 
 /**
  * Primary classification table by tool name (worst-case upper bound).
@@ -241,6 +244,15 @@ export const TOOL_WRITE_CLASS = {
   // listen_audio: Whisper transcribes downloaded audio (max 25MB).
   // URL validated by validateUrl(). Pure read.
   listen_audio:             "READ_ONLY",
+
+  // ─── Telegram outreach (LEO PR-A) — HIGH by name; tiered downgrade in classifyToolCall ───
+  // Telegram message to BOSS. By default HIGH (unknown urgency = approval gate).
+  // Input-aware downgrade in classifyToolCall reads `urgency` field:
+  //   urgency='high'   → LOW (VIP/calendar/emergency — bypass gate, log & send immediately)
+  //   urgency='normal' → HIGH (await BOSS approval in UI)
+  //   urgency='low'    → HIGH (caller should suppress at higher layer; if it reaches gate, treat as HIGH for safety)
+  //   missing/invalid  → HIGH (fail-closed)
+  send_telegram_message:    "HIGH_STAKES_WRITE",
 } as const satisfies Record<LucaAdmissibleTool, ToolWriteClass>;
 
 /**
@@ -385,6 +397,17 @@ export function classifyToolCall(toolName: string, toolInput: unknown): ToolWrit
     if (actionType === "message" && !hasExternalTarget) {
       return "LOW_STAKES_WRITE";
     }
+    return "HIGH_STAKES_WRITE";
+  }
+
+  // send_telegram_message — tiered gating by `urgency` field (LEO PR-A).
+  // Only urgency='high' (deterministic VIP/calendar/emergency hit) bypasses
+  // the gate; everything else stays HIGH so it routes through approval. The
+  // dispatcher AND the urgency classifier both have to agree on 'high' for
+  // a Telegram to fire un-gated.
+  if (toolName === "send_telegram_message") {
+    const urgency = typeof input.urgency === "string" ? input.urgency : "";
+    if (urgency === "high") return "LOW_STAKES_WRITE";
     return "HIGH_STAKES_WRITE";
   }
 

@@ -247,6 +247,10 @@ describe("classify: admissible vs unadmitted invariants", () => {
     expect(UNADMITTED_TOOLS.has("analyze_image")).toBe(true);
   });
 
+  it("send_telegram_message is HIGH by name (LEO PR-A; tiered downgrade in classifyToolCall)", () => {
+    expect(TOOL_WRITE_CLASS.send_telegram_message).toBe("HIGH_STAKES_WRITE");
+  });
+
   it("admissible tool set matches LucaAdmissibleTool type (compile-time via satisfies)", () => {
     // This test is a runtime smoke: table has the declared keys. The real
     // exhaustiveness check is `satisfies Record<LucaAdmissibleTool, ...>`
@@ -261,5 +265,41 @@ describe("classify: admissible vs unadmitted invariants", () => {
     for (const k of expectedV1a) {
       expect(keys.has(k), `missing ${k}`).toBe(true);
     }
+  });
+});
+
+describe("classify: send_telegram_message tiered gating (LEO PR-A)", () => {
+  it("HIGH by name (fail-closed default)", () => {
+    expect(TOOL_WRITE_CLASS.send_telegram_message).toBe("HIGH_STAKES_WRITE");
+  });
+
+  it("urgency='high' downgrades to LOW (bypasses gate)", () => {
+    expect(
+      classifyToolCall("send_telegram_message", { text: "hi", urgency: "high" }),
+    ).toBe("LOW_STAKES_WRITE");
+  });
+
+  it("urgency='normal' stays HIGH (gate intercepts → BOSS approves)", () => {
+    expect(
+      classifyToolCall("send_telegram_message", { text: "hi", urgency: "normal" }),
+    ).toBe("HIGH_STAKES_WRITE");
+  });
+
+  it("urgency='low' stays HIGH (caller should suppress earlier; gate is backstop)", () => {
+    expect(
+      classifyToolCall("send_telegram_message", { text: "hi", urgency: "low" }),
+    ).toBe("HIGH_STAKES_WRITE");
+  });
+
+  it("missing/invalid urgency stays HIGH (fail-closed)", () => {
+    expect(classifyToolCall("send_telegram_message", { text: "hi" })).toBe(
+      "HIGH_STAKES_WRITE",
+    );
+    expect(
+      classifyToolCall("send_telegram_message", { text: "hi", urgency: "??" }),
+    ).toBe("HIGH_STAKES_WRITE");
+    expect(
+      classifyToolCall("send_telegram_message", { text: "hi", urgency: 7 }),
+    ).toBe("HIGH_STAKES_WRITE");
   });
 });

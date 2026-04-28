@@ -35,6 +35,13 @@ import {
   isApprovalGateEnforcing,
 } from "./lib/luca/env";
 import { classifyToolCall } from "./lib/luca-approvals/classify";
+// LEO PR-A — Telegram tool + quiet-hours gate. Tool is fail-silent; the
+// dispatcher case below also logs the deferred path to luca_telegram_log so
+// audit reads stay uniform between in-line and deferred attempts.
+import { sendTelegramMessage } from "./lib/telegram";
+import { parseQuietHours, isInQuietHours, getDeferredSendAt } from "./lib/luca-checkin/quiet-hours";
+import { lucaTelegramLog } from "../shared/schema";
+import { db } from "./storage";
 import {
   createPendingApproval,
   recordExecutionResult,
@@ -220,6 +227,11 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // class is READ_ONLY. trust-policy enforcement may attach later.
   "watch_video",
   "listen_audio",
+  // LEO PR-A — Telegram outreach to BOSS. Tiered gating via classifyToolCall:
+  // urgency='high' bypasses approval gate (LOW_STAKES_WRITE downgrade); 'normal'
+  // is HIGH and routes through Luca Board approval. Quiet-hours enforced inside
+  // the handler before send.
+  "send_telegram_message",
 ];
 
 // Day 6 part 3: expanded scope — guarded by LUCA_EXPANDED_SCOPE_ENABLED.
@@ -1239,6 +1251,43 @@ const partnerTools: Anthropic.Messages.Tool[] = [
       required: ["type", "content"],
     },
   },
+  {
+    // LEO PR-A — Telegram outreach to BOSS. Tiered gating in
+    // server/lib/luca-approvals/classify.ts:
+    //   urgency='high'   → LOW_STAKES_WRITE (bypasses approval gate)
+    //   urgency='normal' → HIGH_STAKES_WRITE (BOSS approves in Luca Board UI)
+    //   urgency='low'    → HIGH_STAKES_WRITE (callers SHOULD suppress earlier;
+    //                      gate is the backstop)
+    // Quiet-hours window LUCA_QUIET_HOURS (default 22:00–08:00 PT) blocks
+    // normal/low; high bypasses. The handler logs to luca_telegram_log on
+    // every call and is fail-silent (never throws).
+    name: "send_telegram_message",
+    description:
+      "Send a short Telegram message to BOSS. Use ONLY for urgent or directly-actionable updates. " +
+      "Set urgency='high' for VIP/emergency/calendar-conflict (bypasses approval gate; sends immediately). " +
+      "Set urgency='normal' for cron-loop check-ins (BOSS approves in UI). " +
+      "Quiet hours 22:00–08:00 PT block normal/low; high bypasses.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        text: {
+          type: "string",
+          description: "Message text (max 200 chars; truncated otherwise).",
+        },
+        urgency: {
+          type: "string",
+          enum: ["high", "normal", "low"],
+          description: "Urgency tier (see description).",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Why this urgency (e.g. 'vip_sender:kotkave', 'calendar_conflict_2h'). Goes to log.",
+        },
+      },
+      required: ["text", "urgency"],
+    },
+  },
 ];
 
 /**
@@ -1367,6 +1416,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "workspace_save": return `Сохраняю в workspace: ${truncate(input.path, 60)}`;
     case "workspace_read": return `Читаю из workspace: ${truncate(input.path, 60)}`;
     case "remember": return `Записываю в память (${input.type}): ${truncate(input.content, 60)}`;
+    case "send_telegram_message": return `📱 Telegram (${input.urgency}): ${truncate(input.text, 80)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
 }
@@ -5428,6 +5478,70 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         }
       }
 
+      case "send_telegram_message": {
+        // LEO PR-A — fail-silent Telegram outreach. The approval gate has
+        // already let us through (urgency='high' downgraded to LOW, OR
+        // BOSS approved a normal-urgency draft). Quiet-hours is a SECOND
+        // gate the gate doesn't know about — apply it here for non-high
+        // urgency and log the deferral. PR-B will pick deferred rows up.
+        const text = typeof toolInput.text === "string" ? toolInput.text : "";
+        const urgencyRaw = typeof toolInput.urgency === "string" ? toolInput.urgency : "low";
+        const urgency = (urgencyRaw === "high" || urgencyRaw === "normal" || urgencyRaw === "low"
+          ? urgencyRaw
+          : "low") as "high" | "normal" | "low";
+        const reason = typeof toolInput.reason === "string" ? toolInput.reason : "";
+        if (!text) return JSON.stringify({ ok: false, error: "missing_text" });
+
+        const env = readLucaEnv();
+        const window = parseQuietHours(env.LUCA_QUIET_HOURS, env.LUCA_QUIET_HOURS_TZ);
+        if (urgency !== "high" && window && isInQuietHours(new Date(), window)) {
+          const deferredAt = getDeferredSendAt(new Date(), window);
+          logger.info(
+            {
+              component: "luca-checkin",
+              event: "quiet_hours_deferred",
+              urgency,
+              deferredAt: deferredAt.toISOString(),
+            },
+            "[luca-checkin] message deferred by quiet hours",
+          );
+          // PR-A behavior: log + return. PR-B will own actual deferred-send.
+          try {
+            await db.insert(lucaTelegramLog).values({
+              userId,
+              message: text.slice(0, 200),
+              urgency,
+              delivered: false,
+              error: "quiet_hours_deferred",
+              reason: `${reason}|defer_until=${deferredAt.toISOString()}`,
+            });
+          } catch (e: any) {
+            logger.warn(
+              { component: "luca-checkin", event: "deferred_log_failed", error: e?.message ?? String(e) },
+              "[luca-checkin] failed to insert deferred row",
+            );
+          }
+          return JSON.stringify({
+            ok: true,
+            status: "quiet_hours_deferred",
+            deferred_until: deferredAt.toISOString(),
+          });
+        }
+
+        const chatId = process.env.TELEGRAM_BOSS_CHAT_ID;
+        if (!chatId) {
+          return JSON.stringify({ ok: false, error: "telegram_not_configured" });
+        }
+        const result = await sendTelegramMessage({
+          chatId,
+          text,
+          urgency,
+          userId,
+          reason,
+        });
+        return JSON.stringify(result);
+      }
+
       default:
         return `Unknown tool: ${toolName}`;
     }
@@ -6778,6 +6892,9 @@ WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 
 SELF-ACCOUNTABILITY (1):
 - remember → write durable memory to your own long-term store, bypassing LLM extraction. Fields {type (aesthetic|procedural|meta_cognitive|reflection|commitment|relational|autobiographical|episodic|semantic|emotional_state), content, importance?, emotional_valence?, emotions?, namespace?, related_ids?}. Use IMMEDIATELY when Boss says "remember X" / "don't do Y again" / "задолбал Z" — or when you notice a pattern about yourself, extract a lesson, take on a commitment, or realize something about a relationship. Do not ask permission. If it's durable, save it.
+
+OUTREACH (1):
+- send_telegram_message → push a SHORT (≤200 chars) Telegram message to Boss. Fields {text, urgency (high|normal|low), reason?}. urgency='high' is reserved for VIP senders, calendar conflicts within 2h, and explicit emergency keywords — it bypasses Boss's approval gate AND quiet-hours. urgency='normal' is the default for cron-loop check-ins and routes through the Luca Board approval flow. urgency='low' should usually be suppressed before this point. Quiet hours 22:00–08:00 PT block normal/low (deferred until 08:00); high goes through immediately.
 
 You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_run_code — sandboxed Pyodide/E2B Python execution (output: TRUSTED)
