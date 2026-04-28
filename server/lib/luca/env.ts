@@ -107,6 +107,27 @@ export interface LucaEnv {
    * EXPANDED=true && GATE=false.
    */
   LUCA_EXPANDED_SCOPE_ENABLED: boolean;
+
+  // ── LEO PR-A — Luca Event-Driven Outreach (Telegram tool) ─────────────
+  // None of these are connected to a master flag yet; the tool itself
+  // returns `{ok:false, error:'telegram_not_configured'}` when token/chat
+  // are unset. Kept additive — turning them on requires no other change.
+  /**
+   * Raw quiet-hours window, e.g. "22:00-08:00". Default "22:00-08:00";
+   * `parseQuietHours` returns null when this is empty/malformed and the
+   * dispatcher then skips the quiet-hours check entirely.
+   */
+  LUCA_QUIET_HOURS: string | null;
+  /** IANA timezone for quiet-hours arithmetic. Default America/Los_Angeles. */
+  LUCA_QUIET_HOURS_TZ: string;
+  /** Anthropic model for the urgency classifier. Default claude-haiku-4-5. */
+  LUCA_URGENCY_MODEL: string;
+  /** Comma-separated list of VIP sender emails (case-insensitive match). */
+  LUCA_VIP_SENDERS: string[];
+  /** Telegram Bot API token (from @BotFather). Null disables Telegram tool. */
+  TELEGRAM_BOT_TOKEN: string | null;
+  /** Telegram chat_id for BOSS. Null disables Telegram tool. */
+  TELEGRAM_BOSS_CHAT_ID: string | null;
 }
 
 export function readLucaEnv(): LucaEnv {
@@ -140,6 +161,17 @@ export function readLucaEnv(): LucaEnv {
     LUCA_APPROVAL_GATE_MODE:
       process.env.LUCA_APPROVAL_GATE_MODE === "log_only" ? "log_only" : "block",
     LUCA_EXPANDED_SCOPE_ENABLED: process.env.LUCA_EXPANDED_SCOPE_ENABLED === "true",
+    // LEO PR-A — additive, no consistency rules. Tool gates itself on
+    // missing token/chat at call time.
+    LUCA_QUIET_HOURS: (process.env.LUCA_QUIET_HOURS ?? "").trim() || "22:00-08:00",
+    LUCA_QUIET_HOURS_TZ: (process.env.LUCA_QUIET_HOURS_TZ ?? "").trim() || "America/Los_Angeles",
+    LUCA_URGENCY_MODEL: (process.env.LUCA_URGENCY_MODEL ?? "").trim() || "claude-haiku-4-5",
+    LUCA_VIP_SENDERS: (process.env.LUCA_VIP_SENDERS ?? "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s.length > 0),
+    TELEGRAM_BOT_TOKEN: (process.env.TELEGRAM_BOT_TOKEN ?? "").trim() || null,
+    TELEGRAM_BOSS_CHAT_ID: (process.env.TELEGRAM_BOSS_CHAT_ID ?? "").trim() || null,
   };
 }
 
