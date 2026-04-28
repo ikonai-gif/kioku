@@ -51,6 +51,7 @@ import {
   broadcastApprovalRequested,
   broadcastApprovalDecided,
   rowToRequestedPayload,
+  broadcastTelegramEvent,
 } from "./lib/luca-approvals/ws-events";
 import { randomUUID } from "crypto";
 
@@ -5521,6 +5522,22 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
               "[luca-checkin] failed to insert deferred row",
             );
           }
+          // Real-time fan-out — best-effort, swallow errors.
+          try {
+            broadcastTelegramEvent({
+              userId,
+              status: "deferred",
+              urgency,
+              message: text.slice(0, 200),
+              reason: `${reason}|defer_until=${deferredAt.toISOString()}`,
+              timestamp: new Date(),
+            });
+          } catch (e: any) {
+            logger.warn(
+              { component: "luca-checkin", event: "broadcast_deferred_failed", error: e?.message ?? String(e) },
+              "[luca-checkin] broadcast deferred event failed",
+            );
+          }
           return JSON.stringify({
             ok: true,
             status: "quiet_hours_deferred",
@@ -5530,6 +5547,17 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
 
         const chatId = process.env.TELEGRAM_BOSS_CHAT_ID;
         if (!chatId) {
+          try {
+            broadcastTelegramEvent({
+              userId,
+              status: "failed",
+              urgency,
+              message: text.slice(0, 200),
+              error: "telegram_not_configured",
+              reason: reason || null,
+              timestamp: new Date(),
+            });
+          } catch { /* swallow */ }
           return JSON.stringify({ ok: false, error: "telegram_not_configured" });
         }
         const result = await sendTelegramMessage({
@@ -5539,6 +5567,22 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           userId,
           reason,
         });
+        try {
+          broadcastTelegramEvent({
+            userId,
+            status: result.ok ? "sent" : "failed",
+            urgency,
+            message: text.slice(0, 200),
+            error: result.ok ? null : (result.error ?? null),
+            reason: reason || null,
+            timestamp: new Date(),
+          });
+        } catch (e: any) {
+          logger.warn(
+            { component: "luca-checkin", event: "broadcast_send_failed", error: e?.message ?? String(e) },
+            "[luca-checkin] broadcast send/failed event failed",
+          );
+        }
         return JSON.stringify(result);
       }
 

@@ -109,3 +109,61 @@ export function rowToRequestedPayload(
     expiresAt: row.expiresAt,
   };
 }
+
+/**
+ * LEO PR-A — Telegram tool real-time event fan-out.
+ *
+ * Three sibling events that mirror the lifecycle the dispatcher walks
+ * after the gate has cleared `send_telegram_message`:
+ *
+ *   luca.telegram.sent      — sendTelegramMessage returned ok=true. UI
+ *                              flashes a green checkmark on the Luca
+ *                              Board outreach lane and persists in the
+ *                              recent-activity feed.
+ *   luca.telegram.failed    — sendTelegramMessage returned ok=false
+ *                              (rate-limit, fetch_threw, non-2xx, missing
+ *                              token). UI surfaces the error code so BOSS
+ *                              can act (e.g. reconnect Telegram). NO
+ *                              email fallback by design.
+ *   luca.telegram.deferred  — quiet-hours short-circuited the send. UI
+ *                              shows the queued state with the deferred
+ *                              ISO timestamp so BOSS knows when it will
+ *                              wake up. PR-B replays the queue.
+ *
+ * Like the approval events above, this is best-effort — broadcast
+ * failures are swallowed by the caller (the dispatcher) so the tool
+ * call still returns a structured result.
+ */
+export interface TelegramEventPayload {
+  userId: number;
+  status: "sent" | "failed" | "deferred";
+  urgency: "high" | "normal" | "low";
+  /** The on-the-wire text (already truncated to 200 chars by telegram.ts). */
+  message: string;
+  /** Stable error code on failed sends. Null on sent / deferred. */
+  error?: string | null;
+  /** Caller-supplied context (e.g. "vip_sender:...", "defer_until=..."). */
+  reason?: string | null;
+  /** Optional luca_telegram_log row id when caller has it (else null). */
+  logId?: string | null;
+  /** Wall-clock at the moment the dispatcher decided this status. */
+  timestamp: Date;
+}
+
+export function broadcastTelegramEvent(payload: TelegramEventPayload): void {
+  const type =
+    payload.status === "sent"
+      ? "luca.telegram.sent"
+      : payload.status === "failed"
+        ? "luca.telegram.failed"
+        : "luca.telegram.deferred";
+  broadcastToUser(payload.userId, {
+    type,
+    log_id: payload.logId ?? null,
+    urgency: payload.urgency,
+    message: payload.message,
+    error: payload.error ?? null,
+    reason: payload.reason ?? null,
+    timestamp: payload.timestamp.toISOString(),
+  });
+}
