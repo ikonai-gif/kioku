@@ -543,8 +543,9 @@ function ExecOutputBlock({ output }: { output: string }) {
 function renderMessageContent(content: string): React.ReactNode {
   if (!content) return null;
 
-  // Detect [Audio generated] data:audio/... patterns
-  const audioMatch = content.match(/\[Audio generated\]\s*(\S+)/);
+  // Detect [Audio generated], [Audio generated via X], with optional URL: prefix.
+  // Tolerates legacy data: URIs and new signed-URL format from PR #75.
+  const audioMatch = content.match(/\[Audio generated(?:[^\]]*)\]\s*(?:URL:\s*)?(\S+)/);
   if (audioMatch) {
     const audioSrc = audioMatch[1];
     const rest = content.replace(audioMatch[0], '').trim();
@@ -555,8 +556,8 @@ function renderMessageContent(content: string): React.ReactNode {
     );
   }
 
-  // Detect [Video generated] <url> or [Video generated via Veo 2] data:... patterns
-  const videoMatch = content.match(/\[Video generated(?:[^\]]*)\]\s*(\S+)/);
+  // Detect [Video generated], [Video generated via Veo 2], with optional URL: prefix.
+  const videoMatch = content.match(/\[Video generated(?:[^\]]*)\]\s*(?:URL:\s*)?(\S+)/);
   if (videoMatch) {
     const videoUrl = videoMatch[1];
     const rest = content.replace(videoMatch[0], '').trim();
@@ -773,8 +774,9 @@ function parseArtifactsFromMessages(messages: any[], isUserFn: (msg: any) => boo
       });
     }
 
-    // Extract audio from [Audio generated] patterns
-    const audioRegex = /\[Audio generated\]\s*(\S+)/g;
+    // Extract audio from [Audio generated], [Audio generated via X] patterns,
+    // tolerating optional URL: prefix.
+    const audioRegex = /\[Audio generated(?:[^\]]*)\]\s*(?:URL:\s*)?(\S+)/g;
     while ((match = audioRegex.exec(content)) !== null) {
       const audioUrl = match[1];
       artifacts.push({
@@ -788,8 +790,8 @@ function parseArtifactsFromMessages(messages: any[], isUserFn: (msg: any) => boo
       });
     }
 
-    // Extract video URLs from [Video generated] patterns
-    const videoRegex = /\[Video generated(?:[^\]]*)\]\s*(\S+)/g;
+    // Extract video URLs from [Video generated] patterns, tolerating optional URL: prefix.
+    const videoRegex = /\[Video generated(?:[^\]]*)\]\s*(?:URL:\s*)?(\S+)/g;
     while ((match = videoRegex.exec(content)) !== null) {
       const videoUrl = match[1];
       artifacts.push({
