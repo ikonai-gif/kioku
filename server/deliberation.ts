@@ -1256,6 +1256,39 @@ export function getPartnerToolsForAgent(agent: { name?: string | null } | null |
  * Produce a short human-readable description of a tool call for the activity timeline.
  * Intentionally plain — the user sees this live while the agent works.
  */
+/**
+ * CONTEXT-OVERFLOW FIX (2026-04-27): tool results that are large base64 data URIs
+ * (images, audio, video) were being returned verbatim into the Anthropic tool_result
+ * block, then echoed back into claudeMessages on every tool-loop iteration. A single
+ * generate_image (~3MB png) inflated to ~900K tokens; 2 calls in one turn = 1.6M
+ * tokens > Claude's 1M limit → BadRequestError, Luca silent.
+ *
+ * This helper persists the data URI to Supabase Storage (or accepts a remote URL)
+ * and returns a stable signed URL that is ~200 bytes in the tool_result, while the
+ * frontend can still load and render the asset for the user.
+ */
+async function persistToolAsset(
+  userId: number,
+  agentId: number,
+  source: string,
+  relPath: string,
+  toolName: string,
+): Promise<string | null> {
+  try {
+    const { url } = await persistAssetSource(
+      userId,
+      agentId,
+      source,
+      relPath,
+      { expiresSec: 7 * 24 * 60 * 60 },
+    );
+    return url;
+  } catch (err: any) {
+    logger.warn({ component: "deliberation", event: "persist_asset_failed", tool: toolName, err: err?.message }, "[deliberation] tool asset persist failed");
+    return null;
+  }
+}
+
 function describeToolCall(toolName: string, input: Record<string, any>): string {
   const truncate = (s: any, n = 80) => {
     const v = typeof s === "string" ? s : JSON.stringify(s ?? "");
@@ -1673,8 +1706,12 @@ export async function executePartnerTool(
             metadata: { style: toolInput.style || "vivid", revisedPrompt },
           }).catch(() => {});
         }
+        // CONTEXT-OVERFLOW FIX: persist data URI to S3, return signed URL (~200 bytes)
+        // instead of multi-MB base64 that explodes the LLM tool-loop context.
         if (dataUri) {
-          return `Image generated successfully. ${dataUri}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/image-${Date.now()}-${randomUUID().slice(0,8)}.png`, "generate_image");
+          if (url) return `Image generated successfully. ${url}`;
+          return "Image generated but storage persist failed. Check the gallery.";
         }
         return imageUrl
           ? `Image generated but download to persistent storage failed. Temporary URL (expires in 1 hour): ${imageUrl}`
@@ -4252,8 +4289,10 @@ print("Converted MD to DOCX")
 
             if (resp.ok) {
               const buffer = Buffer.from(await resp.arrayBuffer());
-              const b64 = buffer.toString("base64");
-              return `[Audio generated via ElevenLabs] data:audio/mp3;base64,${b64}`;
+              const dataUri = `data:audio/mp3;base64,${buffer.toString("base64")}`;
+              const url = await persistToolAsset(userId, agentId, dataUri, `media/speech-${Date.now()}-${randomUUID().slice(0,8)}.mp3`, "generate_speech");
+              if (url) return `[Audio generated via ElevenLabs] ${url}`;
+              return "Audio generated but storage persist failed.";
             }
             const errText = (await resp.text()).slice(0, 200);
             console.warn(`[generate_speech] ElevenLabs failed: ${errText}, falling back to OpenAI`);
@@ -4287,8 +4326,10 @@ print("Converted MD to DOCX")
           } as any));
 
           const buffer = Buffer.from(await response.arrayBuffer());
-          const b64 = buffer.toString("base64");
-          return `[Audio generated via OpenAI TTS] data:audio/mp3;base64,${b64}`;
+          const dataUri = `data:audio/mp3;base64,${buffer.toString("base64")}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/speech-${Date.now()}-${randomUUID().slice(0,8)}.mp3`, "generate_speech");
+          if (url) return `[Audio generated via OpenAI TTS] ${url}`;
+          return "Audio generated but storage persist failed.";
         } catch (err: any) {
           if (isCircuitOpenError(err)) {
             logger.warn({ component: "deliberation", event: "degraded_tool", tool: "generate_speech" }, "[deliberation] breaker open");
@@ -4366,8 +4407,10 @@ print("Converted MD to DOCX")
             return `SFX generation failed: ${(await resp.text()).slice(0, 300)}`;
           }
           const buffer = Buffer.from(await resp.arrayBuffer());
-          const b64 = buffer.toString("base64");
-          return `[SFX generated via ElevenLabs] data:audio/mp3;base64,${b64}`;
+          const dataUri = `data:audio/mp3;base64,${buffer.toString("base64")}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/sfx-${Date.now()}-${randomUUID().slice(0,8)}.mp3`, "generate_sfx");
+          if (url) return `[SFX generated via ElevenLabs] ${url}`;
+          return "SFX generated but storage persist failed.";
         } catch (err: any) {
           return `SFX generation failed: ${err?.message || String(err)}`;
         }
@@ -4468,7 +4511,11 @@ print("Converted MD to DOCX")
           if (audioPart?.inlineData?.data) {
             const mime = audioPart.inlineData.mimeType || "audio/mp3";
             const caption = textPart?.text?.slice(0, 200) || "";
-            return `[Audio generated] data:${mime};base64,${audioPart.inlineData.data}${caption ? "\n" + caption : ""}`;
+            const ext = mime.includes("wav") ? "wav" : "mp3";
+            const dataUri = `data:${mime};base64,${audioPart.inlineData.data}`;
+            const url = await persistToolAsset(userId, agentId, dataUri, `media/music-${Date.now()}-${randomUUID().slice(0,8)}.${ext}`, "generate_music");
+            if (url) return `[Audio generated] ${url}${caption ? "\n" + caption : ""}`;
+            return `Music generated but storage persist failed.${caption ? "\n" + caption : ""}`;
           }
 
           // Text-only response (model might describe what it would create)
@@ -4549,14 +4596,19 @@ print("Converted MD to DOCX")
           const outBuf = fs.readFileSync(outputFile);
           const outB64 = outBuf.toString("base64");
           const mime = outputFormat === "mp4" ? "video/mp4" : outputFormat === "wav" ? "audio/wav" : "audio/mp3";
+          const ext = outputFormat === "mp4" ? "mp4" : outputFormat === "wav" ? "wav" : "mp3";
 
           // Cleanup
           try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
 
+          const dataUri = `data:${mime};base64,${outB64}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/stitch-${Date.now()}-${randomUUID().slice(0,8)}.${ext}`, "stitch_media");
           if (mime.startsWith("video/")) {
-            return `[Video generated] data:${mime};base64,${outB64}`;
+            if (url) return `[Video generated] ${url}`;
+            return "Video generated but storage persist failed.";
           }
-          return `[Audio generated] data:${mime};base64,${outB64}`;
+          if (url) return `[Audio generated] ${url}`;
+          return "Audio generated but storage persist failed.";
         } catch (err: any) {
           return `Media stitching failed: ${err?.message || String(err)}`;
         }
@@ -4618,7 +4670,10 @@ print("Converted MD to DOCX")
           const b64 = outBuf.toString("base64");
           try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
 
-          return `[Vertical ${targetW}x${targetH} ${mode}] data:video/mp4;base64,${b64}`;
+          const dataUri = `data:video/mp4;base64,${b64}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/reframe-${Date.now()}-${randomUUID().slice(0,8)}.mp4`, "reframe_vertical");
+          if (url) return `[Vertical ${targetW}x${targetH} ${mode}] ${url}`;
+          return "Reframe completed but storage persist failed.";
         } catch (err: any) {
           return `Reframe failed: ${err?.message || String(err)}`;
         }
@@ -4828,7 +4883,10 @@ print("Converted MD to DOCX")
           const b64 = outBuf.toString("base64");
           try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
 
-          return `[Video with subtitles] data:video/mp4;base64,${b64}`;
+          const dataUri = `data:video/mp4;base64,${b64}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/subs-${Date.now()}-${randomUUID().slice(0,8)}.mp4`, "add_subtitles");
+          if (url) return `[Video with subtitles] ${url}`;
+          return "Subtitles burned but storage persist failed.";
         } catch (err: any) {
           return `Subtitle generation failed: ${err?.message || String(err)}`;
         }
@@ -4941,7 +4999,10 @@ print("Converted MD to DOCX")
           const b64 = outBuf.toString("base64");
           try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
 
-          return `[Video with ${position} title card${addDisclosure ? " + AI disclosure" : ""}] data:video/mp4;base64,${b64}`;
+          const dataUri = `data:video/mp4;base64,${b64}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/titlecard-${Date.now()}-${randomUUID().slice(0,8)}.mp4`, "add_title_cards");
+          if (url) return `[Video with ${position} title card${addDisclosure ? " + AI disclosure" : ""}] ${url}`;
+          return "Title card added but storage persist failed.";
         } catch (err: any) {
           return `Title card generation failed: ${err?.message || String(err)}`;
         }
@@ -5026,7 +5087,10 @@ print("Converted MD to DOCX")
           const b64 = outBuf.toString("base64");
           try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
 
-          return `[Video with AI disclosure${visibleOverlay ? " + visible bug" : ""}] data:video/mp4;base64,${b64}`;
+          const dataUri = `data:video/mp4;base64,${b64}`;
+          const url = await persistToolAsset(userId, agentId, dataUri, `media/ai-disclosure-${Date.now()}-${randomUUID().slice(0,8)}.mp4`, "apply_ai_disclosure");
+          if (url) return `[Video with AI disclosure${visibleOverlay ? " + visible bug" : ""}] ${url}`;
+          return "AI disclosure applied but storage persist failed.";
         } catch (err: any) {
           return `AI disclosure failed: ${err?.message || String(err)}`;
         }
