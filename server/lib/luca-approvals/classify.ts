@@ -111,7 +111,12 @@ export type LucaAdmissibleTool =
   // Scheduling
   | "schedule_task"
   | "set_reminder"
-  | "list_tasks";
+  | "list_tasks"
+  // Multimodal reads (READ_ONLY, SSRF-fenced via validateUrl). Same
+  // risk class as luca_analyze_image / luca_read_url — fetch remote
+  // content, no writes.
+  | "watch_video"
+  | "listen_audio";
 
 /**
  * Primary classification table by tool name (worst-case upper bound).
@@ -225,6 +230,17 @@ export const TOOL_WRITE_CLASS = {
   schedule_task:            "HIGH_STAKES_WRITE",
   set_reminder:             "LOW_STAKES_WRITE",
   list_tasks:               "READ_ONLY",
+
+  // ─── Multimodal reads — READ_ONLY (SSRF-fenced) ──────────────────
+  // watch_video: Gemini 2.5 Flash analyzes a video URL frame-by-frame
+  // with audio. URL validated by validateUrl() before fetch — no SSRF,
+  // no localhost. Output is UNTRUSTED text (transcribed speech, visible
+  // text in frames, AI-generated description) but trust class is
+  // orthogonal; this table is about side-effects.
+  watch_video:              "READ_ONLY",
+  // listen_audio: Whisper transcribes downloaded audio (max 25MB).
+  // URL validated by validateUrl(). Pure read.
+  listen_audio:             "READ_ONLY",
 } as const satisfies Record<LucaAdmissibleTool, ToolWriteClass>;
 
 /**
@@ -242,8 +258,10 @@ export const TOOL_WRITE_CLASS = {
  *                       without sub-action inspection (see classifyToolCall)
  *   - creative_writing / learn_* / suggest_* / ask_feedback /
  *     read_own_prompt / update_self_knowledge / correct_false_memory /
- *     watch_video / listen_audio / browse_website — legacy / phantom,
- *     duplicates of native capability
+ *     browse_website — legacy / phantom, duplicates of native
+ *     capability
+ *   - watch_video / listen_audio — admitted (Step 5+: multimodal reads,
+ *     SSRF-fenced, READ_ONLY). See TOOL_WRITE_CLASS above.
  *   - web_search / read_url / run_code / analyze_image (NO prefix) —
  *     phantom duplicates of the V1a luca_-prefixed versions
  */
@@ -271,8 +289,6 @@ export const UNADMITTED_TOOLS: ReadonlySet<string> = new Set([
   "read_own_prompt",
   "update_self_knowledge",
   "correct_false_memory",
-  "watch_video",
-  "listen_audio",
   "browse_website",
   "web_search",
   "read_url",

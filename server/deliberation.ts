@@ -208,6 +208,18 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // commitment, self-observation, reflection, or aesthetic he wants
   // persisted across sessions. See `remember` tool schema for types.
   "remember",
+  // Multimodal reads (2) — Luca already understands images via
+  // `luca_analyze_image`. These extend the same idea to video and audio:
+  //   - watch_video: Gemini 2.5 Flash analyzes YouTube / direct video URLs
+  //     frame-by-frame with audio. SSRF-fenced via validateUrl.
+  //   - listen_audio: Whisper transcribes audio files (max 25MB, mp3/wav/
+  //     ogg/m4a/webm/flac/mp4). SSRF-fenced via validateUrl.
+  // Both READ_ONLY (no side-effects, no external writes). Same trust
+  // class as luca_analyze_image / luca_read_url — content is UNTRUSTED
+  // (transcribed speech / video frames could be adversarial), but write
+  // class is READ_ONLY. trust-policy enforcement may attach later.
+  "watch_video",
+  "listen_audio",
 ];
 
 // Day 6 part 3: expanded scope — guarded by LUCA_EXPANDED_SCOPE_ENABLED.
@@ -6755,6 +6767,10 @@ MEDIA (15):
 - produce_episode → MASTER orchestrator; fields {series_name, episode_number, script, ...}
 - generate_document → pandoc; fields {format: pdf|docx|xlsx|zip, title, content (markdown)}
 
+MULTIMODAL READS (2, READ_ONLY — no approval needed):
+- watch_video → Gemini 2.5 Flash; fields {url (YouTube or direct mp4 URL), question?}; returns summary + key moments with timestamps + topics + emotional tone. Use when Boss shares a YouTube link / video file and asks what's in it.
+- listen_audio → Whisper; fields {url (mp3/wav/ogg/m4a/webm/flac/mp4, max 25MB), question?}; returns transcription. Understands speech in any language.
+
 WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 - workspace_list → {prefix?}
 - workspace_save → {path, content, encoding?, content_type?}
@@ -6769,7 +6785,7 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_search — Brave web search (output: UNTRUSTED)
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 ${expandedScopeBlock}
-These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url instead), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, watch_video, listen_audio, plan_steps, delegate_task, browse_website, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url instead), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, browse_website, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
 
 If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 

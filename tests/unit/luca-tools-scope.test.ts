@@ -22,8 +22,10 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     // P2.12: bumped from 18 to 19 — added `remember` for Luca self-write memory
     //        (self-accountability MVP). Scoped to (userId, agentId) on write.
     // Day 6 part 3: base surface only; expanded scope requires the flag.
+    // Multimodal extension: bumped from 19 to 21 — added watch_video +
+    //        listen_audio (READ_ONLY, SSRF-fenced via validateUrl).
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(19);
+    expect(tools).toHaveLength(21);
   });
 
   it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
@@ -87,7 +89,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     }
   });
 
-  it("all 19 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
+  it("all 21 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     for (const t of tools) {
       expect(typeof t.name).toBe("string");
@@ -112,11 +114,12 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     else process.env[FLAG] = originalFlag;
   });
 
-  it("returns base 19 + expanded 18 = 37 tools for Luca when flag is on", () => {
+  it("returns base 21 + expanded 18 = 39 tools for Luca when flag is on", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    // 15 media + 3 workspace + 1 remember + 10 Gmail reads/triage + 2 sends
-    // + 2 cloud reads + 3 scheduling + 1 produce_season = 37.
-    expect(tools).toHaveLength(37);
+    // 15 media + 3 workspace + 1 remember + 2 multimodal (watch_video,
+    // listen_audio) + 10 Gmail reads/triage + 2 sends + 2 cloud reads
+    // + 3 scheduling + 1 produce_season = 39.
+    expect(tools).toHaveLength(39);
   });
 
   it("includes Gmail, cloud, scheduling, producer tools in expanded scope", () => {
@@ -146,10 +149,12 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
   });
 
   it("getLucaStudioToolNames() returns a fresh Set reflecting current flag", () => {
+    // Base 21 (19 original + watch_video + listen_audio multimodal reads).
+    // Expanded adds 18 (gmail/cloud/schedule/produce_season).
     const withFlag = getLucaStudioToolNames();
-    expect(withFlag.size).toBe(37);
+    expect(withFlag.size).toBe(39);
     delete process.env[FLAG];
     const withoutFlag = getLucaStudioToolNames();
-    expect(withoutFlag.size).toBe(19);
+    expect(withoutFlag.size).toBe(21);
   });
 });
