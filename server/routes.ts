@@ -62,6 +62,22 @@ import {
   provenanceLinkSchema,
 } from "./validation";
 import { body, validationResult } from "express-validator";
+// PR-A.5 — Telegram inbound webhook helpers + outbound sender + ws fan-out + Drizzle.
+import {
+  telegramUpdateSchema,
+  verifyTelegramSecret,
+  findBossPartnerRoom,
+  parseCommand,
+  checkInboundRateLimit,
+  handleTelegramCommand,
+  BOSS_USER_ID,
+  type ParsedCommand,
+} from "./lib/telegram-inbound";
+import { sendTelegramMessage } from "./lib/telegram";
+import { broadcastTelegramInboundEvent } from "./lib/luca-approvals/ws-events";
+import { telegramInboundLog } from "@shared/schema";
+import { db } from "./storage";
+import { eq } from "drizzle-orm";
 
 /** Extract a single-string route param (Express 5 types params as string | string[]). */
 function param(req: Request, name: string): string {
@@ -2008,6 +2024,206 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     res.json(msg);
+  }));
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PR-A.5 — Telegram inbound webhook (BOSS → Lука).
+  //
+  // Pipeline (in this exact order):
+  //   1. verify X-Telegram-Bot-Api-Secret-Token (timing-safe)            → 401 if fail
+  //   2. zod-validate the payload shape                                   → 200 + drop
+  //   3. allowlist chat_id === TELEGRAM_BOSS_CHAT_ID                      → 200 + drop
+  //   4. INSERT ... ON CONFLICT DO NOTHING into telegram_inbound_log      → 200 if dup
+  //   5. sliding-window rate-limit (10/min per chat_id)                   → 200 + drop
+  //   6. dispatch — command (/...) or free-form into the Partner room.
+  //
+  // Steps 4 (idempotency) MUST run before step 6 (dispatch). Reordering would
+  // cause duplicate triggerAgentResponses calls under Telegram retries.
+  //
+  // The only non-200 path is step 1 (401 secret mismatch) and a 503 on
+  // partner-room misconfiguration — both intentional. Every other reject
+  // returns 200 with an audit row so Telegram doesn't retry indefinitely.
+  // ─────────────────────────────────────────────────────────────────────────────
+  app.post("/api/telegram/webhook", asyncHandler(async (req, res) => {
+    // 1. Secret. timing-safe SHA-256 compare. Missing env or empty header → 401.
+    if (!verifyTelegramSecret(req.headers["x-telegram-bot-api-secret-token"])) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    // 2. Schema. Anything that doesn't parse — or has no `message` field —
+    //    is a 200-and-drop. Telegram sends edited_message / channel_post /
+    //    callback_query etc., none of which PR-A.5 acts on.
+    const parsed = telegramUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      logger.info({ kind: "malformed", err: parsed.error.errors[0]?.message }, "telegram-inbound: payload rejected");
+      return res.status(200).json({ ok: true, dropped: "malformed" });
+    }
+    if (!parsed.data.message) {
+      return res.status(200).json({ ok: true, dropped: "non_message_update" });
+    }
+
+    const update = parsed.data;
+    const message = update.message!;
+    const chatId = message.chat.id;
+    const fromId = message.from.id;
+    const text = message.text;
+
+    // 3. Allowlist. PR-A.5 only services BOSS's private chat.
+    const expectedChatId = Number(process.env.TELEGRAM_BOSS_CHAT_ID);
+    if (!Number.isFinite(expectedChatId) || chatId !== expectedChatId) {
+      logger.info({ kind: "rejected_chat_id", chatId }, "telegram-inbound: chat not allow-listed");
+      return res.status(200).json({ ok: true, dropped: "rejected_chat_id" });
+    }
+
+    // 4. IDEMPOTENCY — must run before any dispatch. Telegram retries 5xx
+    //    indefinitely; a duplicate update_id under retry must NOT trigger a
+    //    second triggerAgentResponses call. We do this with a single SQL
+    //    INSERT ... ON CONFLICT DO NOTHING. .returning() yields 0 rows when
+    //    the unique constraint fired — that's our "already processed" signal.
+    let logRowId: number;
+    try {
+      const inserted = await db.insert(telegramInboundLog)
+        .values({
+          updateId: update.update_id,
+          chatId,
+          fromId,
+          messageText: text ?? null,
+          rawUpdate: update as any,
+        })
+        .onConflictDoNothing({ target: telegramInboundLog.updateId })
+        .returning({ id: telegramInboundLog.id });
+      if (inserted.length === 0) {
+        // Duplicate update_id — the original arrival has already been (or is
+        // being) dispatched. Acknowledge and exit without re-dispatching.
+        return res.status(200).json({ ok: true, duplicate: true });
+      }
+      logRowId = inserted[0].id;
+    } catch (err) {
+      // Idempotency log is the system's source of truth for dedup; if it's
+      // unavailable we cannot safely dispatch. Return 5xx so Telegram retries.
+      logger.error({ err }, "telegram-inbound: idempotency log insert failed");
+      return res.status(503).json({ ok: false, error: "idempotency_unavailable" });
+    }
+
+    // 5. Rate-limit. Sliding 60s / 10 messages per chat. Beyond this, drop.
+    if (!checkInboundRateLimit(chatId)) {
+      logger.info({ kind: "rate_limit", chatId }, "telegram-inbound: 10/min cap hit");
+      // We still recorded the row in step 4, so audit trail is intact. Stamp
+      // the error column for observability.
+      await db.update(telegramInboundLog)
+        .set({ error: "rate_limit" })
+        .where(eq(telegramInboundLog.id, logRowId))
+        .catch((err) => logger.error({ err, logRowId }, "telegram-inbound: rate_limit stamp failed"));
+      return res.status(200).json({ ok: true, dropped: "rate_limit" });
+    }
+
+    // 6a. Non-text payload (photo / voice / file / sticker / ...): tell BOSS
+    //     PR-A.5 only does text, so they don't sit waiting for a reply.
+    if (!text) {
+      await sendTelegramMessage({
+        chatId: String(chatId),
+        text: "Пока поддерживается только текст. Photo/voice/file — в следующей версии.",
+        urgency: "low",
+        userId: BOSS_USER_ID,
+        reason: "non_text_dropped",
+      }).catch(() => { /* fail-silent contract from telegram.ts */ });
+      await db.update(telegramInboundLog)
+        .set({ error: "non_text" })
+        .where(eq(telegramInboundLog.id, logRowId))
+        .catch(() => { /* audit-only; ignore */ });
+      return res.status(200).json({ ok: true, dropped: "non_text" });
+    }
+
+    // 6b. Dispatch. Two branches: command vs free-form message.
+    try {
+      const command = parseCommand(text);
+      if (command) {
+        const reply = await handleTelegramCommand(command);
+        await sendTelegramMessage({
+          chatId: String(chatId),
+          text: reply,
+          urgency: "high", // BRO1 Q1(b): BOSS slash-commands are always high.
+          userId: BOSS_USER_ID,
+          reason: `command:${command.command}`,
+        }).catch(() => { /* fail-silent */ });
+        await db.update(telegramInboundLog)
+          .set({ commandName: command.command, commandArgs: command.rawArgs || null })
+          .where(eq(telegramInboundLog.id, logRowId))
+          .catch(() => { /* audit-only; ignore */ });
+        try {
+          broadcastTelegramInboundEvent({
+            userId: BOSS_USER_ID,
+            kind: "command",
+            text: text.slice(0, 200),
+            command: command.command,
+            args: command.args,
+            timestamp: new Date(),
+          });
+        } catch (err) { logger.warn({ err }, "telegram-inbound: ws broadcast failed"); }
+        return res.status(200).json({ ok: true, command: command.command });
+      }
+
+      // Free-form message → partner room (mirrors /api/rooms/:id/human-message
+      // idiom verbatim). The 7th arg "Partner" is critical: deliberation.ts
+      // detects isPartnerChat by roomName === "Partner".
+      const partner = await findBossPartnerRoom(storage);
+      const truncated = text.trim().slice(0, 4096);
+      const msg = await storage.addRoomMessage({
+        roomId: partner.roomId,
+        agentId: null,
+        agentName: "👤 BOSS (Telegram)",
+        agentColor: "#3B82F6",
+        content: truncated,
+      }, BOSS_USER_ID);
+      if (msg) broadcastToRoom(partner.roomId, msg);
+      await db.update(telegramInboundLog)
+        .set({ dispatchedToRoomId: partner.roomId })
+        .where(eq(telegramInboundLog.id, logRowId))
+        .catch(() => { /* audit-only; ignore */ });
+
+      // Fire-and-forget agent trigger; the route MUST return 200 fast so
+      // Telegram doesn't retry. Errors are logged, never thrown.
+      triggerAgentResponses(
+        partner.roomId,
+        BOSS_USER_ID,
+        null,
+        "BOSS",
+        truncated,
+        partner.agentIds,
+        "Partner",
+      ).catch((err) => logger.error({ err }, "telegram-inbound: triggerAgentResponses failed"));
+
+      try {
+        broadcastTelegramInboundEvent({
+          userId: BOSS_USER_ID,
+          kind: "message",
+          text: text.slice(0, 200),
+          timestamp: new Date(),
+        });
+      } catch (err) { logger.warn({ err }, "telegram-inbound: ws broadcast failed"); }
+
+      return res.status(200).json({ ok: true });
+    } catch (err: any) {
+      if (err?.message === "partner_room_not_found") {
+        // BRO1 R349: don't silent-fail. Tell BOSS so they create the room.
+        await sendTelegramMessage({
+          chatId: String(chatId),
+          text: "Лука не настроен. Создай partner-room в dashboard сначала.",
+          urgency: "high",
+          userId: BOSS_USER_ID,
+          reason: "partner_room_not_found",
+        }).catch(() => { /* fail-silent */ });
+        await db.update(telegramInboundLog)
+          .set({ error: "partner_room_not_found" })
+          .where(eq(telegramInboundLog.id, logRowId))
+          .catch(() => { /* audit-only */ });
+        return res.status(503).json({ ok: false, error: "partner_room_not_found" });
+      }
+      // Truly unexpected. Log and 500 so Telegram retries (the failure may
+      // be transient — DB blip, etc).
+      logger.error({ err }, "telegram-inbound: unexpected dispatch failure");
+      throw err;
+    }
   }));
 
   // ── Proactive Check — Luca initiates conversation ─────────────
