@@ -6539,6 +6539,24 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // Broadcast to WS subscribers
         if (msg) broadcastToRoom(roomId, msg);
 
+        // PR-A.5.1: Auto-mirror agent reply to Telegram for Partner-chat.
+        // Without this BOSS sees Luca's reply only on usekioku.com — the whole
+        // point of the Telegram inbound webhook is bidirectional chat. We rely
+        // on sendTelegramMessage's fail-silent contract; never throw out of
+        // the mirror because that would corrupt deliberation flow.
+        if (isPartnerChat && reply && reply.trim().length > 0) {
+          const bossChatId = process.env.TELEGRAM_BOSS_CHAT_ID;
+          if (bossChatId) {
+            sendTelegramMessage({
+              chatId: bossChatId,
+              text: reply,
+              urgency: "normal",
+              userId,
+              reason: `partner_chat_mirror:agent_${agent.id}`,
+            }).catch((err) => logger.warn({ err, agentId: agent.id }, "telegram-mirror: send failed"));
+          }
+        }
+
         // W6 Item 2a: if we served a boilerplate reply because the per-agent
         // breaker was open, send a parallel system-hint so the client can show
         // a "temporarily unavailable, retry in ~30s" toast without re-rendering
