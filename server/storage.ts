@@ -2353,30 +2353,43 @@ export class Storage implements IStorage {
     trustLevel?: number; familiarity?: number; interactionCount?: number;
     sharedReferences?: any[]; emotionalHistory?: any[]; stableOpinions?: Record<string, any>;
   }): Promise<any> {
+    // Bug-fix (2026-04-29): the previous implementation passed `?? 0` /
+    // `?? []` for every field and relied on COALESCE($n, existing) in the
+    // ON CONFLICT branch. That never preserved existing values because
+    // COALESCE only replaces NULL, and `0` / `[]` are both non-NULL — every
+    // partial upsert silently zeroed `interaction_count` and `trust_level`,
+    // making the agent always see "new (0 conversations)" no matter how
+    // many real interactions had happened. We now build the SET clause
+    // dynamically and only touch fields the caller actually passed.
     const now = Date.now();
-    const result = await pool.query(`
-      INSERT INTO agent_relationships (agent_id, user_id, trust_level, familiarity,
-        interaction_count, shared_references, emotional_history, stable_opinions,
-        last_interaction_at, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-      ON CONFLICT (agent_id, user_id) DO UPDATE SET
-        trust_level = COALESCE($3, agent_relationships.trust_level),
-        familiarity = COALESCE($4, agent_relationships.familiarity),
-        interaction_count = COALESCE($5, agent_relationships.interaction_count),
-        shared_references = COALESCE($6, agent_relationships.shared_references),
-        emotional_history = COALESCE($7, agent_relationships.emotional_history),
-        stable_opinions = COALESCE($8, agent_relationships.stable_opinions),
-        last_interaction_at = $9
+    const setClauses: string[] = ["last_interaction_at = $3"];
+    const insertCols: string[] = ["agent_id", "user_id", "last_interaction_at", "created_at"];
+    const insertVals: string[] = ["$1", "$2", "$3", "$3"];
+    const params: any[] = [agentId, userId, now];
+    let i = 4;
+
+    const addField = (col: string, value: any) => {
+      params.push(value);
+      setClauses.push(`${col} = $${i}`);
+      insertCols.push(col);
+      insertVals.push(`$${i}`);
+      i++;
+    };
+
+    if (updates.trustLevel !== undefined)        addField("trust_level", updates.trustLevel);
+    if (updates.familiarity !== undefined)       addField("familiarity", updates.familiarity);
+    if (updates.interactionCount !== undefined)  addField("interaction_count", updates.interactionCount);
+    if (updates.sharedReferences !== undefined)  addField("shared_references", JSON.stringify(updates.sharedReferences));
+    if (updates.emotionalHistory !== undefined)  addField("emotional_history", JSON.stringify(updates.emotionalHistory));
+    if (updates.stableOpinions !== undefined)    addField("stable_opinions", JSON.stringify(updates.stableOpinions));
+
+    const sql = `
+      INSERT INTO agent_relationships (${insertCols.join(", ")})
+      VALUES (${insertVals.join(", ")})
+      ON CONFLICT (agent_id, user_id) DO UPDATE SET ${setClauses.join(", ")}
       RETURNING *
-    `, [
-      agentId, userId,
-      updates.trustLevel ?? 0.0, updates.familiarity ?? 0.0,
-      updates.interactionCount ?? 0,
-      JSON.stringify(updates.sharedReferences ?? []),
-      JSON.stringify(updates.emotionalHistory ?? []),
-      JSON.stringify(updates.stableOpinions ?? {}),
-      now,
-    ]);
+    `;
+    const result = await pool.query(sql, params);
     const r = result.rows[0];
     return {
       id: r.id,
