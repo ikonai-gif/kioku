@@ -15,7 +15,7 @@
  *
  * Rate limiter:
  *   - In-process Map<chatId, number[]> of recent send timestamps.
- *   - 5 sends per ROLLING HOUR (3600_000ms). Older entries pruned on every
+ *   - 30 sends per ROLLING MINUTE (60_000ms). Older entries pruned on every
  *     attempt. Per-process state is fine for PR-A; multi-replica concerns
  *     belong to PR-B (cron + DB-backed deferred queue).
  */
@@ -137,7 +137,7 @@ export async function sendTelegramMessage(input: SendInput): Promise<SendResult>
     return { ok: false, error: "telegram_not_configured" };
   }
 
-  // 200-char hard truncate. Done before rate-limit / fetch so the audit row
+  // 4000-char hard truncate. Done before rate-limit / fetch so the audit row
   // and the on-the-wire payload are consistent.
   let text = input.text;
   let truncated = false;
@@ -146,12 +146,12 @@ export async function sendTelegramMessage(input: SendInput): Promise<SendResult>
     truncated = true;
   }
 
-  // In-process rate limit (5/hour/chat).
+  // In-process rate limit (30/min/chat).
   const now = Date.now();
   if (!checkRateLimit(input.chatId, now)) {
     logger.warn(
       { component: "telegram", event: "rate_limited", chatId: input.chatId },
-      "[telegram] rate-limited — 5 sends/hour cap hit",
+      "[telegram] rate-limited — 30 sends/min cap hit",
     );
     await logAttempt({
       userId: input.userId,

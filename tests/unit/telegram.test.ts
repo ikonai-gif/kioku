@@ -158,8 +158,8 @@ describe("sendTelegramMessage — config absence", () => {
   });
 });
 
-describe("sendTelegramMessage — 200-char truncation", () => {
-  it("truncates text >200 chars before send and reports truncated:true", async () => {
+describe("sendTelegramMessage — 4000-char truncation", () => {
+  it("truncates text >4000 chars before send and reports truncated:true", async () => {
     let bodyOnTheWire = "";
     globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body));
@@ -167,7 +167,7 @@ describe("sendTelegramMessage — 200-char truncation", () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as any;
 
-    const longText = "X".repeat(250);
+    const longText = "X".repeat(4500);
     const result = await sendTelegramMessage({
       chatId: "12345",
       text: longText,
@@ -177,18 +177,39 @@ describe("sendTelegramMessage — 200-char truncation", () => {
 
     expect(result.ok).toBe(true);
     expect(result.truncated).toBe(true);
-    expect(bodyOnTheWire.length).toBe(200);
-    expect(logRows[0].message.length).toBe(200);
+    expect(bodyOnTheWire.length).toBe(4000);
+    expect(logRows[0].message.length).toBe(4000);
+  });
+
+  it("does NOT truncate text exactly at 4000 chars and leaves truncated undefined", async () => {
+    let bodyOnTheWire = "";
+    globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodyOnTheWire = body.text;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as any;
+
+    const exact = "X".repeat(4000);
+    const result = await sendTelegramMessage({
+      chatId: "12345",
+      text: exact,
+      urgency: "high",
+      userId: 7,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.truncated).toBeUndefined();
+    expect(bodyOnTheWire.length).toBe(4000);
   });
 });
 
-describe("sendTelegramMessage — rate limiter (5/hour/chat)", () => {
-  it("permits 5 sends and rejects the 6th with rate_limited", async () => {
+describe("sendTelegramMessage — rate limiter (30/min/chat)", () => {
+  it("permits 30 sends and rejects the 31st with rate_limited", async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true }), { status: 200 }),
     ) as any;
 
-    const inputs = Array.from({ length: 5 }, (_, i) => ({
+    const inputs = Array.from({ length: 30 }, (_, i) => ({
       chatId: "limit-target",
       text: `msg ${i}`,
       urgency: "high" as const,
@@ -199,17 +220,17 @@ describe("sendTelegramMessage — rate limiter (5/hour/chat)", () => {
       expect(r.ok).toBe(true);
     }
 
-    const sixth = await sendTelegramMessage({
+    const overflow = await sendTelegramMessage({
       chatId: "limit-target",
       text: "should-be-blocked",
       urgency: "high",
       userId: 7,
     });
-    expect(sixth.ok).toBe(false);
-    expect(sixth.error).toBe("rate_limited");
+    expect(overflow.ok).toBe(false);
+    expect(overflow.error).toBe("rate_limited");
 
-    // Audit rows: 5 delivered + 1 rate_limited.
-    expect(logRows.filter((r) => r.delivered)).toHaveLength(5);
+    // Audit rows: 30 delivered + 1 rate_limited.
+    expect(logRows.filter((r) => r.delivered)).toHaveLength(30);
     expect(logRows.filter((r) => r.error === "rate_limited")).toHaveLength(1);
   });
 
@@ -218,7 +239,7 @@ describe("sendTelegramMessage — rate limiter (5/hour/chat)", () => {
       new Response(JSON.stringify({ ok: true }), { status: 200 }),
     ) as any;
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 30; i++) {
       const r = await sendTelegramMessage({
         chatId: "chat-A",
         text: `a${i}`,
@@ -227,7 +248,7 @@ describe("sendTelegramMessage — rate limiter (5/hour/chat)", () => {
       });
       expect(r.ok).toBe(true);
     }
-    // Different chatId — should still allow 5 sends.
+    // Different chatId — should still allow another 30 sends.
     const r = await sendTelegramMessage({
       chatId: "chat-B",
       text: "b1",
