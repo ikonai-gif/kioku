@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, serial, bigint, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, real, serial, bigint, bigserial, boolean, unique, uuid, varchar, timestamp, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -613,6 +613,37 @@ export const lucaTelegramLog = pgTable("luca_telegram_log", {
 export const insertLucaTelegramLogSchema = createInsertSchema(lucaTelegramLog).omit({ id: true, sentAt: true });
 export type InsertLucaTelegramLog = z.infer<typeof insertLucaTelegramLogSchema>;
 export type LucaTelegramLog = typeof lucaTelegramLog.$inferSelect;
+
+// ────────────────────────────────────────────────────────────────────────────
+// PR-A.5 — telegram_inbound_log (0011)
+// Forensic + IDEMPOTENCY log for inbound Telegram updates hitting
+// POST /api/telegram/webhook. Pairs with luca_telegram_log (outbound). The
+// UNIQUE(update_id) here is the idempotency key — combined with
+// .onConflictDoNothing().returning() in the route handler, it guarantees
+// exactly-once dispatch under Telegram retries / replica races.
+// Mirrors migrations/0011_telegram_inbound_log.sql.
+// ────────────────────────────────────────────────────────────────────────────
+export const telegramInboundLog = pgTable("telegram_inbound_log", {
+  // BIGSERIAL on the SQL side (migration 0011). Drizzle's bigserial type
+  // omits `id` from .values() inserts — the sequence default fills it.
+  id:                  bigserial("id", { mode: "number" }).primaryKey(),
+  updateId:            bigint("update_id", { mode: "number" }).notNull().unique(),
+  chatId:              bigint("chat_id", { mode: "number" }).notNull(),
+  fromId:              bigint("from_id", { mode: "number" }).notNull(),
+  messageText:         text("message_text"),
+  commandName:         text("command_name"),
+  commandArgs:         text("command_args"),
+  dispatchedToRoomId:  integer("dispatched_to_room_id"),
+  dispatchedAt:        timestamp("dispatched_at", { withTimezone: true }).notNull().defaultNow(),
+  error:               text("error"),
+  rawUpdate:           jsonb("raw_update"),
+}, (t) => [
+  index("idx_telegram_inbound_chat_time").on(t.chatId, t.dispatchedAt),
+]);
+
+export const insertTelegramInboundLogSchema = createInsertSchema(telegramInboundLog).omit({ id: true, dispatchedAt: true });
+export type InsertTelegramInboundLog = z.infer<typeof insertTelegramInboundLogSchema>;
+export type TelegramInboundLog = typeof telegramInboundLog.$inferSelect;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Self-Monitoring (0007) — Honesty Layer Step 2

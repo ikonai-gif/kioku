@@ -167,3 +167,40 @@ export function broadcastTelegramEvent(payload: TelegramEventPayload): void {
     timestamp: payload.timestamp.toISOString(),
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PR-A.5 — inbound Telegram event (BOSS → us).
+//
+// Broadcast on every successfully-dispatched inbound webhook hit so the Luca
+// Board UI can surface "BOSS is typing on Telegram" / "BOSS sent /status"
+// indicators in real time without polling the inbound log table.
+//
+// kind == "message" → free-form text routed into the Partner room.
+// kind == "command" → slash-command (/status, /queue, /cancel, /help, ...).
+//
+// Like the outbound event above, this is best-effort. The webhook handler
+// fires-and-forgets; broadcast failures never fail the HTTP response back to
+// Telegram (which would trigger redelivery for an already-handled update).
+// ────────────────────────────────────────────────────────────────────────────
+export interface TelegramInboundEventPayload {
+  userId: number;
+  kind: "message" | "command";
+  /** Already truncated to 200 chars by the route handler. */
+  text: string;
+  /** Set iff kind === "command"; lower-cased command name without leading slash. */
+  command?: string | null;
+  /** Set iff kind === "command"; space-split args (may be empty). */
+  args?: string[] | null;
+  timestamp: Date;
+}
+
+export function broadcastTelegramInboundEvent(payload: TelegramInboundEventPayload): void {
+  broadcastToUser(payload.userId, {
+    type: "luca.telegram.inbound",
+    kind: payload.kind,
+    text: payload.text,
+    command: payload.command ?? null,
+    args: payload.args ?? null,
+    timestamp: payload.timestamp.toISOString(),
+  });
+}
