@@ -24,10 +24,10 @@ import { db } from "../storage";
 import { lucaTelegramLog } from "../../shared/schema";
 import logger from "../logger";
 
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const RATE_LIMIT_MAX = 5;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX = 30;
 const SEND_TIMEOUT_MS = 8000;
-const MAX_TEXT_LENGTH = 200;
+const MAX_TEXT_LENGTH = 4000;
 
 const recentSends: Map<string, number[]> = new Map();
 
