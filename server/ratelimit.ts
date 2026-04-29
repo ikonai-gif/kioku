@@ -127,6 +127,14 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
     return next();
   }
 
+  // Internal probes (health-check, lockout-prevention worker) bypass via
+  // shared secret in X-Internal-Health header. Fail-safe: if env unset, the
+  // header is ignored — never accept a missing/empty secret as valid.
+  const internalSecret = process.env.INTERNAL_HEALTH_SECRET;
+  if (internalSecret && req.headers["x-internal-health"] === internalSecret) {
+    return next();
+  }
+
   // Resolve identity key (API key or session token)
   const apiKey = req.headers["x-api-key"] as string | undefined;
   const sessionToken = req.headers["x-session-token"] as string | undefined;
