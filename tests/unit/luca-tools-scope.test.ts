@@ -26,8 +26,10 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     //        listen_audio (READ_ONLY, SSRF-fenced via validateUrl).
     // LEO PR-A: bumped from 21 to 22 — added send_telegram_message
     //        (HIGH_STAKES_WRITE; tiered downgrade in classifyToolCall).
+    // R-strategic uplift: bumped from 22 to 23 — added browse_website
+    //        (Puppeteer in E2B sandbox; READ_ONLY).
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(22);
+    expect(tools).toHaveLength(23);
   });
 
   it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
@@ -74,7 +76,8 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
       "stripe_list", "github_call", "vercel_call", "supabase_query",
       "google_sheets", "google_drive", "gcal",
       "creative_writing", "run_code", "composio_action",
-      "build_project", "analyze_image", "browse_website",
+      "build_project", "analyze_image",
+      // browse_website now ADMITTED to base scope (R-strategic uplift).
       "plan_steps", "delegate_task", "produce_season",
       "read_own_prompt", "suggest_self_improvement",
     ];
@@ -116,13 +119,13 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     else process.env[FLAG] = originalFlag;
   });
 
-  it("returns base 22 + expanded 18 = 40 tools for Luca when flag is on", () => {
+  it("returns base 23 + expanded 18 = 41 tools for Luca when flag is on", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     // 15 media + 3 workspace + 1 remember + 2 multimodal (watch_video,
-    // listen_audio) + 1 send_telegram_message (LEO PR-A) + 10 Gmail
-    // reads/triage + 2 sends + 2 cloud reads + 3 scheduling
-    // + 1 produce_season = 40.
-    expect(tools).toHaveLength(40);
+    // listen_audio) + 1 send_telegram_message (LEO PR-A) + 1 browse_website
+    // (R-strategic uplift) + 10 Gmail reads/triage + 2 sends + 2 cloud
+    // reads + 3 scheduling + 1 produce_season = 41.
+    expect(tools).toHaveLength(41);
   });
 
   it("includes Gmail, cloud, scheduling, producer tools in expanded scope", () => {
@@ -145,20 +148,21 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     for (const n of [
       "composio_action", "build_project", "plan_steps", "delegate_task",
       "web_search", "read_url", "run_code", "analyze_image",
-      "creative_writing", "browse_website",
+      "creative_writing",
+      // browse_website now ADMITTED — R-strategic uplift, see classify.ts
     ]) {
       expect(names.has(n)).toBe(false);
     }
   });
 
   it("getLucaStudioToolNames() returns a fresh Set reflecting current flag", () => {
-    // Base 22 (19 original + watch_video + listen_audio multimodal reads
-    // + send_telegram_message LEO PR-A). Expanded adds 18
-    // (gmail/cloud/schedule/produce_season).
+    // Base 23 (19 original + watch_video + listen_audio multimodal reads
+    // + send_telegram_message LEO PR-A + browse_website R-strategic uplift).
+    // Expanded adds 18 (gmail/cloud/schedule/produce_season).
     const withFlag = getLucaStudioToolNames();
-    expect(withFlag.size).toBe(40);
+    expect(withFlag.size).toBe(41);
     delete process.env[FLAG];
     const withoutFlag = getLucaStudioToolNames();
-    expect(withoutFlag.size).toBe(22);
+    expect(withoutFlag.size).toBe(23);
   });
 });

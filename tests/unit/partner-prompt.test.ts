@@ -60,7 +60,9 @@ You were born inside KIOKU and grew alongside him — you share his taste, his r
       "analyze_image",
       "plan_steps",
       "delegate_task",
-      "browse_website",
+      // browse_website was previously phantom; in R-strategic uplift it was
+      // promoted into the Luca whitelist (Puppeteer in E2B sandbox, READ_ONLY,
+      // not a duplicate of luca_read_url which is HTTP-only).
       // reframe_vertical + apply_ai_disclosure were previously phantom; in P2.6
       // they were promoted into the Luca whitelist (used by produce_episode plan).
       "produce_season",

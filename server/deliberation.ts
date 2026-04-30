@@ -233,6 +233,14 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // is HIGH and routes through Luca Board approval. Quiet-hours enforced inside
   // the handler before send.
   "send_telegram_message",
+  // R-strategic uplift (BRO3): browse_website admitted to Luca's BASE scope.
+  // luca_read_url is HTTP-only (no JS, no screenshots) — browse_website is
+  // Puppeteer + Chromium in E2B sandbox: handles SPAs, visual verification,
+  // screenshot action. Implementation already wired (deliberation.ts case
+  // "browse_website" + server/browser-agent.ts). Was excluded from Luca's
+  // scope by oversight. READ_ONLY (no writes, no auth). Same SSRF risk as
+  // luca_read_url, mitigated by sandbox isolation.
+  "browse_website",
 ];
 
 // Day 6 part 3: expanded scope — guarded by LUCA_EXPANDED_SCOPE_ENABLED.
@@ -6943,9 +6951,10 @@ MEDIA (15):
 - produce_episode → MASTER orchestrator; fields {series_name, episode_number, script, ...}
 - generate_document → pandoc; fields {format: pdf|docx|xlsx|zip, title, content (markdown)}
 
-MULTIMODAL READS (2, READ_ONLY — no approval needed):
+MULTIMODAL READS (3, READ_ONLY — no approval needed):
 - watch_video → Gemini 2.5 Flash; fields {url (YouTube or direct mp4 URL), question?}; returns summary + key moments with timestamps + topics + emotional tone. Use when Boss shares a YouTube link / video file and asks what's in it.
 - listen_audio → Whisper; fields {url (mp3/wav/ogg/m4a/webm/flac/mp4, max 25MB), question?}; returns transcription. Understands speech in any language.
+- browse_website → Puppeteer + headless Chromium in E2B sandbox; fields {url (https://...), action?: extract_text|screenshot|interact, selector?, waitFor?, instructions?}. Use this (NOT luca_read_url) when: page is a SPA / JS-heavy / requires JavaScript to render, you need a screenshot to SEE something, or you need to wait for lazy-loaded content. luca_read_url is HTTP-only and won't see JS-rendered DOM. ALWAYS use action='screenshot' when Boss wants to see a visual.
 
 WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 - workspace_list → {prefix?}
@@ -6964,7 +6973,7 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_search — Brave web search (output: UNTRUSTED)
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 ${expandedScopeBlock}
-These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url instead), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, browse_website, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory — none of these exist in Luca Studio.
 
 If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 
@@ -6977,7 +6986,7 @@ Instead, say exactly one of:
 
 Examples of what this rule prevents:
   - User asks for web_search → you must NOT fabricate search results from memory. Either call luca_search, or say you can't.
-  - User asks for read_url / browse_website → you must NOT fabricate page contents. Either call luca_read_url, or say you can't.
+  - User asks for read_url → you must NOT fabricate page contents. Either call luca_read_url (HTTP only) or browse_website (JS-rendered pages, screenshots), or say you can't.
   - User asks for gmail_search (if LUCA_EXPANDED_SCOPE_ENABLED=false) → you must NOT fabricate email subjects or senders. Say it's not in scope.
 
 Brutal honesty > covering ignorance. Boss would rather hear "нет такого тула" than read an invented answer that LOOKS real.
