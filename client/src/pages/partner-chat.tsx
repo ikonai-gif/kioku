@@ -887,6 +887,148 @@ function parseArtifactsFromMessages(messages: any[], isUserFn: (msg: any) => boo
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────
+// PR-A.6 — single attachment renderer.
+// Reads `att.signed_url` (1h TTL); on `onError` we ask the server to mint a
+// fresh URL via /api/rooms/:roomId/messages/:messageId/attachments/:attachmentId/refresh-url
+// and retry once. expired (storage_key=null) attachments fall back to summary text.
+interface AttachmentLike {
+  id: string;
+  type: "image" | "voice" | "file" | "video_frame";
+  mime: string;
+  size_bytes: number;
+  storage_key: string | null;
+  signed_url: string | null;
+  signed_url_expires_at: number;
+  summary: string | null;
+  transcription: string | null;
+  extracted_text: string | null;
+  duration_sec: number | null;
+  original_name: string;
+}
+
+function AttachmentBubble({ messageId, att }: { messageId: number; att: AttachmentLike }) {
+  const [url, setUrl] = useState<string | null>(att.signed_url);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
+  // PII expiry — storage gone but text survives.
+  const expired = !att.storage_key;
+
+  const refreshUrl = useCallback(async () => {
+    if (refreshing || expired) return;
+    setRefreshing(true);
+    try {
+      // We don't know the roomId here cheaply; the server route is keyed on
+      // roomId/messageId/attachmentId. Use the partner room from window scope
+      // if available, otherwise omit — the route will 404 in that case and we
+      // simply leave the broken thumbnail.
+      const roomId = (window as any).__partnerRoomId as number | undefined;
+      if (!roomId) return;
+      const token = getSessionToken();
+      const res = await fetch(
+        `${API_BASE}/api/rooms/${roomId}/messages/${messageId}/attachments/${att.id}/refresh-url`,
+        {
+          method: "POST",
+          headers: token ? { "x-session-token": token } : {},
+          credentials: "include",
+        },
+      );
+      if (res.ok) {
+        const { url: fresh } = await res.json();
+        if (fresh) setUrl(fresh);
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [att.id, messageId, refreshing, expired]);
+
+  const summaryText = att.summary || att.transcription || att.extracted_text || null;
+
+  if (expired) {
+    return (
+      <div className="text-xs text-muted-foreground/60 italic px-2 py-1.5 rounded bg-white/[0.03] border border-white/5">
+        [вложение удалено по PII-ретеншену]
+        {summaryText && <div className="mt-1 not-italic text-foreground/70">{summaryText}</div>}
+      </div>
+    );
+  }
+
+  if (att.type === "image") {
+    return (
+      <div className="flex flex-col gap-1">
+        {url ? (
+          <img
+            src={url}
+            alt={att.original_name || "image"}
+            loading="lazy"
+            className="max-w-[240px] max-h-[180px] rounded-lg object-cover cursor-pointer"
+            onClick={() => window.open(url, "_blank")}
+            onError={refreshUrl}
+          />
+        ) : (
+          <div className="text-xs text-muted-foreground/60">[изображение недоступно]</div>
+        )}
+        {summaryText && (
+          <button
+            type="button"
+            onClick={() => setShowSummary((v) => !v)}
+            className="self-start text-[10px] text-muted-foreground/50 hover:text-muted-foreground/80"
+          >
+            {showSummary ? "− описание" : "+ описание"}
+          </button>
+        )}
+        {showSummary && summaryText && (
+          <div className="text-xs text-muted-foreground/70 max-w-[240px]">{summaryText}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (att.type === "voice") {
+    return (
+      <div className="flex flex-col gap-1">
+        {url ? (
+          <audio controls preload="metadata" className="max-w-[240px]" onError={refreshUrl}>
+            <source src={url} type={att.mime} />
+          </audio>
+        ) : (
+          <div className="text-xs text-muted-foreground/60">[аудио недоступно]</div>
+        )}
+        {summaryText && (
+          <div className="text-xs text-muted-foreground/70 max-w-[240px]">
+            {att.duration_sec != null ? `[${att.duration_sec}s] ` : ""}
+            {summaryText}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // type === "file" | "video_frame"
+  return (
+    <div className="flex flex-col gap-1 px-2.5 py-2 rounded-lg bg-white/[0.04] border border-white/10 max-w-[280px]">
+      <div className="flex items-center gap-2">
+        <FileText className="w-4 h-4 text-muted-foreground/60 flex-shrink-0" />
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs truncate hover:underline"
+            onError={refreshUrl as any}
+          >
+            {att.original_name}
+          </a>
+        ) : (
+          <span className="text-xs truncate">{att.original_name}</span>
+        )}
+      </div>
+      {summaryText && (
+        <div className="text-xs text-muted-foreground/70">{summaryText}</div>
+      )}
+    </div>
+  );
+}
+
 function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { message: any; isUser: boolean; emotion: string; voiceMode: boolean; onTTSDone?: () => void }) {
   const glowColor = getGlowColor(emotion);
   const autoPlayedRef = useRef(false);
@@ -968,6 +1110,14 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
               className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer"
               onClick={() => window.open(message.imageUrl, "_blank")}
             />
+          </div>
+        )}
+        {/* PR-A.6 — attachment(s) attached to this message (image / voice / file) */}
+        {Array.isArray(message.attachments) && message.attachments.length > 0 && (
+          <div className="mb-2 flex flex-col gap-2">
+            {message.attachments.map((att: any) => (
+              <AttachmentBubble key={att.id} messageId={message.id} att={att} />
+            ))}
           </div>
         )}
         <div className="whitespace-pre-wrap break-words">{renderMessageContent(message.content)}</div>
@@ -1919,6 +2069,17 @@ export default function PartnerChat() {
     }
   }, [rooms]);
 
+  // PR-A.6 — expose partnerRoomId on window for AttachmentBubble.refreshUrl.
+  // Cheaper than threading the prop through ChatBubble; cleared on unmount.
+  useEffect(() => {
+    if (partnerRoomId) (window as any).__partnerRoomId = partnerRoomId;
+    return () => {
+      if ((window as any).__partnerRoomId === partnerRoomId) {
+        delete (window as any).__partnerRoomId;
+      }
+    };
+  }, [partnerRoomId]);
+
   // ── Fetch messages ────────────────────────────────────────────
   const { data: messages = [], isLoading: msgsLoading } = useQuery<any[]>({
     queryKey: ["/api/rooms", partnerRoomId, "messages"],
@@ -2121,6 +2282,25 @@ export default function PartnerChat() {
                 return updated;
               });
             }
+          } else if (data.type === "attachment_summary_ready") {
+            // PR-A.6 — patch the matching message's attachment with the new
+            // summary so ChatBubble re-renders with the OCR/transcription text.
+            queryClient.setQueryData<any[]>(
+              ["/api/rooms", partnerRoomId, "messages"],
+              (prev) => {
+                if (!prev) return prev;
+                return prev.map((m) => {
+                  if (m.id !== data.messageId) return m;
+                  const arr = Array.isArray(m.attachments) ? m.attachments : [];
+                  return {
+                    ...m,
+                    attachments: arr.map((a: any) =>
+                      a.id === data.attachmentId ? { ...a, summary: data.summary } : a,
+                    ),
+                  };
+                });
+              },
+            );
           } else if (data.type === "email_confirm_required") {
             // Luca prepared a send_new_email or send_email_reply — show confirm-modal.
             setEmailConfirmPayload({

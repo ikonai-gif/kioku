@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Code, Image as ImageIcon, FileText, Download, Copy, Check, ExternalLink, Search } from "lucide-react";
 import { API_BASE } from "@/lib/queryClient";
 
-export type ArtifactCategory = "code" | "images" | "files";
+export type ArtifactCategory = "code" | "images" | "files" | "media";
 
 export interface Artifact {
   id: string;
