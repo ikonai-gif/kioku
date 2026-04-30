@@ -119,7 +119,11 @@ export type LucaAdmissibleTool =
   | "listen_audio"
   // LEO PR-A — Telegram outreach to BOSS. HIGH by name; tiered downgrade
   // in classifyToolCall reads `urgency` field (high → LOW_STAKES_WRITE).
-  | "send_telegram_message";
+  | "send_telegram_message"
+  // R-strategic uplift (BRO3): Puppeteer browser in E2B sandbox. Same
+  // SSRF surface as luca_read_url, mitigated by sandbox isolation. No
+  // writes, no auth, no recipient — READ_ONLY.
+  | "browse_website";
 
 /**
  * Primary classification table by tool name (worst-case upper bound).
@@ -253,6 +257,14 @@ export const TOOL_WRITE_CLASS = {
   //   urgency='low'    → HIGH (caller should suppress at higher layer; if it reaches gate, treat as HIGH for safety)
   //   missing/invalid  → HIGH (fail-closed)
   send_telegram_message:    "HIGH_STAKES_WRITE",
+
+  // R-strategic uplift (BRO3): browser in E2B sandbox is read-only by
+  // design — extracts text / takes screenshots / interacts with DOM but
+  // never persists anywhere outside the sandbox. interact action is still
+  // local DOM manipulation (no auth flows, no purchases, no submits to
+  // arbitrary forms). If we ever add browser auth or login support, this
+  // must be promoted to HIGH_STAKES_WRITE.
+  browse_website:           "READ_ONLY",
 } as const satisfies Record<LucaAdmissibleTool, ToolWriteClass>;
 
 /**
@@ -301,7 +313,10 @@ export const UNADMITTED_TOOLS: ReadonlySet<string> = new Set([
   "read_own_prompt",
   "update_self_knowledge",
   "correct_false_memory",
-  "browse_website",
+  // browse_website removed — admitted to Luca's BASE scope (R-strategic
+  // uplift). It is NOT a duplicate of luca_read_url: read_url is HTTP-only
+  // text fetch, browse_website is Puppeteer with JS rendering + screenshots.
+  // Classified as READ_ONLY in TOOL_WRITE_CLASS below.
   "web_search",
   "read_url",
   "run_code",
