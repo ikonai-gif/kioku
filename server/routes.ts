@@ -70,6 +70,8 @@ import {
   parseCommand,
   checkInboundRateLimit,
   handleTelegramCommand,
+  processTelegramAttachment,
+  scheduleAttachmentSummary,
   BOSS_USER_ID,
   type ParsedCommand,
 } from "./lib/telegram-inbound";
@@ -655,6 +657,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ALLOWED_HASHES: Record<string, string> = {
       "9e83d3d88018a04885bf6a6d4374273cbf497e2f2cbafeebd6c21cb2ea0c187a": "0007_self_monitoring.sql",
       "579740d44b980eb1429e531e62cd428bfe976e6542b794e89f007659de193633": "0012_memory_provenance_sprint1v2.sql",
+      "7c045d8e42e66b5810859959703cf6ad8946c61cc185e5f587203ca6c6d4533d": "0013_room_messages_attachments.sql",
     };
     const crypto = await import("crypto");
     const hash = crypto.createHash("sha256").update(sqlText, "utf8").digest("hex");
@@ -1926,17 +1929,98 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { agentId, agentName: rawMsgName, agentColor, content: rawMsgContent, isDecision } = validateBody(createRoomMessageSchema, req.body);
+    const roomIdNum = Number(req.params.id);
+
+    // PR-A.6 — multipart attachment branch.
+    //
+    // Web client posts multipart/form-data with a `file` field plus the same
+    // text/agent fields as the JSON branch. We dynamic-import multer (matches
+    // /api/partner/read-video etc.) so the JSON path stays zero-cost. Only one
+    // attachment per message in this PR — multi-file uploads are out of scope.
+    const ct = String(req.headers["content-type"] || "");
+    const isMultipart = ct.startsWith("multipart/form-data");
+    type MultipartFile = { buffer: Buffer; mimetype: string; originalname: string; size: number };
+    let multipartFile: MultipartFile | null = null;
+    if (isMultipart) {
+      const multer = (await import("multer")).default;
+      // 20MB cap matches Telegram inbound voice/document; web image is bigger
+      // but compresses fine — if BOSS ever needs more we'll bump per-route.
+      const upload = multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: 20 * 1024 * 1024 },
+      }).single("file");
+      try {
+        await new Promise<void>((resolve, reject) => {
+          upload(req as any, res as any, (err: any) => (err ? reject(err) : resolve()));
+        });
+      } catch (err: any) {
+        // multer surfaces LIMIT_FILE_SIZE here — turn into a 413 so the client
+        // can show a clear "file too big" toast instead of a generic 500.
+        if (err?.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({ error: "File too large (20MB max)" });
+        }
+        throw err;
+      }
+      multipartFile = ((req as any).file as MultipartFile | undefined) ?? null;
+    }
+
+    const body = isMultipart ? req.body : req.body;
+    const { agentId, agentName: rawMsgName, agentColor, content: rawMsgContent, isDecision } =
+      validateBody(createRoomMessageSchema, {
+        ...body,
+        agentId: body.agentId !== undefined ? Number(body.agentId) : undefined,
+        // multipart fields arrive as strings; the schema needs proper types.
+        isDecision: body.isDecision === "true" || body.isDecision === true,
+      });
     const agentName = sanitizeHtml(rawMsgName);
     const content = sanitizeHtml(rawMsgContent);
+
+    // Build AttachmentMeta if a file was uploaded. Web uploads are NOT under
+    // the 90d PII deadline (they are user-curated workspace assets) so
+    // expires_at = null.
+    let attachments: any[] = [];
+    if (multipartFile) {
+      try {
+        // Reuse the Telegram builder — same Supabase upload + AttachmentMeta
+        // shape, but we pass ttlMs=0 (no expiry) by overriding expires_at
+        // post-build. The builder is exported precisely so non-Telegram
+        // sources can share the path.
+        const { buildAttachmentFromBytes } = await import("./lib/telegram-inbound");
+        const type =
+          multipartFile.mimetype.startsWith("image/") ? "image"
+          : multipartFile.mimetype.startsWith("audio/") ? "voice"
+          : "file";
+        // Find Luca agent under this user so the storage namespace is stable
+        // (userId/agentId/...). If the user has no agent yet, fall back to 0
+        // — that path is created on demand by Supabase.
+        const userAgents = await storage.getAgents(userId);
+        const agentSlot = (userAgents[0]?.id ?? 0) as number;
+        const att = await buildAttachmentFromBytes({
+          type,
+          bytes: { data: multipartFile.buffer, mime: multipartFile.mimetype },
+          originalName: multipartFile.originalname || "file",
+          mimeOverride: multipartFile.mimetype,
+          userId,
+          agentId: agentSlot,
+        });
+        // Web uploads: no PII deadline.
+        att.expires_at = null;
+        attachments = [att];
+      } catch (err: any) {
+        logger.warn({ err: err?.message, userId }, "[rooms/messages] attachment upload failed");
+        return res.status(500).json({ error: "Attachment upload failed" });
+      }
+    }
+
     const msg = await storage.addRoomMessage({
-      roomId: Number(req.params.id),
+      roomId: roomIdNum,
       agentId: agentId ?? null,
       agentName,
       agentColor: agentColor ?? "#D4AF37",
       content,
       isDecision: !!isDecision,
-    }, userId);
+      attachments,
+    } as any, userId);
     if (!msg) return res.status(404).json({ error: "Not found" });
     // Auto-save decision to memories
     if (isDecision) {
@@ -1963,6 +2047,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     broadcastToRoom(Number(req.params.id), msg);
     res.json(msg);
 
+    // PR-A.6 — fire-and-forget summarizer for any attachment(s).
+    // Pushes summary back into JSONB and broadcasts attachment_summary_ready.
+    if (attachments.length > 0) {
+      const { scheduleAttachmentSummary } = await import("./lib/telegram-inbound");
+      for (const att of attachments) {
+        scheduleAttachmentSummary(msg.id, att.id, (e) => {
+          try {
+            broadcastToRoom(Number(req.params.id), {
+              type: "attachment_summary_ready",
+              messageId: e.messageId,
+              attachmentId: e.attachmentId,
+              summary: e.summary,
+            } as any);
+          } catch { /* WS best-effort */ }
+        });
+      }
+    }
+
     // Trigger AI agent responses asynchronously (non-blocking)
     const roomId = Number(req.params.id);
     const room = await storage.getRoom(roomId);
@@ -1979,6 +2081,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
   }));
+
+  // ── PR-A.6 Refresh signed URL for a single attachment ────────────────────
+  //
+  // Caveat C1 (R349): the in-memory cache only knows about messages it has
+  // already loaded. The web client may render a 24h-old room and find a
+  // signed_url that's expired. Hitting this endpoint mints a new 1h URL,
+  // patches it back into the JSONB, and returns it. Cheap (no Supabase byte
+  // download) and idempotent.
+  app.post(
+    "/api/rooms/:roomId/messages/:messageId/attachments/:attachmentId/refresh-url",
+    asyncHandler(async (req, res) => {
+      const userId = await getUser(req);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      const roomId = Number(req.params.roomId);
+      const messageId = Number(req.params.messageId);
+      const attachmentId = String(req.params.attachmentId);
+      if (!Number.isFinite(roomId) || !Number.isFinite(messageId)) {
+        return res.status(400).json({ error: "Bad request" });
+      }
+      // Ownership check: room must belong to user.
+      const room = await storage.getRoom(roomId, userId);
+      if (!room) return res.status(404).json({ error: "Not found" });
+
+      const att = await storage.getAttachment(messageId, attachmentId);
+      if (!att) return res.status(404).json({ error: "Attachment not found" });
+      if (!att.storage_key) {
+        // PII-expired or never-uploaded — binary is gone, don't issue a URL.
+        return res.status(410).json({ error: "Attachment expired" });
+      }
+      const { refreshSignedUrlIfNeeded } = await import("./lib/asset-bytes-cache");
+      const url = await refreshSignedUrlIfNeeded(messageId, attachmentId, att);
+      if (!url) return res.status(502).json({ error: "Refresh failed" });
+      return res.json({ url });
+    }),
+  );
 
   // ── Human Participant Mode — user joins deliberation as themselves ──
   app.post("/api/rooms/:id/human-message", asyncHandler(async (req, res) => {
@@ -2118,12 +2255,116 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(200).json({ ok: true, dropped: "rate_limit" });
     }
 
-    // 6a. Non-text payload (photo / voice / file / sticker / ...): tell BOSS
-    //     PR-A.5 only does text, so they don't sit waiting for a reply.
+    // 6a. Multimodal payload (PR-A.6): photo / voice / document.
+    //     We accept these alongside text and combined caption+attachment
+    //     submissions. Anything else (sticker, location, contact, video) is
+    //     still dropped with a friendly outbound nudge — those are out of
+    //     scope for PR-A.6 and would silently confuse BOSS otherwise.
+    const hasAttachment = !!(message.photo?.length || message.voice || message.document);
+    if (hasAttachment) {
+      // Find partner room first — if missing, fail loudly so BOSS gets the
+      // "create partner room" hint just like the text branch (catch below).
+      const partner = await findBossPartnerRoom(storage);
+
+      // Process the attachment to Supabase Storage. processTelegramAttachment
+      // returns a discriminated union; on failure we tell BOSS what went wrong
+      // (size cap / download / storage) so they know whether to retry.
+      const lucaAgentId = partner.agentIds[0] ?? 16;
+      const result = await processTelegramAttachment(message, lucaAgentId, BOSS_USER_ID);
+      if (!result.ok) {
+        const reasonText: Record<typeof result.reason, string> = {
+          size_cap: "Файл слишком большой. Фото до 5МБ, голос и файлы до 20МБ.",
+          missing_token: "Бот не настроен (TELEGRAM_BOT_TOKEN). Скажи БРО1.",
+          getfile_failed: "Не удалось получить файл из Telegram. Попробуй ещё раз.",
+          download_failed: "Не удалось скачать файл. Попробуй ещё раз.",
+          storage_failed: "Не удалось сохранить файл. Попробуй ещё раз.",
+          unsupported: "Этот тип вложения пока не поддерживается.",
+        };
+        await sendTelegramMessage({
+          chatId: String(chatId),
+          text: reasonText[result.reason],
+          urgency: "low",
+          userId: BOSS_USER_ID,
+          reason: `attachment_${result.reason}`,
+        }).catch(() => { /* fail-silent */ });
+        await db.update(telegramInboundLog)
+          .set({ error: `attachment_${result.reason}` })
+          .where(eq(telegramInboundLog.id, logRowId))
+          .catch(() => { /* audit-only */ });
+        return res.status(200).json({ ok: true, dropped: `attachment_${result.reason}` });
+      }
+
+      // Combine caption (if any) and an attachment placeholder so the room_message
+      // content column always has something searchable on its own. The summarizer
+      // backfills attachment.summary asynchronously and updates search_text after.
+      const captionText = (message.caption ?? "").trim().slice(0, 4096);
+      const placeholder =
+        result.attachment.type === "image"   ? "[фото]"
+        : result.attachment.type === "voice" ? "[голос]"
+        : `[файл: ${result.attachment.original_name}]`;
+      const content = captionText.length > 0 ? captionText : placeholder;
+
+      const msg = await storage.addRoomMessage({
+        roomId: partner.roomId,
+        agentId: null,
+        agentName: "👤 BOSS (Telegram)",
+        agentColor: "#3B82F6",
+        content,
+        attachments: [result.attachment],
+      } as any, BOSS_USER_ID);
+      if (msg) broadcastToRoom(partner.roomId, msg);
+      await db.update(telegramInboundLog)
+        .set({ dispatchedToRoomId: partner.roomId })
+        .where(eq(telegramInboundLog.id, logRowId))
+        .catch(() => { /* audit-only */ });
+
+      // Fire-and-forget summary; updates the JSONB and broadcasts via the
+      // onReady callback so the open partner-chat UI refreshes the tooltip.
+      if (msg) {
+        scheduleAttachmentSummary(msg.id, result.attachment.id, (e) => {
+          try {
+            broadcastToRoom(partner.roomId, {
+              type: "attachment_summary_ready",
+              messageId: e.messageId,
+              attachmentId: e.attachmentId,
+              summary: e.summary,
+            } as any);
+          } catch { /* WS best-effort */ }
+        });
+
+        // Trigger Лука deliberation — same idiom as the text branch. The
+        // attachment summary may not be ready yet; deliberation.ts uses
+        // awaitSummaryIfPending (caveat C2) to wait briefly before falling
+        // back to the placeholder.
+        triggerAgentResponses(
+          partner.roomId,
+          BOSS_USER_ID,
+          null,
+          "BOSS",
+          captionText || placeholder,
+          partner.agentIds,
+          "Partner",
+        ).catch((err) => logger.error({ err }, "telegram-inbound: triggerAgentResponses (attachment) failed"));
+      }
+
+      try {
+        broadcastTelegramInboundEvent({
+          userId: BOSS_USER_ID,
+          kind: "message",
+          text: `[${result.attachment.type}] ${captionText.slice(0, 180)}`,
+          timestamp: new Date(),
+        });
+      } catch (err) { logger.warn({ err }, "telegram-inbound: ws broadcast failed"); }
+
+      return res.status(200).json({ ok: true, attachment: result.attachment.id });
+    }
+
+    // 6a-fallback. Other non-text payloads we don't handle (sticker / location /
+    // video / contact). Tell BOSS so they don't sit waiting.
     if (!text) {
       await sendTelegramMessage({
         chatId: String(chatId),
-        text: "Пока поддерживается только текст. Photo/voice/file — в следующей версии.",
+        text: "Этот тип сообщения пока не поддерживается. Текст/фото/голос/файл — ок.",
         urgency: "low",
         userId: BOSS_USER_ID,
         reason: "non_text_dropped",

@@ -14,6 +14,12 @@ import { withOpenAIBreaker } from "./lib/openai-client";
 import { isCircuitOpenError } from "./lib/http-errors";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
 import { withAnthropicBreaker } from "./lib/anthropic-client";
+import {
+  awaitSummaryIfPending,
+  buildMultimodalClaudeMessages,
+  buildTextHistoryWithAttachments,
+  supportsVision,
+} from "./lib/multimodal-history";
 import logger from "./logger";
 import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl, listAgentIdsWithStorage } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
@@ -6096,13 +6102,18 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions, writingStyleBlock, coreIdentityBlock)
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
-      // Build conversation history for context
-      const chatHistory: Array<{ role: "user" | "assistant"; content: string }> = recent.map(
-        (m) => ({
-          role: m.agentId === agent.id ? "assistant" : "user",
-          content: isPartnerChat ? m.content : `[${m.agentName}]: ${m.content}`,
-        })
-      );
+      // Build conversation history for context.
+      // PR-A.6: if any recent message has a queued attachment summary, give the
+      // summarizer up to 5s to land before we build the history (caveat C2). The
+      // string-based history below feeds Gemini / OpenAI / webhook / polling
+      // paths and is a drop-in replacement — attachment summaries are inlined
+      // as "[image: ...]" / "[voice 12s: ...]" / "[file foo.pdf: ...]".
+      const recentResolved = await awaitSummaryIfPending(recent);
+      const chatHistory: Array<{ role: "user" | "assistant"; content: string }> =
+        buildTextHistoryWithAttachments(recentResolved, {
+          agentId: agent.id,
+          isPartnerChat,
+        });
 
       // Handle external agents via webhook or polling
       if ((agent as any).agentType === "webhook" || (agent as any).agentType === "polling") {
@@ -6240,9 +6251,22 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               ? sanitizeForPrompt(triggerContent)
               : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
 
+            // PR-A.6: when on a vision-capable Claude SKU AND inside Partner
+            // Chat, build the message history with inline image blocks for
+            // recent attachments. Falls back to the plain string history
+            // (already attachment-aware) for non-vision SKUs / non-partner.
+            const useVisionHistory = isPartnerChat && supportsVision(claudeModel);
+            const priorMessages: Anthropic.Messages.MessageParam[] = useVisionHistory
+              ? await buildMultimodalClaudeMessages(recentResolved, {
+                  modelId: claudeModel,
+                  agentId: agent.id,
+                  isPartnerChat,
+                })
+              : chatHistory;
+
             // Build mutable messages array for tool-use conversation
             const claudeMessages: Anthropic.Messages.MessageParam[] = [
-              ...chatHistory,
+              ...priorMessages,
               { role: "user", content: userMessage },
             ];
 

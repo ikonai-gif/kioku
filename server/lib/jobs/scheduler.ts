@@ -21,6 +21,7 @@ import logger from "../../logger";
 import { runWithClaim } from "./job-runs";
 import { runDailyBackup, DAILY_BACKUP_JOB_ID } from "./daily-backup";
 import { runMissedByBothReview, MISSED_BY_BOTH_JOB_ID } from "./missed-by-both";
+import { runAssetCleanup, ASSET_CLEANUP_JOB_ID } from "./asset-cleanup";
 import { notifyJob } from "./jobs-webhook";
 
 const TICK_MS = 60_000;
@@ -54,6 +55,16 @@ export const JOBS: InternalJob[] = [
     utcMinute: 0,
     schedule: { month: 7, day: 21 },
     run: () => runMissedByBothReview(),
+  },
+  {
+    // PR-A.6 — purge expired Telegram/PWA attachment binaries from Supabase
+    // Storage. Daily at 04:00 UTC (≈ 21:00 Pacific the previous evening) so
+    // the run is well clear of BOSS waking hours.
+    id: ASSET_CLEANUP_JOB_ID,
+    utcHour: 4,
+    utcMinute: 0,
+    schedule: "daily",
+    run: async () => ({ ...(await runAssetCleanup()) }),
   },
 ];
 
