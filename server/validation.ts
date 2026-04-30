@@ -195,6 +195,14 @@ export const updatePlanSchema = z.object({
   billingCycle: z.enum(["monthly", "yearly"]).optional(),
 });
 
+// Admin-only: full PLANS enum from server/ratelimit.ts (used by /api/admin/set-user-plan).
+// Master-key gated, no user-facing path — keep in sync with PLANS map.
+export const adminSetPlanSchema = z.object({
+  userId: z.number().int().positive(),
+  plan: z.enum(["dev", "free", "starter", "growth", "pro", "team", "business", "enterprise"]),
+  billingCycle: z.enum(["monthly", "yearly"]).optional(),
+});
+
 // ── Registration schemas ────────────────────────────────────────────────────────
 export const registerSchema = z.object({
   email: z.string().email().max(320),

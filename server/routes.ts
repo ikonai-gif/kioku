@@ -56,7 +56,7 @@ import {
   createRoomMessageSchema, deliberateSchema, humanInputSchema,
   createWebhookSchema, createAgentTokenSchema, agentCallbackSchema,
   agentTurnResponseSchema,
-  warRoomMessageSchema, updatePlanSchema, registerSchema, waitlistSchema,
+  warRoomMessageSchema, updatePlanSchema, adminSetPlanSchema, registerSchema, waitlistSchema,
   createMemoryLinkSchema,
   savePreferenceSchema, feedbackReactionSchema, creativeDeliberateSchema,
   provenanceLinkSchema,
@@ -2593,6 +2593,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { plan, billingCycle } = validateBody(updatePlanSchema, req.body);
     const updated = await storage.updateUserPlan(userId, plan, billingCycle ?? "monthly");
     res.json(updated);
+  }));
+
+  // Admin: set user plan (master-key only, NO session required).
+  // Use case: user is rate-limited and cannot reach /api/billing/plan (which requires session).
+  // Recovery path. Not exposed to UI. Mirrors auth pattern of /api/admin/dump-user.
+  app.post("/api/admin/set-user-plan", asyncHandler(async (req, res) => {
+    const masterKey = process.env.KIOKU_MASTER_KEY;
+    const authHeader = (req.headers["x-master-key"] as string) ||
+      (req.headers.authorization?.replace("Bearer ", "") ?? "");
+    if (!masterKey || !safeCompare(authHeader, masterKey)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const { userId, plan, billingCycle } = validateBody(adminSetPlanSchema, req.body);
+    const updated = await storage.updateUserPlan(userId, plan, billingCycle ?? "monthly");
+    if (!updated) return res.status(404).json({ error: "user not found" });
+    logger.info({ source: "admin-set-user-plan", userId, plan, billingCycle: billingCycle ?? "monthly" }, "admin set plan");
+    res.json({ ok: true, user: { id: updated.id, email: updated.email, plan: updated.plan, billingCycle: updated.billingCycle } });
   }));
 
   // ── Usage Summary ──────────────────────────────────────────────
