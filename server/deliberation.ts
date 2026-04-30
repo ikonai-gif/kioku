@@ -934,15 +934,17 @@ const partnerTools: Anthropic.Messages.Tool[] = [
   },
   {
     name: "browse_website",
-    description: "Open a website in a real browser (Chromium). Extract text, take screenshots, or interact with pages. Use for JavaScript-heavy pages, visual verification, or any page read_url can't handle. ALWAYS use screenshot action when the user wants to SEE something.",
+    description: "Open a website in a real browser (Chromium in E2B sandbox) AFTER JavaScript renders. Use for SPAs / JS-heavy pages, visual verification (screenshot), or pages that luca_read_url can't handle. ALWAYS use screenshot action when the user wants to SEE something. Rate-limited to 10 calls/hour per agent.",
     input_schema: {
       type: "object" as const,
       properties: {
-        url: { type: "string", description: "Full URL to navigate to (must include https://)" },
-        action: { type: "string", enum: ["extract_text", "screenshot", "interact"], description: "What to do: extract_text (default) gets page text, screenshot takes a PNG, interact follows instructions" },
+        url: { type: "string", description: "Full URL to navigate to (must include https://). Private IPs / metadata endpoints are blocked at SSRF fence." },
+        // BRO1 R366: 'interact' removed from enum surface — prompt-injection
+        // safety. Even if model emits 'interact', validateBrowseWebsiteInput
+        // rejects it. Keeping enum here clean prevents 'unknown enum' confusion.
+        action: { type: "string", enum: ["extract_text", "screenshot"], description: "extract_text (default) returns the JS-rendered DOM text, screenshot returns a PNG of the rendered viewport." },
         selector: { type: "string", description: "Optional CSS selector to target a specific element" },
         waitFor: { type: "string", description: "Optional CSS selector to wait for before extracting (for lazy-loaded content)" },
-        instructions: { type: "string", description: "For 'interact' action: describe what to do on the page" },
       },
       required: ["url"],
     },
@@ -4105,9 +4107,28 @@ print("Converted MD to DOCX")
       }
 
       case "browse_website": {
-        const url = toolInput.url;
-        if (!url || typeof url !== "string") return "No URL provided.";
+        // BRO1 R366 review fixes:
+        //   B1.1 Zod input validation (default extract_text, reject interact)
+        //   B1.2 Per-agent rate-limit 10/hour
+        //   (SSRF validateUrl already in place — DNS resolve + private IP block)
+        const {
+          validateBrowseWebsiteInput,
+          checkBrowseRateLimit,
+        } = await import("./lib/luca-tools/browse-website-guard");
+
+        const validation = validateBrowseWebsiteInput(toolInput);
+        if (!validation.ok) {
+          return `Browser input rejected: ${validation.reason}`;
+        }
+        const { url, action, selector, waitFor, instructions } = validation.value;
+
+        const rateKey = `${userId}:${agentId}`;
+        if (!checkBrowseRateLimit(rateKey)) {
+          return `Browser rate-limit hit: 10 calls/hour per agent. Try again later, or use luca_read_url for HTTP-only pages.`;
+        }
+
         // SECURITY: validate URL to prevent SSRF via browser sandbox
+        // (DNS resolve + private IP / metadata range block, already in place)
         try {
           await validateUrl(url);
         } catch (e: any) {
@@ -4120,10 +4141,10 @@ print("Converted MD to DOCX")
           const result = await browseWebsite(
             {
               url,
-              action: toolInput.action || "extract_text",
-              selector: toolInput.selector,
-              waitFor: toolInput.waitFor,
-              instructions: toolInput.instructions,
+              action,
+              selector,
+              waitFor,
+              instructions,
               timeout: 15000,
             },
             sbx
@@ -6954,7 +6975,7 @@ MEDIA (15):
 MULTIMODAL READS (3, READ_ONLY — no approval needed):
 - watch_video → Gemini 2.5 Flash; fields {url (YouTube or direct mp4 URL), question?}; returns summary + key moments with timestamps + topics + emotional tone. Use when Boss shares a YouTube link / video file and asks what's in it.
 - listen_audio → Whisper; fields {url (mp3/wav/ogg/m4a/webm/flac/mp4, max 25MB), question?}; returns transcription. Understands speech in any language.
-- browse_website → Puppeteer + headless Chromium in E2B sandbox; fields {url (https://...), action?: extract_text|screenshot|interact, selector?, waitFor?, instructions?}. Use this (NOT luca_read_url) when: page is a SPA / JS-heavy / requires JavaScript to render, you need a screenshot to SEE something, or you need to wait for lazy-loaded content. luca_read_url is HTTP-only and won't see JS-rendered DOM. ALWAYS use action='screenshot' when Boss wants to see a visual.
+- browse_website → Puppeteer + headless Chromium in E2B sandbox; fields {url (https://...), action?: extract_text|screenshot, selector?, waitFor?}. Use this (NOT luca_read_url) when: page is a SPA / JS-heavy / requires JavaScript to render, you need a screenshot to SEE something, or you need to wait for lazy-loaded content. luca_read_url is HTTP-only and won't see JS-rendered DOM. ALWAYS use action='screenshot' when Boss wants to see a visual. Rate-limited 10 calls/hour per agent. Action 'interact' is NOT available — do not request it.
 
 WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 - workspace_list → {prefix?}
