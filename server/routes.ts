@@ -70,6 +70,8 @@ import {
   parseCommand,
   checkInboundRateLimit,
   handleTelegramCommand,
+  processTelegramAttachment,
+  scheduleAttachmentSummary,
   BOSS_USER_ID,
   type ParsedCommand,
 } from "./lib/telegram-inbound";
@@ -2118,12 +2120,116 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(200).json({ ok: true, dropped: "rate_limit" });
     }
 
-    // 6a. Non-text payload (photo / voice / file / sticker / ...): tell BOSS
-    //     PR-A.5 only does text, so they don't sit waiting for a reply.
+    // 6a. Multimodal payload (PR-A.6): photo / voice / document.
+    //     We accept these alongside text and combined caption+attachment
+    //     submissions. Anything else (sticker, location, contact, video) is
+    //     still dropped with a friendly outbound nudge — those are out of
+    //     scope for PR-A.6 and would silently confuse BOSS otherwise.
+    const hasAttachment = !!(message.photo?.length || message.voice || message.document);
+    if (hasAttachment) {
+      // Find partner room first — if missing, fail loudly so BOSS gets the
+      // "create partner room" hint just like the text branch (catch below).
+      const partner = await findBossPartnerRoom(storage);
+
+      // Process the attachment to Supabase Storage. processTelegramAttachment
+      // returns a discriminated union; on failure we tell BOSS what went wrong
+      // (size cap / download / storage) so they know whether to retry.
+      const lucaAgentId = partner.agentIds[0] ?? 16;
+      const result = await processTelegramAttachment(message, lucaAgentId, BOSS_USER_ID);
+      if (!result.ok) {
+        const reasonText: Record<typeof result.reason, string> = {
+          size_cap: "Файл слишком большой. Фото до 5МБ, голос и файлы до 20МБ.",
+          missing_token: "Бот не настроен (TELEGRAM_BOT_TOKEN). Скажи БРО1.",
+          getfile_failed: "Не удалось получить файл из Telegram. Попробуй ещё раз.",
+          download_failed: "Не удалось скачать файл. Попробуй ещё раз.",
+          storage_failed: "Не удалось сохранить файл. Попробуй ещё раз.",
+          unsupported: "Этот тип вложения пока не поддерживается.",
+        };
+        await sendTelegramMessage({
+          chatId: String(chatId),
+          text: reasonText[result.reason],
+          urgency: "low",
+          userId: BOSS_USER_ID,
+          reason: `attachment_${result.reason}`,
+        }).catch(() => { /* fail-silent */ });
+        await db.update(telegramInboundLog)
+          .set({ error: `attachment_${result.reason}` })
+          .where(eq(telegramInboundLog.id, logRowId))
+          .catch(() => { /* audit-only */ });
+        return res.status(200).json({ ok: true, dropped: `attachment_${result.reason}` });
+      }
+
+      // Combine caption (if any) and an attachment placeholder so the room_message
+      // content column always has something searchable on its own. The summarizer
+      // backfills attachment.summary asynchronously and updates search_text after.
+      const captionText = (message.caption ?? "").trim().slice(0, 4096);
+      const placeholder =
+        result.attachment.type === "image"   ? "[фото]"
+        : result.attachment.type === "voice" ? "[голос]"
+        : `[файл: ${result.attachment.original_name}]`;
+      const content = captionText.length > 0 ? captionText : placeholder;
+
+      const msg = await storage.addRoomMessage({
+        roomId: partner.roomId,
+        agentId: null,
+        agentName: "👤 BOSS (Telegram)",
+        agentColor: "#3B82F6",
+        content,
+        attachments: [result.attachment],
+      } as any, BOSS_USER_ID);
+      if (msg) broadcastToRoom(partner.roomId, msg);
+      await db.update(telegramInboundLog)
+        .set({ dispatchedToRoomId: partner.roomId })
+        .where(eq(telegramInboundLog.id, logRowId))
+        .catch(() => { /* audit-only */ });
+
+      // Fire-and-forget summary; updates the JSONB and broadcasts via the
+      // onReady callback so the open partner-chat UI refreshes the tooltip.
+      if (msg) {
+        scheduleAttachmentSummary(msg.id, result.attachment.id, (e) => {
+          try {
+            broadcastToRoom(partner.roomId, {
+              type: "attachment_summary_ready",
+              messageId: e.messageId,
+              attachmentId: e.attachmentId,
+              summary: e.summary,
+            } as any);
+          } catch { /* WS best-effort */ }
+        });
+
+        // Trigger Лука deliberation — same idiom as the text branch. The
+        // attachment summary may not be ready yet; deliberation.ts uses
+        // awaitSummaryIfPending (caveat C2) to wait briefly before falling
+        // back to the placeholder.
+        triggerAgentResponses(
+          partner.roomId,
+          BOSS_USER_ID,
+          null,
+          "BOSS",
+          captionText || placeholder,
+          partner.agentIds,
+          "Partner",
+        ).catch((err) => logger.error({ err }, "telegram-inbound: triggerAgentResponses (attachment) failed"));
+      }
+
+      try {
+        broadcastTelegramInboundEvent({
+          userId: BOSS_USER_ID,
+          kind: "message",
+          text: `[${result.attachment.type}] ${captionText.slice(0, 180)}`,
+          timestamp: new Date(),
+        });
+      } catch (err) { logger.warn({ err }, "telegram-inbound: ws broadcast failed"); }
+
+      return res.status(200).json({ ok: true, attachment: result.attachment.id });
+    }
+
+    // 6a-fallback. Other non-text payloads we don't handle (sticker / location /
+    // video / contact). Tell BOSS so they don't sit waiting.
     if (!text) {
       await sendTelegramMessage({
         chatId: String(chatId),
-        text: "Пока поддерживается только текст. Photo/voice/file — в следующей версии.",
+        text: "Этот тип сообщения пока не поддерживается. Текст/фото/голос/файл — ок.",
         urgency: "low",
         userId: BOSS_USER_ID,
         reason: "non_text_dropped",
