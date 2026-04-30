@@ -19,6 +19,7 @@ import {
 } from "@shared/schema";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
+import { provenanceWeight } from "./lib/memory-domain";
 import { scoreEmotion } from "./emotion-scorer";
 import { embedText } from "./embeddings";
 import logger from "./logger";
@@ -1072,7 +1073,18 @@ export class Storage implements IStorage {
             Number(r.created_at),
             now
           );
-          const combinedScore = r.similarity * 0.7 + (r.importance ?? 0.5) * 0.3;
+          // Sprint 2 (R372/R384 Q3): additive 10% provenance blend.
+          // Old: similarity*0.7 + importance*0.3.
+          // New: similarity*0.65 + importance*0.25 + provenanceWeight*0.10.
+          // Multiplicative was rejected in R384 — it would obliterate the
+          // huge luca_inferred floor (provenanceWeight=0.3). Additive lets
+          // a high-similarity luca_inferred memory still win against a
+          // low-similarity user_told one when retrieval just needs context.
+          const provWeight = provenanceWeight(r.provenance, r.namespace);
+          const combinedScore =
+            (r.similarity ?? 0) * 0.65 +
+            (r.importance ?? 0.5) * 0.25 +
+            provWeight * 0.10;
           const finalScore = combinedScore * decayedStrength * currentConfidence;
           return { ...r, similarity: r.similarity, score: finalScore, currentConfidence };
         })

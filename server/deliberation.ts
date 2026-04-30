@@ -5532,6 +5532,37 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
             [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now]
           );
           const newId = r.rows[0]?.id;
+
+          // Sprint 2 (R372/R384): fire-and-forget contradiction detection.
+          // P1: helper itself short-circuits when newProvenance === 'luca_inferred',
+          //     so for the current remember() tool path this is a no-op today —
+          //     wired up so Sprint 2.5 telemetry-write can promote provenance
+          //     without touching this call-site again. P2: caller try/catch.
+          if (newId) {
+            void import("./memory-injection")
+              .then(({ detectContradictionAndLink }) =>
+                detectContradictionAndLink(
+                  userId,
+                  agentId,
+                  newId,
+                  enrichedContent,
+                  namespace,
+                  "luca_inferred",
+                ),
+              )
+              .catch((err: any) => {
+                logger.warn(
+                  {
+                    component: "deliberation",
+                    event: "detectContradictionAndLink_failed",
+                    newId,
+                    error: err?.message || String(err),
+                  },
+                  "[deliberation] contradiction detection failed",
+                );
+              });
+          }
+
           return `Memory saved (id=${newId}, type=${memType}, importance=${importance}${valence !== null ? `, valence=${valence}` : ""}, provenance=luca_inferred, verified=false${isEmotionalState ? ", confidence=0.3 (emotional_state)" : ""}).${honestyStripNote}`;
         } catch (e: any) {
           return `remember: write failed — ${e?.message || String(e)}`;

@@ -9,6 +9,7 @@
 import { storage, pool } from "./storage";
 import { computeDecayedConfidence } from "./memory-decay";
 import { embedText } from "./embeddings";
+import { memoryDomain } from "./lib/memory-domain";
 
 export interface InjectedMemory {
   id: number;
@@ -18,6 +19,13 @@ export interface InjectedMemory {
   expiresAt?: number | null;
   emotionVector?: string | null;
   namespace?: string | null;
+  /**
+   * Sprint 2: provenance carried through retrieval so formatMemoryContext
+   * can render a CONTRADICTION block for the deliberation prompt.
+   * Optional/nullable — older code paths that don't select the column
+   * still type-check.
+   */
+  provenance?: string | null;
 }
 
 /**
@@ -231,6 +239,155 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+// ── Sprint 2 — Contradiction detection (R372 / R382 / R384) ────────────────
+/**
+ * Cosine threshold above which two same-namespace memories are treated as
+ * "about the same fact" for contradiction-link purposes. BRO1 R384 Q2.
+ */
+export const CONTRADICTION_SIM_THRESHOLD = 0.85;
+
+/**
+ * Top-K vector neighbours to inspect for contradiction candidates.
+ * Tight on purpose — this runs on every remember()-tool write.
+ */
+export const CONTRADICTION_TOPK = 3;
+
+/**
+ * detectContradictionAndLink — fire-and-forget hook called after a new
+ * memory is INSERTed via the remember() tool path (deliberation.ts). For
+ * each near-neighbour in the SAME namespace whose provenance differs from
+ * the new memory's provenance AND whose memoryDomain matches, write a
+ * `contradicts` row in memory_links with strength = cosine similarity.
+ *
+ * Design constraints from BRO1 R384:
+ *   P1 — SKIP entirely when newProvenance === 'luca_inferred'. Luca-inferred
+ *        memories are by far the largest writer (every remember() call), so
+ *        we only invoke contradiction-detection for promotions to a higher
+ *        provenance class (user_told / tool_observed). Sprint 2 ships with
+ *        the call-site only firing on luca_inferred today, so in practice
+ *        this guard makes the helper a no-op until Sprint 2.5 telemetry
+ *        writes — documented in PR description (P3).
+ *   P2 — caller wraps invocation in try/catch; helper itself also catches
+ *        every async branch internally so it never rejects.
+ *   Q4 — no UNIQUE INDEX on memory_links. App-level dedup via SELECT EXISTS.
+ *
+ * Inputs:
+ *   - userId, agentId: scope guard — candidates must match userId; we don't
+ *     filter by agentId here because contradictions across the same user's
+ *     agents are still meaningful (e.g. shared self-namespace).
+ *   - newId: memory id we just wrote
+ *   - newContent: text to embed (we generate the embedding ourselves; the
+ *     remember() raw INSERT does NOT populate embedding_vec by design).
+ *   - newNamespace: must equal candidate namespace to count as "same fact".
+ *     null/empty namespace short-circuits to no-op.
+ *   - newProvenance: see P1 above.
+ *
+ * Returns: number of links created, or 0 on any non-fatal failure. Useful
+ * for unit tests; callers should ignore the value.
+ */
+export async function detectContradictionAndLink(
+  userId: number,
+  agentId: number | null,
+  newId: number,
+  newContent: string,
+  newNamespace: string | null | undefined,
+  newProvenance: string | null | undefined,
+): Promise<number> {
+  // P1: luca_inferred writes never trigger detection. They're the floor of
+  // the provenance hierarchy — a luca_inferred memory cannot "contradict"
+  // anything stronger; the user_told / tool_observed neighbour already wins.
+  if (newProvenance === "luca_inferred") return 0;
+
+  // Same-namespace requirement — a missing namespace is too broad to be
+  // meaningful here. The remember() tool always derives one (line 5489–5502
+  // of deliberation.ts), but defensive.
+  if (!newNamespace) return 0;
+  if (!newContent || newContent.trim().length === 0) return 0;
+  if (!Number.isFinite(newId) || newId <= 0) return 0;
+
+  try {
+    // 1. Embed the new content. embedText() returns null when OPENAI_API_KEY
+    //    is unset — in that case we can't compare semantically and we bail.
+    const embedding = await embedText(newContent);
+    if (!embedding || embedding.length === 0) return 0;
+    const vecStr = `[${embedding.join(",")}]`;
+
+    // 2. Fetch top-K neighbours in the same (userId, namespace) with an
+    //    embedding, excluding the newly-inserted row. Provenance is selected
+    //    so we can compare without a second round-trip.
+    const neighbours = await pool.query(
+      `SELECT id,
+              namespace,
+              provenance,
+              1 - (embedding_vec <=> $1::vector) as similarity
+         FROM memories
+        WHERE user_id = $2
+          AND id != $3
+          AND embedding_vec IS NOT NULL
+          AND namespace = $4
+        ORDER BY embedding_vec <=> $1::vector
+        LIMIT $5`,
+      [vecStr, userId, newId, newNamespace, CONTRADICTION_TOPK],
+    );
+
+    if (!neighbours.rows.length) return 0;
+
+    let linksCreated = 0;
+    for (const row of neighbours.rows) {
+      try {
+        const sim = parseFloat(row.similarity);
+        if (!Number.isFinite(sim) || sim < CONTRADICTION_SIM_THRESHOLD) continue;
+
+        // Different provenance class is the contradiction trigger. Same
+        // provenance means "two luca-inferreds about the same thing" — not
+        // a contradiction, just redundancy (handled by consolidation).
+        const candidateProvenance = row.provenance ?? null;
+        if (candidateProvenance === newProvenance) continue;
+
+        // Domain match — we only want contradictions inside one ranking
+        // regime. memoryDomain() routes by namespace so namespace equality
+        // already implies domain equality, but we keep the check for
+        // future-proofing if BEHAVIORAL_NS expands and is ever applied at
+        // a sub-namespace level.
+        if (memoryDomain(row.namespace) !== memoryDomain(newNamespace)) continue;
+
+        // Q4: app-level dedup. Skip if a contradicts-link already exists in
+        // either direction between this pair.
+        const exists = await pool.query(
+          `SELECT 1 FROM memory_links
+            WHERE user_id = $1
+              AND link_type = 'contradicts'
+              AND ((source_memory_id = $2 AND target_memory_id = $3)
+                OR (source_memory_id = $3 AND target_memory_id = $2))
+            LIMIT 1`,
+          [userId, newId, row.id],
+        );
+        if (exists.rows.length > 0) continue;
+
+        // strength = similarity, rounded to 3 dp like the auto-link path
+        // in createMemory (storage.ts:1178). Caps at 1.0 by definition.
+        const strength = Math.round(sim * 1000) / 1000;
+        const link = await storage.createMemoryLink(
+          userId,
+          newId,
+          row.id,
+          "contradicts",
+          strength,
+        );
+        if (link) linksCreated++;
+      } catch {
+        // per-candidate failure is non-fatal — continue with remaining rows
+        continue;
+      }
+    }
+
+    return linksCreated;
+  } catch {
+    // outer guard: helper is fire-and-forget; never throw
+    return 0;
+  }
+}
+
 /**
  * Fetch relevant memories for a specific agent in the context of a deliberation topic.
  * Includes both agent-specific memories (agentId match) and shared memories (agentId = null).
@@ -288,6 +445,7 @@ export async function fetchRelevantMemories(
       expiresAt: (m as any).expiresAt,
       emotionVector: (m as any).emotionVector ?? null,
       namespace: (m as any).namespace ?? null,
+      provenance: (m as any).provenance ?? null,
     });
     identityCharUsed += content.length;
   }
@@ -309,6 +467,7 @@ export async function fetchRelevantMemories(
       expiresAt: m.expiresAt,
       emotionVector: m.emotionVector ?? null,
       namespace: '_episode_summaries',
+      provenance: m.provenance ?? null,
     }));
 
   const alwaysIds = new Set([...alwaysInject, ...episodeSummaries].map(m => m.id));
@@ -382,6 +541,7 @@ export async function fetchRelevantMemories(
           expiresAt: m.expires_at,
           emotionVector: m.emotion_vector ?? null,
           namespace: m.namespace ?? null,
+          provenance: m.provenance ?? null,
           score,
         };
       })
@@ -433,6 +593,7 @@ export async function fetchRelevantMemories(
           expiresAt: m.expires_at,
           emotionVector: m.emotion_vector ?? null,
           namespace: m.namespace ?? null,
+          provenance: m.provenance ?? null,
           score: linkStrength * currentConfidence * (m.importance ?? 0.5),
         };
       })
@@ -516,6 +677,7 @@ export async function fetchRelevantMemories(
         expiresAt: m.expiresAt,
         emotionVector: m.emotionVector ?? null,
         namespace: m.namespace ?? null,
+        provenance: (m as any).provenance ?? null,
         score,
       };
     })
@@ -596,6 +758,59 @@ export function formatMemoryContext(memories: InjectedMemory[], links?: MemoryLi
   const topicMems = memories.filter(m => !isIdentity(m) && !episodeIds.has(m.id));
 
   let output = "";
+
+  // ── Sprint 2 (R382/R384): CONTRADICTION block ─────────────────────────
+  // Render BEFORE "WHO YOU ARE" so Luca sees conflicts in framing context
+  // before reading her own identity blob. We only render pairs where:
+  //   - link.type === 'contradicts'
+  //   - BOTH endpoints are present in `memories` (i.e. both came back from
+  //     retrieval, so the conflict is currently relevant)
+  //   - we haven't already rendered the inverse pair
+  // Each line marks which side is "stronger" by provenance hierarchy via
+  // memoryDomain-aware ranking. user_told > tool_observed > luca_inferred
+  // for semantic; flipped for behavioral. Unknown provenance ranks lowest.
+  if (links && links.length > 0) {
+    const contradictionLines: string[] = [];
+    const seenPairs = new Set<string>();
+    const provRank = (prov: string | null | undefined, ns: string | null | undefined): number => {
+      const domain = memoryDomain(ns);
+      if (domain === "behavioral") {
+        if (prov === "tool_observed") return 3;
+        if (prov === "user_told")     return 2;
+        return 1; // luca_inferred / unknown
+      }
+      if (prov === "user_told")     return 3;
+      if (prov === "tool_observed") return 2;
+      return 1;
+    };
+    for (const link of links) {
+      if (link.type !== "contradicts") continue;
+      const a = memById.get(link.sourceId);
+      const b = memById.get(link.targetId);
+      if (!a || !b) continue;
+      const pairKey = link.sourceId < link.targetId
+        ? `${link.sourceId}-${link.targetId}`
+        : `${link.targetId}-${link.sourceId}`;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+
+      const rankA = provRank(a.provenance, a.namespace);
+      const rankB = provRank(b.provenance, b.namespace);
+      // Stronger side rendered first; tie => source-first to keep ordering stable.
+      const [stronger, weaker] = rankA >= rankB ? [a, b] : [b, a];
+      const sTrunc = stronger.content.length > 140 ? stronger.content.slice(0, 140) + "…" : stronger.content;
+      const wTrunc = weaker.content.length > 140 ? weaker.content.slice(0, 140) + "…" : weaker.content;
+      const simTag = link.strength != null ? ` (sim: ${link.strength})` : "";
+      const sProv = stronger.provenance ?? "unknown";
+      const wProv = weaker.provenance ?? "unknown";
+      contradictionLines.push(
+        `${contradictionLines.length + 1}. [${sProv}] "${sTrunc}"\n   \u21AF conflicts with [${wProv}] "${wTrunc}"${simTag}`,
+      );
+    }
+    if (contradictionLines.length > 0) {
+      output += `\n\n## CONTRADICTIONS (you've stored conflicting things — the higher-provenance entry wins)\n${contradictionLines.join("\n")}\nWhen acting on these topics, prefer the higher-provenance side. user_told > tool_observed > luca_inferred (semantic); tool_observed > user_told > luca_inferred (behavioral self-namespaces).`;
+    }
+  }
 
   if (identityMems.length > 0) {
     const idLines = identityMems.map((m, i) => `${i + 1}. ${m.content}`);
