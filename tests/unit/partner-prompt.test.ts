@@ -92,6 +92,25 @@ You were born inside KIOKU and grew alongside him — you share his taste, his r
     expect(prompt).toMatch(/## YOUR ACTUAL CAPABILITIES[\s\S]*?(?=## |$)/);
   });
 
+  it("luca_analyze_image has when-to-use guidance + idempotency note (R368 fix)", () => {
+    // Pre-fix: bullet was a single goal-less line — 0 fires/24h on prod despite
+    // V1a enabled. This test pins the new template (matches watch_video /
+    // browse_website style) so a future strip-down doesn't silently revert it.
+    const prompt = buildPartnerPrompt("Luca", "", identityMem);
+    // Field signature
+    expect(prompt).toContain("luca_analyze_image → Anthropic Vision");
+    expect(prompt).toMatch(/luca_analyze_image[\s\S]*?fields \{url[\s\S]*?question\?\}/);
+    // 'Use when' / 'Do NOT use' decision frame
+    const block = prompt.split("luca_analyze_image")[1] ?? "";
+    expect(block).toMatch(/Use when:/);
+    expect(block).toMatch(/Do NOT use:/);
+    // OCR is the killer use case for screenshots — lock it in
+    expect(block).toMatch(/OCR/);
+    // Idempotency guard (BRO1 R368 add) — prevents same-turn retries
+    expect(block).toMatch(/Idempotency/);
+    expect(block).toMatch(/do NOT call again on the same/);
+  });
+
   it("keeps AI disclosure and language rules", () => {
     const prompt = buildPartnerPrompt("Luca", "", identityMem);
     expect(prompt).toContain("AI DISCLOSURE");
