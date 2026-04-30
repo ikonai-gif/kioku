@@ -154,16 +154,44 @@ export type InsertRoom = z.infer<typeof insertRoomSchema>;
 export type Room = typeof rooms.$inferSelect;
 
 // Room Messages
+//
+// PR-A.6 (R349): added `attachments` JSONB and `search_text` columns to support
+// multimodal Лука (images / voice / files). Migration 0012 adds GIN indexes.
 export const roomMessages = pgTable("room_messages", {
-  id:         serial("id").primaryKey(),
-  roomId:     integer("room_id").notNull(),
-  agentId:    integer("agent_id"),
-  agentName:  text("agent_name").notNull(),
-  agentColor: text("agent_color").notNull().default("#D4AF37"),
-  content:    text("content").notNull(),
-  isDecision: boolean("is_decision").notNull().default(false),
-  createdAt:  bigint("created_at", { mode: "number" }).notNull(),
+  id:          serial("id").primaryKey(),
+  roomId:      integer("room_id").notNull(),
+  agentId:     integer("agent_id"),
+  agentName:   text("agent_name").notNull(),
+  agentColor:  text("agent_color").notNull().default("#D4AF37"),
+  content:     text("content").notNull(),
+  isDecision:  boolean("is_decision").notNull().default(false),
+  // PR-A.6: attachment metadata array (image / voice / file / video_frame)
+  attachments: jsonb("attachments").$type<AttachmentMeta[]>().notNull().default(sql`'[]'::jsonb`),
+  // PR-A.6: re-derived from content + attachment summaries for FTS
+  searchText:  text("search_text"),
+  createdAt:   bigint("created_at", { mode: "number" }).notNull(),
 });
+
+// PR-A.6: AttachmentMeta — metadata stored inline in room_messages.attachments JSONB.
+// `storage_key` references Supabase Storage bucket `workspace`. Binary bytes never
+// hit Postgres. signed_url is short-lived (1h) and refreshed on read; `expires_at`
+// (PII retention) is a separate value, in unix ms (null = keep forever, e.g. PWA).
+export interface AttachmentMeta {
+  id: string;                                                  // 'att_<nanoid>'
+  type: "image" | "file" | "voice" | "video_frame";
+  mime: string;
+  size_bytes: number;
+  storage_key: string | null;                                  // null after PII expiry
+  signed_url: string | null;
+  signed_url_expires_at: number;                               // unix ms
+  summary: string | null;                                      // GPT-mini async
+  transcription: string | null;                                // voice only
+  extracted_text: string | null;                               // pdf/doc only
+  duration_sec: number | null;                                 // voice/video
+  original_name: string;
+  uploaded_at: number;
+  expires_at: number | null;                                   // PII retention deadline
+}
 
 export const insertRoomMessageSchema = createInsertSchema(roomMessages).omit({ id: true, createdAt: true });
 export type InsertRoomMessage = z.infer<typeof insertRoomMessageSchema>;
