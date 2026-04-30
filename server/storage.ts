@@ -10,6 +10,7 @@ import {
   type Flow, type InsertFlow,
   type Room, type InsertRoom,
   type RoomMessage, type InsertRoomMessage,
+  type AttachmentMeta,
   type Log, type InsertLog,
   type MagicToken, type InsertMagicToken,
   type UsageTracking,
@@ -874,6 +875,18 @@ export interface IStorage {
 
   getRoomMessages(roomId: number, userId: number): Promise<RoomMessage[] | null>;
   addRoomMessage(data: InsertRoomMessage, userId?: number): Promise<RoomMessage | null>;
+  // PR-A.6 multimodal helpers
+  patchAttachment(
+    messageId: number,
+    attachmentId: string,
+    patch: Partial<AttachmentMeta>,
+  ): Promise<RoomMessage | null>;
+  updateMessageSearchText(messageId: number): Promise<void>;
+  markAttachmentExpired(messageId: number, attachmentId: string): Promise<void>;
+  getAttachment(messageId: number, attachmentId: string): Promise<AttachmentMeta | null>;
+  listExpiredAttachments(now: number): Promise<
+    Array<{ messageId: number; attachmentId: string; storageKey: string }>
+  >;
 
   getLogs(userId: number, limit?: number): Promise<Log[]>;
   addLog(data: InsertLog): Promise<Log>;
@@ -1364,8 +1377,130 @@ export class Storage implements IStorage {
       const room = await this.getRoom(data.roomId, userId);
       if (!room) return null;
     }
-    const [result] = await db.insert(roomMessages).values({ ...data, createdAt: Date.now() }).returning();
+    const [result] = await db
+      .insert(roomMessages)
+      .values({ ...data, createdAt: Date.now() })
+      .returning();
     return result;
+  }
+
+  // ── PR-A.6 Multimodal helpers ──────────────────────────────────────────────
+  // attachments live as a JSONB array on the room_messages row. Helpers below
+  // operate inline using jsonb_set; whole-row UPDATE keeps statements simple
+  // and the messages table is small + write rate is low (a handful per turn).
+
+  /** Fetch a single attachment by id, or null if not found. */
+  async getAttachment(
+    messageId: number,
+    attachmentId: string,
+  ): Promise<AttachmentMeta | null> {
+    const [row] = await db
+      .select({ attachments: roomMessages.attachments })
+      .from(roomMessages)
+      .where(eq(roomMessages.id, messageId));
+    if (!row) return null;
+    const arr = (row.attachments ?? []) as AttachmentMeta[];
+    return arr.find((a) => a.id === attachmentId) ?? null;
+  }
+
+  /**
+   * Patch a single attachment's fields. Read-modify-write under a single
+   * UPDATE — concurrent writers may race; tolerable for single-tenant kioku
+   * (one BOSS, low write rate). If multi-tenant ever lands, switch this to a
+   * jsonb_set with a SELECT FOR UPDATE.
+   */
+  async patchAttachment(
+    messageId: number,
+    attachmentId: string,
+    patch: Partial<AttachmentMeta>,
+  ): Promise<RoomMessage | null> {
+    const [row] = await db
+      .select()
+      .from(roomMessages)
+      .where(eq(roomMessages.id, messageId));
+    if (!row) return null;
+    const arr = ((row.attachments ?? []) as AttachmentMeta[]).map((a) =>
+      a.id === attachmentId ? { ...a, ...patch } : a,
+    );
+    const [updated] = await db
+      .update(roomMessages)
+      .set({ attachments: arr })
+      .where(eq(roomMessages.id, messageId))
+      .returning();
+    return updated ?? null;
+  }
+
+  /**
+   * Re-derive search_text = content + ' ' + each attachment summary/transcription.
+   * Called after summarizer fills in summary/transcription/extracted_text so
+   * FTS indexes pick up the new content.
+   */
+  async updateMessageSearchText(messageId: number): Promise<void> {
+    const [row] = await db
+      .select()
+      .from(roomMessages)
+      .where(eq(roomMessages.id, messageId));
+    if (!row) return;
+    const arr = (row.attachments ?? []) as AttachmentMeta[];
+    const parts = [row.content];
+    for (const a of arr) {
+      if (a.summary) parts.push(a.summary);
+      if (a.transcription) parts.push(a.transcription);
+      if (a.extracted_text) parts.push(a.extracted_text);
+      if (a.original_name) parts.push(a.original_name);
+    }
+    const searchText = parts.filter(Boolean).join(" ").slice(0, 32_000);
+    await db
+      .update(roomMessages)
+      .set({ searchText })
+      .where(eq(roomMessages.id, messageId));
+  }
+
+  /**
+   * Mark an attachment as PII-expired: clear storage_key + signed_url so
+   * downstream readers know the binary is gone, but keep summary/
+   * transcription so deliberation can still reference what *was* there.
+   */
+  async markAttachmentExpired(
+    messageId: number,
+    attachmentId: string,
+  ): Promise<void> {
+    await this.patchAttachment(messageId, attachmentId, {
+      storage_key: null,
+      signed_url: null,
+      signed_url_expires_at: 0,
+    });
+  }
+
+  /**
+   * Return all attachments whose `expires_at` is in the past and whose
+   * `storage_key` is still set (i.e. binary still in Supabase). Used by the
+   * daily PII cleanup cron.
+   */
+  async listExpiredAttachments(
+    now: number,
+  ): Promise<Array<{ messageId: number; attachmentId: string; storageKey: string }>> {
+    const rows = await pool.query<{
+      msg_id: number;
+      att_id: string;
+      key: string;
+    }>(
+      `SELECT m.id AS msg_id,
+              a->>'id' AS att_id,
+              a->>'storage_key' AS key
+       FROM room_messages m,
+            jsonb_array_elements(COALESCE(m.attachments, '[]'::jsonb)) a
+       WHERE (a->>'expires_at') IS NOT NULL
+         AND (a->>'expires_at')::bigint > 0
+         AND (a->>'expires_at')::bigint < $1
+         AND a->>'storage_key' IS NOT NULL`,
+      [now],
+    );
+    return rows.rows.map((r) => ({
+      messageId: r.msg_id,
+      attachmentId: r.att_id,
+      storageKey: r.key,
+    }));
   }
 
   // ── Logs ───────────────────────────────────────────────────────────────────
