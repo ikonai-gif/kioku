@@ -122,9 +122,12 @@ describe("remember tool — handler invariants", () => {
   });
 
   it("INSERT uses the callsite userId and agentId bindings", () => {
-    // $1, $2 must come from userId, agentId — not from toolInput
+    // Sprint 1 v2: INSERT now has 10 placeholders (added provenance, verified, confidence).
+    // $1=userId, $2=agentId, ... $9=confidence, $10=now. provenance/verified are LITERALS
+    // ('luca_inferred', false) hard-coded in the SQL — NOT placeholders — so Luca cannot
+    // override them from toolInput.
     expect(handler).toMatch(
-      /VALUES\s*\(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*\$4\s*,\s*\$5\s*,\s*\$6\s*,\s*\$7\s*,\s*\$8\s*,\s*\$9\s*\)/
+      /VALUES\s*\(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*\$4\s*,\s*\$5\s*,\s*\$6\s*,\s*\$7\s*,\s*\$8\s*,\s*'luca_inferred'\s*,\s*false\s*,\s*\$9\s*,\s*\$10\s*\)/
     );
     // The parameter array must START with userId, agentId — never let the
     // tool input override who owns the memory.

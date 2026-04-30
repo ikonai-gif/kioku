@@ -1007,6 +1007,10 @@ export class Storage implements IStorage {
     if (queryEmbedding && queryEmbedding.length > 0) {
       const embeddingStr = `[${queryEmbedding.join(',')}]`;
 
+      // Sprint 1 v2 (R373): expires_at filter — the column has existed since Phase 2
+      // but no path filtered by it. Bug: temporal memories with past expiresAt were
+      // still being returned and scored. Fix: exclude expired here AND in textSearchMemories.
+      const nowMs = Date.now();
       let sqlQuery = `
         SELECT *,
           1 - (embedding_vec <=> $1::vector) as similarity,
@@ -1014,9 +1018,10 @@ export class Storage implements IStorage {
         FROM memories
         WHERE user_id = $2
           AND embedding_vec IS NOT NULL
+          AND (expires_at IS NULL OR expires_at > $3)
       `;
-      const params: any[] = [embeddingStr, userId];
-      let paramIdx = 3;
+      const params: any[] = [embeddingStr, userId, nowMs];
+      let paramIdx = 4;
 
       if (namespace) {
         sqlQuery += ` AND namespace = $${paramIdx}`;
@@ -1081,9 +1086,11 @@ export class Storage implements IStorage {
   }
 
   private async textSearchMemories(userId: number, query: string, limit: number, namespace?: string): Promise<any[]> {
-    let sqlQuery = 'SELECT * FROM memories WHERE user_id = $1 AND (content ILIKE $2 OR agent_name ILIKE $2)';
-    const params: any[] = [userId, `%${query}%`];
-    let idx = 3;
+    // Sprint 1 v2 (R373): mirror expires_at filter from vector path.
+    const nowMs = Date.now();
+    let sqlQuery = 'SELECT * FROM memories WHERE user_id = $1 AND (content ILIKE $2 OR agent_name ILIKE $2) AND (expires_at IS NULL OR expires_at > $3)';
+    const params: any[] = [userId, `%${query}%`, nowMs];
+    let idx = 4;
     if (namespace) {
       sqlQuery += ` AND namespace = $${idx}`;
       params.push(namespace);

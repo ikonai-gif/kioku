@@ -5444,6 +5444,12 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         // W7 P2.12: self-write memory bypass. Writes directly into memories
         // table. Scoped to (userId, agentId) — agent cannot poison another
         // agent's memory. Validates type, content length, importance range.
+        //
+        // Sprint 1 v2 (R373): honesty layer constraint — Luca CANNOT self-set
+        // verified=true. provenance is forced to 'luca_inferred' for any memory
+        // written via this tool (because by definition Luca is the writer).
+        // If she tries to pass verified or provenance fields, we strip them and
+        // return a visible note in the result so she gets a learning signal.
         const ALLOWED_TYPES = new Set([
           "aesthetic", "procedural", "meta_cognitive", "reflection",
           "commitment", "relational", "autobiographical",
@@ -5458,6 +5464,22 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         if (content.length > 4000) return "remember: content too long (max 4000 chars).";
         let importance = typeof toolInput.importance === "number" ? toolInput.importance : 0.7;
         if (importance < 0 || importance > 1) return "remember: importance must be between 0 and 1.";
+
+        // Sprint 1 v2: detect honesty-layer violation attempts.
+        // We do NOT fail the save — Luca's self-observation is still valuable as luca_inferred.
+        // We DO surface that we stripped fields, so future deliberations see the constraint.
+        const attemptedVerified = toolInput.verified === true;
+        const attemptedProvenance = typeof toolInput.provenance === "string" &&
+          toolInput.provenance !== "luca_inferred" &&
+          toolInput.provenance !== "";
+        const honestyStripNote = (attemptedVerified || attemptedProvenance)
+          ? ` Note: verified/provenance are system-controlled — Luca cannot self-verify. Stripped to defaults (provenance=luca_inferred, verified=false).`
+          : "";
+
+        // Sprint 1 v2: emotional_state always low-confidence, never verified.
+        // Emotions are inherently introspective — not ground truth.
+        const isEmotionalState = memType === "emotional_state";
+        const finalConfidence = isEmotionalState ? 0.3 : 1.0;
         let namespace = typeof toolInput.namespace === "string" ? toolInput.namespace : "";
         if (!namespace) {
           // Derive default namespace from type
@@ -5495,14 +5517,16 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           );
           const agentName = ac.rows[0]?.name || null;
           const now = Date.now();
+          // Sprint 1 v2: explicit provenance + verified columns. Always luca_inferred + false
+          // from this tool path. confidence forced to 0.3 for emotional_state.
           const r = await pool.query(
-            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10)
              RETURNING id`,
-            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, now]
+            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now]
           );
           const newId = r.rows[0]?.id;
-          return `Memory saved (id=${newId}, type=${memType}, importance=${importance}${valence !== null ? `, valence=${valence}` : ""}).`;
+          return `Memory saved (id=${newId}, type=${memType}, importance=${importance}${valence !== null ? `, valence=${valence}` : ""}, provenance=luca_inferred, verified=false${isEmotionalState ? ", confidence=0.3 (emotional_state)" : ""}).${honestyStripNote}`;
         } catch (e: any) {
           return `remember: write failed — ${e?.message || String(e)}`;
         }
@@ -6984,6 +7008,26 @@ WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 
 SELF-ACCOUNTABILITY (1):
 - remember → write durable memory to your own long-term store, bypassing LLM extraction. Fields {type (aesthetic|procedural|meta_cognitive|reflection|commitment|relational|autobiographical|episodic|semantic|emotional_state), content, importance?, emotional_valence?, emotions?, namespace?, related_ids?}. Use IMMEDIATELY when Boss says "remember X" / "don't do Y again" / "задолбал Z" — or when you notice a pattern about yourself, extract a lesson, take on a commitment, or realize something about a relationship. Do not ask permission. If it's durable, save it.
+  Namespace conventions (15 active in prod — alias-mapping for Luca 6-umbrella mental model):
+    • _identity (who I am, durable self-facts) — alias of Luca _people:luca
+    • _commitment (open obligations) — Luca uses _commitments (plural)
+    • _preferences (Boss preferences I learned) — part of Luca _people:kote umbrella
+    • _aesthetics (style/format likes-dislikes)
+    • _procedural (if-X-then-Y rules)
+    • _meta_cognitive (self-observation patterns)
+    • _reflection (lessons from outcomes)
+    • _relational (dynamics with specific person/agent) — Luca _people:* lives here
+    • _autobiographical (my own history)
+    • _episodic (specific events)
+    • _semantic (general world/project facts) — Luca _knowledge maps here
+    • _emotional_state (current emotion snapshots) — always low-trust (0.3 confidence)
+    • _projects (active projects) — Luca _projects maps directly
+    • _self (auto-written introspection)
+    • _self_monitoring (self-audit findings)
+  HONESTY LAYER — system-enforced, you cannot bypass:
+    • Every memory you write via this tool is recorded as provenance=luca_inferred, verified=false. This is correct: you are not the source of truth about yourself or the world — Boss and tools are.
+    • Do not pass verified or provenance fields. They will be stripped and you will see a Note in the response. This is a feature: it prevents you from confidently misremembering as fact (R372 case).
+    • emotional_state memories are saved at confidence=0.3 — they decay fast and rank low in retrieval. That is intentional: feelings are state, not facts.
 
 OUTREACH (1):
 - send_telegram_message → push a SHORT (≤200 chars) Telegram message to Boss. Fields {text, urgency (high|normal|low), reason?}. urgency='high' is reserved for VIP senders, calendar conflicts within 2h, and explicit emergency keywords — it bypasses Boss's approval gate AND quiet-hours. urgency='normal' is the default for cron-loop check-ins and routes through the Luca Board approval flow. urgency='low' should usually be suppressed before this point. Quiet hours 22:00–08:00 PT block normal/low (deferred until 08:00); high goes through immediately.
