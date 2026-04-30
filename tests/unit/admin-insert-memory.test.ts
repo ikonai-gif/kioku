@@ -56,6 +56,32 @@ describe("admin/insert-memory — invariants", () => {
     expect(h).toMatch(/content too long/);
     expect(h).toMatch(/importance must be 0\.\.1/);
   });
+
+  it("opt-in embed:true builds vector via embedText and writes embedding column", () => {
+    const h = extract(routesSource, "/api/admin/insert-memory");
+    // Caller can request inline embedding; default false preserves contract.
+    expect(h).toMatch(/req\.body\?\.embed\s*===\s*true/);
+    // The same embedding helper used by /api/memories must be called.
+    expect(h).toMatch(/embedText\(content\)/);
+    // Guard: embeddings must be enabled (OPENAI_API_KEY) before calling.
+    expect(h).toMatch(/embeddingsEnabled/);
+    // Embedding must be passed to the INSERT (column listed before created_at).
+    expect(h).toMatch(
+      /INSERT\s+INTO\s+memories[^;]+embedding[^;]+created_at/i,
+    );
+    // Status surfaced to caller for diagnosability.
+    expect(h).toMatch(/embedding:\s*embeddingStatus/);
+  });
+
+  it("embed failure does NOT block insert — graceful degrade with embedding=null", () => {
+    const h = extract(routesSource, "/api/admin/insert-memory");
+    // The embed try/catch must set embeddingStatus to "failed" on error,
+    // never throw out of the handler. This keeps insert-memory usable when
+    // OpenAI is down or quota-exceeded — the row still lands without vector.
+    expect(h).toMatch(/embeddingStatus\s*=\s*"failed"/);
+    // try/catch around embedText so a thrown error is captured.
+    expect(h).toMatch(/try\s*\{[\s\S]*?embedText\(content\)[\s\S]*?\}\s*catch/);
+  });
 });
 
 function extract(src: string, routePath: string): string {
