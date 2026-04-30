@@ -291,6 +291,37 @@ export async function deleteAsset(userId: number, agentId: number, relPath: stri
   ).catch((e) => logger.warn({ source: "workspace-storage", err: String(e) }, "delete failed"));
 }
 
+/**
+ * Delete a single asset by its raw storage key (no userId/agentId derivation).
+ * Used by PR-A.6 PII cleanup where the key was stamped at upload time and the
+ * caller already has it verbatim. Returns true on success / 404 (treated as
+ * idempotent), false on other failures.
+ */
+export async function deleteAssetByKey(storageKey: string): Promise<boolean> {
+  if (!workspaceEnabled) return false;
+  if (!storageKey) return false;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURI(storageKey)}`,
+      { method: "DELETE", headers: authHeaders() },
+    );
+    // 404 = already gone; treat as success so the cron can mark the row
+    // expired without retrying forever.
+    if (res.ok || res.status === 404) return true;
+    logger.warn(
+      { source: "workspace-storage", storageKey, status: res.status },
+      "deleteAssetByKey non-2xx",
+    );
+    return false;
+  } catch (e: any) {
+    logger.warn(
+      { source: "workspace-storage", storageKey, err: e?.message || String(e) },
+      "deleteAssetByKey threw",
+    );
+    return false;
+  }
+}
+
 /** Quick self-test: checks env + bucket reachability without mutating anything. */
 export async function workspaceHealth(): Promise<{ configured: boolean; bucket: string; ok: boolean; error?: string }> {
   if (!workspaceEnabled) return { configured: false, bucket: BUCKET, ok: false, error: "env vars missing" };
