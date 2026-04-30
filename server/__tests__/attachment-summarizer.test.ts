@@ -165,6 +165,86 @@ describe("attachment-summarizer", () => {
     expect(mockStorage.storage.updateMessageSearchText).toHaveBeenCalledWith(7);
   });
 
+  it("image: octet-stream att.mime + JPEG magic bytes → vision called with image/jpeg", async () => {
+    // R349 follow-up: Telegram CDN delivers photos as application/octet-stream.
+    // The summarizer must sniff JPEG magic bytes and still call Anthropic.
+    mockStorage.storage.getAttachment.mockResolvedValue(
+      fakeAtt({
+        id: "att_jpg",
+        mime: "application/octet-stream",
+        original_name: "photo-XYZ.jpg",
+      }),
+    );
+    // FF D8 FF E0 = standard JPEG magic prefix.
+    mockBytesCache.getAssetBytes.mockResolvedValue({
+      mime: "application/octet-stream",
+      data: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]),
+    });
+    mockAnthropic.messagesCreate.mockResolvedValue({
+      content: [{ type: "text", text: "На фото кот." }],
+    });
+    mockStorage.storage.patchAttachment.mockResolvedValue(undefined);
+    mockStorage.storage.updateMessageSearchText.mockResolvedValue(undefined);
+
+    await summarizeAttachment(42, "att_jpg");
+
+    expect(mockAnthropic.messagesCreate).toHaveBeenCalledTimes(1);
+    const args = mockAnthropic.messagesCreate.mock.calls[0][0];
+    const block = args.messages[0].content[0];
+    expect(block.source.media_type).toBe("image/jpeg");
+    const [, , patch] = mockStorage.storage.patchAttachment.mock.calls[0];
+    expect(patch.summary).toBe("На фото кот.");
+  });
+
+  it("image: PNG magic bytes → vision called with image/png even if att.mime is empty", async () => {
+    mockStorage.storage.getAttachment.mockResolvedValue(
+      fakeAtt({
+        id: "att_png",
+        mime: "",
+        original_name: "img.bin",
+      }),
+    );
+    // 89 50 4E 47 = PNG magic prefix.
+    mockBytesCache.getAssetBytes.mockResolvedValue({
+      mime: "",
+      data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    });
+    mockAnthropic.messagesCreate.mockResolvedValue({
+      content: [{ type: "text", text: "PNG ok" }],
+    });
+    mockStorage.storage.patchAttachment.mockResolvedValue(undefined);
+    mockStorage.storage.updateMessageSearchText.mockResolvedValue(undefined);
+
+    await summarizeAttachment(43, "att_png");
+
+    expect(mockAnthropic.messagesCreate).toHaveBeenCalledTimes(1);
+    const args = mockAnthropic.messagesCreate.mock.calls[0][0];
+    expect(args.messages[0].content[0].source.media_type).toBe("image/png");
+  });
+
+  it("image: unrecognised mime + no magic + no extension → falls back to filename, no API call", async () => {
+    mockStorage.storage.getAttachment.mockResolvedValue(
+      fakeAtt({
+        id: "att_unk",
+        mime: "application/octet-stream",
+        original_name: "mystery.bin",
+      }),
+    );
+    // Random bytes with no known magic prefix.
+    mockBytesCache.getAssetBytes.mockResolvedValue({
+      mime: "application/octet-stream",
+      data: Buffer.from([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
+    });
+    mockStorage.storage.patchAttachment.mockResolvedValue(undefined);
+    mockStorage.storage.updateMessageSearchText.mockResolvedValue(undefined);
+
+    await summarizeAttachment(44, "att_unk");
+
+    expect(mockAnthropic.messagesCreate).not.toHaveBeenCalled();
+    const [, , patch] = mockStorage.storage.patchAttachment.mock.calls[0];
+    expect(patch.summary).toBe("mystery.bin");
+  });
+
   it("file (pdf): extracts text via pdf-parse and uses head as summary", async () => {
     const fullText = "Это длинный PDF про продакт-менеджмент. ".repeat(20);
     mockStorage.storage.getAttachment.mockResolvedValue(

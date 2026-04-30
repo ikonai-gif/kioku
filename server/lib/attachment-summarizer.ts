@@ -95,6 +95,64 @@ const IMAGE_SUMMARY_PROMPT =
   "Если на картинке есть text — процитируй главный текст в кавычках. " +
   "Не более 200 символов.";
 
+type AnthropicImageMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+/**
+ * Resolve a usable image MIME type for Anthropic vision. Order of trust:
+ *   1. JSONB att.mime if it is already in the supported whitelist;
+ *   2. fetch-time mime from getAssetBytes (Supabase content-type);
+ *   3. magic-byte sniff on the raw bytes (handles application/octet-stream
+ *      from Telegram CDN);
+ *   4. extension hint from original_name.
+ * Returns null if nothing matches — caller falls back to filename.
+ */
+function resolveImageMime(
+  att: AttachmentMeta,
+  bytes: Buffer,
+  fetchMime: string,
+): AnthropicImageMime | null {
+  const supported: AnthropicImageMime[] = [
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ];
+  for (const m of [att.mime, fetchMime]) {
+    if (m && (supported as string[]).includes(m)) return m as AnthropicImageMime;
+  }
+  // Magic-byte sniff. Cheap — only inspects first 12 bytes.
+  if (bytes.length >= 4) {
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    )
+      return "image/png";
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image/gif";
+    if (
+      bytes.length >= 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50
+    )
+      return "image/webp";
+  }
+  // Extension hint as last resort.
+  const name = (att.original_name || "").toLowerCase();
+  if (/\.jpe?g$/.test(name)) return "image/jpeg";
+  if (/\.png$/.test(name)) return "image/png";
+  if (/\.gif$/.test(name)) return "image/gif";
+  if (/\.webp$/.test(name)) return "image/webp";
+  return null;
+}
+
 async function summarizeImage(att: AttachmentMeta): Promise<string> {
   const bytes = await getAssetBytes(att.storage_key);
   if (!bytes) return att.original_name || "[image]";
@@ -102,6 +160,20 @@ async function summarizeImage(att: AttachmentMeta): Promise<string> {
   const client = getAnthropic();
   if (!client) {
     // No Anthropic key in env — graceful fallback. We still mark the row.
+    return att.original_name || "[image]";
+  }
+
+  const mediaType = resolveImageMime(att, bytes.data, bytes.mime);
+  if (!mediaType) {
+    logger.warn(
+      {
+        attachmentId: att.id,
+        attMime: att.mime,
+        fetchMime: bytes.mime,
+        name: att.original_name,
+      },
+      "[summarizer] image mime unrecognised, skipping vision",
+    );
     return att.original_name || "[image]";
   }
 
@@ -118,11 +190,7 @@ async function summarizeImage(att: AttachmentMeta): Promise<string> {
               type: "image",
               source: {
                 type: "base64",
-                media_type: bytes.mime as
-                  | "image/png"
-                  | "image/jpeg"
-                  | "image/gif"
-                  | "image/webp",
+                media_type: mediaType,
                 data: bytes.data.toString("base64"),
               },
             },
