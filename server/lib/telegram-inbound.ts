@@ -688,12 +688,16 @@ export async function processTelegramAttachment(
     }
     const dl = await fetchTelegramFile(info.file_path, TELEGRAM_PHOTO_MAX_BYTES);
     if (!dl) return { ok: false, reason: "download_failed" };
-    // Telegram serves photos as JPEG by default; honour content-type returned.
+    // Telegram CDN often returns content-type: application/octet-stream for
+    // photos. Telegram always serves the photo blob as JPEG, so force
+    // image/jpeg here — otherwise downstream summarizers (Anthropic vision)
+    // reject the asset because the JSONB mime field is unusable.
     try {
       const att = await buildAttachmentFromBytes({
         type: "image",
         bytes: dl,
         originalName: `photo-${pick.file_unique_id ?? pick.file_id.slice(0, 8)}.jpg`,
+        mimeOverride: "image/jpeg",
         userId,
         agentId,
       });
