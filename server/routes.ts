@@ -737,6 +737,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const type = typeof req.body?.type === "string" ? req.body.type : "semantic";
     const namespace = typeof req.body?.namespace === "string" ? req.body.namespace : null;
     const importance = typeof req.body?.importance === "number" ? req.body.importance : 0.7;
+    // Opt-in embedding: when caller passes embed:true the row is built with
+    // the same OpenAI text-embedding-3-small vector that /api/memories uses,
+    // so the memory becomes retrievable via vector search immediately. Default
+    // false preserves the original lightweight contract.
+    const embed = req.body?.embed === true;
     if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "userId required" });
     if (!agentId || Number.isNaN(agentId)) return res.status(400).json({ error: "agentId required" });
     if (!content) return res.status(400).json({ error: "content required" });
@@ -752,13 +757,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (ac.rows.length === 0) return res.status(400).json({ error: "agent not owned by user" });
       const agentName = ac.rows[0].name;
       const now = Date.now();
+
+      let embeddingJson: string | null = null;
+      let embeddingStatus: "skipped" | "built" | "failed" = "skipped";
+      if (embed) {
+        if (!embeddingsEnabled) {
+          embeddingStatus = "failed";
+          logger.warn(
+            { source: "admin-insert-memory", userId, agentId },
+            "embed=true requested but embeddings disabled (no OPENAI_API_KEY)",
+          );
+        } else {
+          try {
+            const v = await embedText(content);
+            if (v) {
+              embeddingJson = JSON.stringify(v);
+              embeddingStatus = "built";
+            } else {
+              embeddingStatus = "failed";
+            }
+          } catch (e: any) {
+            embeddingStatus = "failed";
+            logger.warn(
+              { source: "admin-insert-memory", err: e?.message, userId, agentId },
+              "embedText threw",
+            );
+          }
+        }
+      }
+
       const r = await pool.query(
-        `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, embedding, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, user_id, agent_id, type, namespace, importance, created_at`,
-        [userId, agentId, agentName, content, type, namespace, importance, now]
+        [userId, agentId, agentName, content, type, namespace, importance, embeddingJson, now]
       );
-      res.json({ ok: true, memory: r.rows[0] });
+      res.json({ ok: true, memory: r.rows[0], embedding: embeddingStatus });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "insert failed" });
     }
