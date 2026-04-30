@@ -1928,17 +1928,98 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const { agentId, agentName: rawMsgName, agentColor, content: rawMsgContent, isDecision } = validateBody(createRoomMessageSchema, req.body);
+    const roomIdNum = Number(req.params.id);
+
+    // PR-A.6 — multipart attachment branch.
+    //
+    // Web client posts multipart/form-data with a `file` field plus the same
+    // text/agent fields as the JSON branch. We dynamic-import multer (matches
+    // /api/partner/read-video etc.) so the JSON path stays zero-cost. Only one
+    // attachment per message in this PR — multi-file uploads are out of scope.
+    const ct = String(req.headers["content-type"] || "");
+    const isMultipart = ct.startsWith("multipart/form-data");
+    type MultipartFile = { buffer: Buffer; mimetype: string; originalname: string; size: number };
+    let multipartFile: MultipartFile | null = null;
+    if (isMultipart) {
+      const multer = (await import("multer")).default;
+      // 20MB cap matches Telegram inbound voice/document; web image is bigger
+      // but compresses fine — if BOSS ever needs more we'll bump per-route.
+      const upload = multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: 20 * 1024 * 1024 },
+      }).single("file");
+      try {
+        await new Promise<void>((resolve, reject) => {
+          upload(req as any, res as any, (err: any) => (err ? reject(err) : resolve()));
+        });
+      } catch (err: any) {
+        // multer surfaces LIMIT_FILE_SIZE here — turn into a 413 so the client
+        // can show a clear "file too big" toast instead of a generic 500.
+        if (err?.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({ error: "File too large (20MB max)" });
+        }
+        throw err;
+      }
+      multipartFile = ((req as any).file as MultipartFile | undefined) ?? null;
+    }
+
+    const body = isMultipart ? req.body : req.body;
+    const { agentId, agentName: rawMsgName, agentColor, content: rawMsgContent, isDecision } =
+      validateBody(createRoomMessageSchema, {
+        ...body,
+        agentId: body.agentId !== undefined ? Number(body.agentId) : undefined,
+        // multipart fields arrive as strings; the schema needs proper types.
+        isDecision: body.isDecision === "true" || body.isDecision === true,
+      });
     const agentName = sanitizeHtml(rawMsgName);
     const content = sanitizeHtml(rawMsgContent);
+
+    // Build AttachmentMeta if a file was uploaded. Web uploads are NOT under
+    // the 90d PII deadline (they are user-curated workspace assets) so
+    // expires_at = null.
+    let attachments: any[] = [];
+    if (multipartFile) {
+      try {
+        // Reuse the Telegram builder — same Supabase upload + AttachmentMeta
+        // shape, but we pass ttlMs=0 (no expiry) by overriding expires_at
+        // post-build. The builder is exported precisely so non-Telegram
+        // sources can share the path.
+        const { buildAttachmentFromBytes } = await import("./lib/telegram-inbound");
+        const type =
+          multipartFile.mimetype.startsWith("image/") ? "image"
+          : multipartFile.mimetype.startsWith("audio/") ? "voice"
+          : "file";
+        // Find Luca agent under this user so the storage namespace is stable
+        // (userId/agentId/...). If the user has no agent yet, fall back to 0
+        // — that path is created on demand by Supabase.
+        const userAgents = await storage.getAgents(userId);
+        const agentSlot = (userAgents[0]?.id ?? 0) as number;
+        const att = await buildAttachmentFromBytes({
+          type,
+          bytes: { data: multipartFile.buffer, mime: multipartFile.mimetype },
+          originalName: multipartFile.originalname || "file",
+          mimeOverride: multipartFile.mimetype,
+          userId,
+          agentId: agentSlot,
+        });
+        // Web uploads: no PII deadline.
+        att.expires_at = null;
+        attachments = [att];
+      } catch (err: any) {
+        logger.warn({ err: err?.message, userId }, "[rooms/messages] attachment upload failed");
+        return res.status(500).json({ error: "Attachment upload failed" });
+      }
+    }
+
     const msg = await storage.addRoomMessage({
-      roomId: Number(req.params.id),
+      roomId: roomIdNum,
       agentId: agentId ?? null,
       agentName,
       agentColor: agentColor ?? "#D4AF37",
       content,
       isDecision: !!isDecision,
-    }, userId);
+      attachments,
+    } as any, userId);
     if (!msg) return res.status(404).json({ error: "Not found" });
     // Auto-save decision to memories
     if (isDecision) {
@@ -1965,6 +2046,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     broadcastToRoom(Number(req.params.id), msg);
     res.json(msg);
 
+    // PR-A.6 — fire-and-forget summarizer for any attachment(s).
+    // Pushes summary back into JSONB and broadcasts attachment_summary_ready.
+    if (attachments.length > 0) {
+      const { scheduleAttachmentSummary } = await import("./lib/telegram-inbound");
+      for (const att of attachments) {
+        scheduleAttachmentSummary(msg.id, att.id, (e) => {
+          try {
+            broadcastToRoom(Number(req.params.id), {
+              type: "attachment_summary_ready",
+              messageId: e.messageId,
+              attachmentId: e.attachmentId,
+              summary: e.summary,
+            } as any);
+          } catch { /* WS best-effort */ }
+        });
+      }
+    }
+
     // Trigger AI agent responses asynchronously (non-blocking)
     const roomId = Number(req.params.id);
     const room = await storage.getRoom(roomId);
@@ -1981,6 +2080,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
   }));
+
+  // ── PR-A.6 Refresh signed URL for a single attachment ────────────────────
+  //
+  // Caveat C1 (R349): the in-memory cache only knows about messages it has
+  // already loaded. The web client may render a 24h-old room and find a
+  // signed_url that's expired. Hitting this endpoint mints a new 1h URL,
+  // patches it back into the JSONB, and returns it. Cheap (no Supabase byte
+  // download) and idempotent.
+  app.post(
+    "/api/rooms/:roomId/messages/:messageId/attachments/:attachmentId/refresh-url",
+    asyncHandler(async (req, res) => {
+      const userId = await getUser(req);
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      const roomId = Number(req.params.roomId);
+      const messageId = Number(req.params.messageId);
+      const attachmentId = String(req.params.attachmentId);
+      if (!Number.isFinite(roomId) || !Number.isFinite(messageId)) {
+        return res.status(400).json({ error: "Bad request" });
+      }
+      // Ownership check: room must belong to user.
+      const room = await storage.getRoom(roomId, userId);
+      if (!room) return res.status(404).json({ error: "Not found" });
+
+      const att = await storage.getAttachment(messageId, attachmentId);
+      if (!att) return res.status(404).json({ error: "Attachment not found" });
+      if (!att.storage_key) {
+        // PII-expired or never-uploaded — binary is gone, don't issue a URL.
+        return res.status(410).json({ error: "Attachment expired" });
+      }
+      const { refreshSignedUrlIfNeeded } = await import("./lib/asset-bytes-cache");
+      const url = await refreshSignedUrlIfNeeded(messageId, attachmentId, att);
+      if (!url) return res.status(502).json({ error: "Refresh failed" });
+      return res.json({ url });
+    }),
+  );
 
   // ── Human Participant Mode — user joins deliberation as themselves ──
   app.post("/api/rooms/:id/human-message", asyncHandler(async (req, res) => {
