@@ -25,10 +25,13 @@
  * retry if it ever sends with a stale secret token (post rotation race).
  */
 
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { db, storage } from "../storage";
 import logger from "../logger";
+import { saveAssetAndSign } from "../workspace-storage";
+import { summarizeAttachment } from "./attachment-summarizer";
+import type { AttachmentMeta } from "@shared/schema";
 
 // ── In-memory rate-limit ──────────────────────────────────────────────────────
 //
@@ -88,13 +91,73 @@ const telegramChatSchema = z.object({
   id: z.number(),
 });
 
+// PR-A.6 — photo/voice/document inline payloads.
+//
+// Telegram sends `photo` as an array of PhotoSize (multiple resolutions).
+// We pick the largest by file_size after parse. `voice` is a single object;
+// `document` is a single object (PDFs, .docx, .txt, etc.). All three carry a
+// `file_id` we resolve via getFile → file_path → download.
+//
+// `file_size` may be missing on some old clients; we treat absence as "unknown
+// big" and reject up-front. The caps below match R349 and exist to bound
+// blast radius (memory + Anthropic vision token cost) — Telegram itself caps
+// uploads at 50 MB so anything above is suspicious.
+const telegramPhotoSizeSchema = z.object({
+  file_id: z.string(),
+  file_unique_id: z.string().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  file_size: z.number().optional(),
+});
+
+const telegramVoiceSchema = z.object({
+  file_id: z.string(),
+  file_unique_id: z.string().optional(),
+  duration: z.number().optional(),
+  mime_type: z.string().optional(),
+  file_size: z.number().optional(),
+});
+
+const telegramDocumentSchema = z.object({
+  file_id: z.string(),
+  file_unique_id: z.string().optional(),
+  file_name: z.string().optional(),
+  mime_type: z.string().optional(),
+  file_size: z.number().optional(),
+});
+
 const telegramMessageSchema = z.object({
   message_id: z.number().optional(),
   date: z.number().optional(),
   from: telegramUserSchema,
   chat: telegramChatSchema,
   text: z.string().optional(),
+  caption: z.string().optional(),
+  photo: z.array(telegramPhotoSizeSchema).optional(),
+  voice: telegramVoiceSchema.optional(),
+  document: telegramDocumentSchema.optional(),
 });
+
+export type TelegramPhotoSize = z.infer<typeof telegramPhotoSizeSchema>;
+export type TelegramVoice = z.infer<typeof telegramVoiceSchema>;
+export type TelegramDocument = z.infer<typeof telegramDocumentSchema>;
+export type TelegramMessage = z.infer<typeof telegramMessageSchema>;
+
+// PR-A.6 attachment caps (R349).
+//   photo: 5 MB hard cap — Anthropic Haiku vision charges per token, and
+//          5 MB ≈ ~6k tokens in base64.
+//   voice: 20 MB — ~30 min OGG/Opus, well above what BOSS would ever send.
+//   document: 20 MB — Telegram itself caps uploads at 50 MB, but PDFs >20 MB
+//             rarely have useful extractable text and would dominate cache.
+export const TELEGRAM_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+export const TELEGRAM_VOICE_MAX_BYTES = 20 * 1024 * 1024;
+export const TELEGRAM_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
+
+// Telegram inbound attachments hold raw user-uploaded media → fall under PII
+// retention. R349 sets the deadline at 90 days from upload; the cron in
+// server/lib/jobs/asset-cleanup.ts deletes the binary and patches storage_key=null
+// after that mark, while preserving summary/transcription for context continuity.
+export const TELEGRAM_PII_RETENTION_DAYS = 90;
 
 export const telegramUpdateSchema = z.object({
   update_id: z.number(),
@@ -359,4 +422,365 @@ export async function handleTelegramCommand(cmd: ParsedCommand): Promise<string>
     default:
       return `Неизвестная команда /${cmd.command}. /help — список.`;
   }
+}
+
+// ── PR-A.6 — Telegram media ingest → Supabase Storage → AttachmentMeta ──────
+//
+// Pipeline (called from POST /api/telegram/webhook on photo/voice/document):
+//   1. enforce per-type size cap (rejects up-front, audit row notes which cap)
+//   2. getTelegramFile(file_id)        → file_path on api.telegram.org
+//   3. fetchTelegramFile(file_path)    → raw bytes (token NEVER logged)
+//   4. saveAssetAndSign(BOSS, AGENT)   → Supabase storage_key + signed_url (1h)
+//   5. build AttachmentMeta with expires_at = now + 90d (PII retention)
+//   6. summarizeAttachment(messageId, attId) fire-and-forget after addRoomMessage
+//
+// Why this lives in telegram-inbound.ts and not a separate module: the route
+// handler already imports from here, the helpers below are Telegram-specific,
+// and keeping them next to telegramMessageSchema makes the contract obvious.
+
+/**
+ * F2 — token redaction. Every Telegram file URL contains the bot token verbatim:
+ *   https://api.telegram.org/file/bot<TOKEN>/<path>
+ * If we ever log the URL as-is, the token leaks into logs forever. This helper
+ * returns a path with the bot prefix replaced by `bot<redacted>` so structured
+ * logs are safe to ship to Datadog/Sentry without rotating the token.
+ */
+export function safeFilePath(urlOrPath: string | null | undefined): string {
+  if (!urlOrPath) return "";
+  return urlOrPath.replace(/bot[\d]+:[A-Za-z0-9_-]+/g, "bot<redacted>");
+}
+
+export interface TelegramFileInfo {
+  file_id: string;
+  file_path: string;
+  file_size: number | null;
+}
+
+/**
+ * Resolve a Telegram file_id to its file_path via getFile.
+ *
+ * Returns null on any non-2xx or schema mismatch — caller falls back to a
+ * "Не удалось загрузить" outbound message. Never throws.
+ */
+export async function getTelegramFile(fileId: string): Promise<TelegramFileInfo | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    logger.warn("[telegram-inbound] getTelegramFile: TELEGRAM_BOT_TOKEN unset");
+    return null;
+  }
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!res.ok) {
+      logger.warn(
+        { status: res.status, fileId },
+        "[telegram-inbound] getFile non-2xx",
+      );
+      return null;
+    }
+    const j = (await res.json()) as {
+      ok?: boolean;
+      result?: { file_id?: string; file_path?: string; file_size?: number };
+    };
+    if (!j.ok || !j.result?.file_path || !j.result.file_id) {
+      logger.warn({ fileId }, "[telegram-inbound] getFile missing file_path");
+      return null;
+    }
+    return {
+      file_id: j.result.file_id,
+      file_path: j.result.file_path,
+      file_size: typeof j.result.file_size === "number" ? j.result.file_size : null,
+    };
+  } catch (err: any) {
+    logger.warn({ err: err?.message, fileId }, "[telegram-inbound] getFile threw");
+    return null;
+  }
+}
+
+/**
+ * Download the raw bytes of a Telegram file. Token NEVER appears in error
+ * payloads (we redact via safeFilePath before logging).
+ *
+ * Returns null on non-2xx or fetch errors so caller can degrade gracefully.
+ */
+export async function fetchTelegramFile(
+  filePath: string,
+  maxBytes: number,
+): Promise<{ data: Buffer; mime: string } | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    logger.warn("[telegram-inbound] fetchTelegramFile: TELEGRAM_BOT_TOKEN unset");
+    return null;
+  }
+  // The actual URL contains the token; only `safeFilePath(filePath)` ever
+  // hits the logger.
+  const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
+  const safePath = safeFilePath(filePath);
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) {
+      logger.warn(
+        { status: res.status, filePath: safePath },
+        "[telegram-inbound] fetchTelegramFile non-2xx",
+      );
+      return null;
+    }
+    const ab = await res.arrayBuffer();
+    if (ab.byteLength > maxBytes) {
+      logger.warn(
+        { sizeBytes: ab.byteLength, maxBytes, filePath: safePath },
+        "[telegram-inbound] fetchTelegramFile body exceeds cap",
+      );
+      return null;
+    }
+    const data = Buffer.from(ab);
+    const mime = res.headers.get("content-type") || "application/octet-stream";
+    return { data, mime };
+  } catch (err: any) {
+    logger.warn(
+      { err: err?.message, filePath: safePath },
+      "[telegram-inbound] fetchTelegramFile threw",
+    );
+    return null;
+  }
+}
+
+/**
+ * Pick the highest-quality PhotoSize entry that still fits the cap. Telegram
+ * sends a sorted-by-size array (smallest first) but we don't rely on order —
+ * we explicitly pick by file_size. Entries with missing file_size are skipped
+ * to avoid downloading something we can't bound up-front.
+ */
+export function pickLargestPhoto(
+  photos: TelegramPhotoSize[],
+  maxBytes: number,
+): TelegramPhotoSize | null {
+  let best: TelegramPhotoSize | null = null;
+  for (const p of photos) {
+    const s = p.file_size;
+    if (typeof s !== "number" || s <= 0) continue;
+    if (s > maxBytes) continue;
+    if (!best || (best.file_size ?? 0) < s) best = p;
+  }
+  // Fallback: nothing had file_size. Use the last entry (Telegram's largest)
+  // and let fetchTelegramFile enforce the cap mid-download.
+  if (!best && photos.length > 0) best = photos[photos.length - 1];
+  return best;
+}
+
+/** Lazy `att_<uuid>` so callers don't have to import randomUUID directly. */
+export function newAttachmentId(): string {
+  return `att_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+}
+
+/**
+ * Slug a Telegram-supplied filename so it's safe as a Supabase Storage key
+ * fragment. Strip directory separators, control chars, and reduce to ASCII
+ * + hyphens. The full filename is preserved on AttachmentMeta.original_name
+ * — this is just for the storage path.
+ */
+function slugifyFilename(name: string): string {
+  return name
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "file";
+}
+
+export interface BuildAttachmentInput {
+  type: AttachmentMeta["type"];
+  bytes: { data: Buffer; mime: string };
+  originalName: string;
+  durationSec?: number | null;
+  mimeOverride?: string;
+  /** Owner of the storage namespace (BOSS for Telegram inbound). */
+  userId: number;
+  /** Agent slot under userId (Лука = 16 in production). */
+  agentId: number;
+  /** PII retention deadline. Defaults to 90d for Telegram source. */
+  ttlMs?: number;
+}
+
+/**
+ * Upload bytes to Supabase Storage and synthesize an AttachmentMeta ready to
+ * embed in room_messages.attachments. Pure builder — does NOT touch DB.
+ *
+ * Storage path layout: `inbox/telegram/<yyyy-mm-dd>/<attId>-<filename>`. The
+ * date prefix makes manual S3-style listing humane; the attId prefix makes
+ * any future garbage-collect / PII purge trivially scoped.
+ */
+export async function buildAttachmentFromBytes(
+  input: BuildAttachmentInput,
+): Promise<AttachmentMeta> {
+  const id = newAttachmentId();
+  const now = Date.now();
+  const date = new Date(now).toISOString().slice(0, 10);
+  const slug = slugifyFilename(input.originalName);
+  const relPath = `inbox/telegram/${date}/${id}-${slug}`;
+  const mime = input.mimeOverride || input.bytes.mime || "application/octet-stream";
+
+  const { key, url } = await saveAssetAndSign(
+    input.userId,
+    input.agentId,
+    relPath,
+    input.bytes.data,
+    { contentType: mime, expiresSec: 3600 },
+  );
+
+  const ttlMs = input.ttlMs ?? TELEGRAM_PII_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  return {
+    id,
+    type: input.type,
+    mime,
+    size_bytes: input.bytes.data.length,
+    storage_key: key,
+    signed_url: url,
+    signed_url_expires_at: now + 60 * 60 * 1000,
+    summary: null,
+    transcription: null,
+    extracted_text: null,
+    duration_sec: input.durationSec ?? null,
+    original_name: input.originalName,
+    uploaded_at: now,
+    expires_at: now + ttlMs,
+  };
+}
+
+export interface ProcessAttachmentResult {
+  ok: true;
+  attachment: AttachmentMeta;
+}
+export interface ProcessAttachmentFail {
+  ok: false;
+  reason:
+    | "size_cap"
+    | "missing_token"
+    | "getfile_failed"
+    | "download_failed"
+    | "storage_failed"
+    | "unsupported";
+}
+
+/**
+ * One-shot helper: take a parsed Telegram message + attachment kind, do the
+ * full size-check → getFile → download → Supabase upload → AttachmentMeta
+ * synthesis. Returns a discriminated union the route handler can branch on.
+ *
+ * The route handler is responsible for inserting the room_message row with
+ * the returned attachment, then calling summarizeAttachment(messageId, attId)
+ * fire-and-forget.
+ */
+export async function processTelegramAttachment(
+  message: TelegramMessage,
+  agentId: number,
+  userId: number = BOSS_USER_ID,
+): Promise<ProcessAttachmentResult | ProcessAttachmentFail> {
+  // Photo branch — pick largest, cap 5 MB.
+  if (message.photo && message.photo.length > 0) {
+    const pick = pickLargestPhoto(message.photo, TELEGRAM_PHOTO_MAX_BYTES);
+    if (!pick) return { ok: false, reason: "size_cap" };
+    const info = await getTelegramFile(pick.file_id);
+    if (!info) return { ok: false, reason: "getfile_failed" };
+    if (typeof info.file_size === "number" && info.file_size > TELEGRAM_PHOTO_MAX_BYTES) {
+      return { ok: false, reason: "size_cap" };
+    }
+    const dl = await fetchTelegramFile(info.file_path, TELEGRAM_PHOTO_MAX_BYTES);
+    if (!dl) return { ok: false, reason: "download_failed" };
+    // Telegram serves photos as JPEG by default; honour content-type returned.
+    try {
+      const att = await buildAttachmentFromBytes({
+        type: "image",
+        bytes: dl,
+        originalName: `photo-${pick.file_unique_id ?? pick.file_id.slice(0, 8)}.jpg`,
+        userId,
+        agentId,
+      });
+      return { ok: true, attachment: att };
+    } catch (err: any) {
+      logger.warn({ err: err?.message }, "[telegram-inbound] photo storage upload failed");
+      return { ok: false, reason: "storage_failed" };
+    }
+  }
+
+  // Voice branch — single object, cap 20 MB.
+  if (message.voice) {
+    const v = message.voice;
+    if (typeof v.file_size === "number" && v.file_size > TELEGRAM_VOICE_MAX_BYTES) {
+      return { ok: false, reason: "size_cap" };
+    }
+    const info = await getTelegramFile(v.file_id);
+    if (!info) return { ok: false, reason: "getfile_failed" };
+    if (typeof info.file_size === "number" && info.file_size > TELEGRAM_VOICE_MAX_BYTES) {
+      return { ok: false, reason: "size_cap" };
+    }
+    const dl = await fetchTelegramFile(info.file_path, TELEGRAM_VOICE_MAX_BYTES);
+    if (!dl) return { ok: false, reason: "download_failed" };
+    const mime = v.mime_type || dl.mime || "audio/ogg";
+    const ext = mime.includes("ogg") ? "ogg" : mime.includes("mp4") ? "m4a" : "voice";
+    try {
+      const att = await buildAttachmentFromBytes({
+        type: "voice",
+        bytes: { data: dl.data, mime },
+        originalName: `voice-${v.file_unique_id ?? v.file_id.slice(0, 8)}.${ext}`,
+        durationSec: typeof v.duration === "number" ? v.duration : null,
+        mimeOverride: mime,
+        userId,
+        agentId,
+      });
+      return { ok: true, attachment: att };
+    } catch (err: any) {
+      logger.warn({ err: err?.message }, "[telegram-inbound] voice storage upload failed");
+      return { ok: false, reason: "storage_failed" };
+    }
+  }
+
+  // Document branch — single object, cap 20 MB. PDF/Word/text — anything else
+  // is stored but only filename will land in the summary (per attachment-summarizer.ts).
+  if (message.document) {
+    const d = message.document;
+    if (typeof d.file_size === "number" && d.file_size > TELEGRAM_DOCUMENT_MAX_BYTES) {
+      return { ok: false, reason: "size_cap" };
+    }
+    const info = await getTelegramFile(d.file_id);
+    if (!info) return { ok: false, reason: "getfile_failed" };
+    if (typeof info.file_size === "number" && info.file_size > TELEGRAM_DOCUMENT_MAX_BYTES) {
+      return { ok: false, reason: "size_cap" };
+    }
+    const dl = await fetchTelegramFile(info.file_path, TELEGRAM_DOCUMENT_MAX_BYTES);
+    if (!dl) return { ok: false, reason: "download_failed" };
+    const mime = d.mime_type || dl.mime || "application/octet-stream";
+    const name = d.file_name || `file-${d.file_unique_id ?? d.file_id.slice(0, 8)}`;
+    try {
+      const att = await buildAttachmentFromBytes({
+        type: "file",
+        bytes: { data: dl.data, mime },
+        originalName: name,
+        mimeOverride: mime,
+        userId,
+        agentId,
+      });
+      return { ok: true, attachment: att };
+    } catch (err: any) {
+      logger.warn({ err: err?.message }, "[telegram-inbound] document storage upload failed");
+      return { ok: false, reason: "storage_failed" };
+    }
+  }
+
+  return { ok: false, reason: "unsupported" };
+}
+
+/** Convenience: kick off summarizer in fire-and-forget mode with logging. */
+export function scheduleAttachmentSummary(
+  messageId: number,
+  attachmentId: string,
+  onReady?: (e: { messageId: number; attachmentId: string; summary: string }) => void,
+): void {
+  summarizeAttachment(messageId, attachmentId, { onReady }).catch((err) => {
+    logger.warn(
+      { err, messageId, attachmentId },
+      "[telegram-inbound] summarizeAttachment threw",
+    );
+  });
 }
