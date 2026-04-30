@@ -654,6 +654,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Caller must supply an exact known migration file content.
     const ALLOWED_HASHES: Record<string, string> = {
       "9e83d3d88018a04885bf6a6d4374273cbf497e2f2cbafeebd6c21cb2ea0c187a": "0007_self_monitoring.sql",
+      "579740d44b980eb1429e531e62cd428bfe976e6542b794e89f007659de193633": "0012_memory_provenance_sprint1v2.sql",
     };
     const crypto = await import("crypto");
     const hash = crypto.createHash("sha256").update(sqlText, "utf8").digest("hex");

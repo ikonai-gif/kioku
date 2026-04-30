@@ -89,6 +89,13 @@ export const memories = pgTable("memories", {
   contextTrigger:   text("context_trigger"),                           // contextual memories
   // Phase 4: Emotion vector for EmotionalRAG
   emotionVector:    text("emotion_vector"),                             // JSON float[8]: [joy, acceptance, fear, surprise, sadness, disgust, anger, anticipation]
+  // Sprint 1 v2 (R373): provenance + verification fields for honesty layer.
+  // provenance answers "how do I know this?" — system-controlled, never user-input.
+  // verified gates whether retrieval treats this as ground-truth fact (vs Luca's inference).
+  // Invariant: Luca cannot self-set verified=true with provenance='luca_inferred' (enforced in remember tool).
+  provenance:       text("provenance").notNull().default("luca_inferred"),     // user_told | tool_observed | luca_inferred
+  verified:         boolean("verified").notNull().default(false),
+  lastVerifiedAt:   bigint("last_verified_at", { mode: "number" }),            // epoch ms when last user-confirmed; null = never
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
