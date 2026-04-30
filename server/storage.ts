@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { eq, desc, ilike, or, sql } from "drizzle-orm";
+import { eq, desc, ilike, or, sql, inArray } from "drizzle-orm";
 import {
   users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking, knowledgeDomains, aestheticPreferences,
   type User, type InsertUser,
@@ -874,6 +874,8 @@ export interface IStorage {
   deleteRoom(id: number, userId: number): Promise<boolean>;
 
   getRoomMessages(roomId: number, userId: number): Promise<RoomMessage[] | null>;
+  /** Fetch specific messages by their ids (no user check; for trusted internal callers). */
+  getRoomMessagesByIds(ids: number[]): Promise<RoomMessage[]>;
   addRoomMessage(data: InsertRoomMessage, userId?: number): Promise<RoomMessage | null>;
   // PR-A.6 multimodal helpers
   patchAttachment(
@@ -1382,6 +1384,15 @@ export class Storage implements IStorage {
       .values({ ...data, createdAt: Date.now() })
       .returning();
     return result;
+  }
+  /**
+   * Fetch a batch of room messages by id. No user-scoped check — used by
+   * internal pipelines (e.g. multimodal-history await polling) that already
+   * authenticated the caller upstream.
+   */
+  async getRoomMessagesByIds(ids: number[]): Promise<RoomMessage[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(roomMessages).where(inArray(roomMessages.id, ids));
   }
 
   // ── PR-A.6 Multimodal helpers ──────────────────────────────────────────────
