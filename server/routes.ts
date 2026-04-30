@@ -3800,7 +3800,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // POST /api/partner/read-file — Extract text from uploaded documents
+  // DEPRECATED (R349/R374-БРО2): use POST /api/rooms/:id/messages with multipart
+  // attachments + the new attachment-summarizer pipeline. Sunset: 2026-07-31.
+  // Returning 200 with Deprecation/Sunset headers until partner-chat.tsx migrates.
   app.post("/api/partner/read-file", asyncHandler(async (req, res) => {
+    res.setHeader("Deprecation", "true");
+    res.setHeader("Sunset", "Fri, 31 Jul 2026 00:00:00 GMT");
+    res.setHeader("Link", "</api/rooms/:id/messages>; rel=\"successor-version\"");
+    logger.warn({ source: "deprecated-endpoint", endpoint: "/api/partner/read-file", successor: "/api/rooms/:id/messages" }, "deprecated endpoint hit — migrate client to multipart messages");
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -3901,6 +3908,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // POST /api/partner/read-video-meta — Day 12: frame already extracted client-side.
+  // DEPRECATED (R349/R374-БРО2): use POST /api/rooms/:id/messages multipart pipeline.
+  // Sunset: 2026-07-31. Returning 200 with headers until partner-chat.tsx migrates.
   //   Client does the heavy lifting (HTMLVideoElement + canvas.toDataURL) and
   //   uploads just the JPEG. Lets us describe videos up to 500MB without
   //   ever streaming video bytes to Railway. ffmpeg on the server is no
@@ -3913,6 +3922,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //     { fileName, mimeType, sizeBytes, durationSec,
   //       thumbnailDescription | warning }
   app.post("/api/partner/read-video-meta", asyncHandler(async (req, res) => {
+    res.setHeader("Deprecation", "true");
+    res.setHeader("Sunset", "Fri, 31 Jul 2026 00:00:00 GMT");
+    res.setHeader("Link", "</api/rooms/:id/messages>; rel=\"successor-version\"");
+    logger.warn({ source: "deprecated-endpoint", endpoint: "/api/partner/read-video-meta", successor: "/api/rooms/:id/messages" }, "deprecated endpoint hit — migrate client to multipart messages");
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -4003,6 +4016,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // POST /api/partner/read-video — Video metadata + first-frame thumbnail description
+  // DEPRECATED (R349/R374-БРО2): use POST /api/rooms/:id/messages multipart pipeline.
+  // Sunset: 2026-07-31.
   //   Workflow:
   //     1. Accept video upload (max 200MB — covers typical phone reels & clips).
   //     2. ffprobe for duration + mime sanity.
@@ -4013,6 +4028,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //     [Video: clip.mp4 — 12.4 MB, 34s — first frame shows: a person at a desk ...]
   //   No video model, no persistent upload. Temp files cleaned on every path.
   app.post("/api/partner/read-video", asyncHandler(async (req, res) => {
+    res.setHeader("Deprecation", "true");
+    res.setHeader("Sunset", "Fri, 31 Jul 2026 00:00:00 GMT");
+    res.setHeader("Link", "</api/rooms/:id/messages>; rel=\"successor-version\"");
+    logger.warn({ source: "deprecated-endpoint", endpoint: "/api/partner/read-video", successor: "/api/rooms/:id/messages" }, "deprecated endpoint hit — migrate client to multipart messages");
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
