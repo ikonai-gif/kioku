@@ -71,6 +71,7 @@ const LUCA_FLAG_KEYS = [
   "LUCA_EMAIL_SCOPE_ENABLED",
   "LUCA_BROWSER_DISABLED",
   "LUCA_AGENT_BROWSER_ALLOWED_DOMAINS",
+  "LUCA_AGENT_BROWSER_MODEL",
   "BROWSERBASE_API_KEY",
   "BROWSERBASE_PROJECT_ID",
 ];
@@ -442,6 +443,53 @@ describe("agentBrowserHandler — happy path", () => {
     );
     expect(r.status).toBe("ok");
     expect(r.result?.screenshot_b64).toBe(png.toString("base64"));
+  });
+
+  it("R401: trims trailing newline from LUCA_AGENT_BROWSER_MODEL env", async () => {
+    // Railway's variable editor leaves a trailing \n on some saves. Anthropic
+    // 400s with the literal value echoed back ("model: <name>\n"), so we
+    // strip whitespace before passing the value to Stagehand. Regression
+    // for the 4-iteration prod debug session captured in this PR's body.
+    const { mgr } = makeFakeManager();
+    const { factory, log: shLog } = makeFakeStagehand({});
+    __setStagehandFactoryForTests(factory);
+    process.env.LUCA_AGENT_BROWSER_MODEL =
+      "anthropic/claude-sonnet-4-5-20250929\n";
+
+    await agentBrowserHandler(
+      { task: "Browse the page please.", domain: "vercel.com" },
+      { ...makeCtx(), agentBrowserSessionMgr: mgr },
+    );
+    expect(shLog.agent[0]?.model).toBe("anthropic/claude-sonnet-4-5-20250929");
+  });
+
+  it("R401: trims surrounding whitespace from LUCA_AGENT_BROWSER_MODEL env", async () => {
+    const { mgr } = makeFakeManager();
+    const { factory, log: shLog } = makeFakeStagehand({});
+    __setStagehandFactoryForTests(factory);
+    process.env.LUCA_AGENT_BROWSER_MODEL = "  anthropic/claude-sonnet-4-6  ";
+
+    await agentBrowserHandler(
+      { task: "Browse the page please.", domain: "vercel.com" },
+      { ...makeCtx(), agentBrowserSessionMgr: mgr },
+    );
+    expect(shLog.agent[0]?.model).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  it("R401: falls back to AGENT_BROWSER_DEFAULT_MODEL when env is whitespace-only", async () => {
+    const { AGENT_BROWSER_DEFAULT_MODEL } = await import(
+      "../../lib/luca-tools/agent-browser"
+    );
+    const { mgr } = makeFakeManager();
+    const { factory, log: shLog } = makeFakeStagehand({});
+    __setStagehandFactoryForTests(factory);
+    process.env.LUCA_AGENT_BROWSER_MODEL = "   \n  ";
+
+    await agentBrowserHandler(
+      { task: "Browse the page please.", domain: "vercel.com" },
+      { ...makeCtx(), agentBrowserSessionMgr: mgr },
+    );
+    expect(shLog.agent[0]?.model).toBe(AGENT_BROWSER_DEFAULT_MODEL);
   });
 
   it("clamps max_actions to AGENT_BROWSER_MAX_STEPS_CAP at the boundary", async () => {
