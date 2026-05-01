@@ -127,6 +127,17 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
     return next();
   }
 
+  // Skip auth endpoints — they have their own purpose-built rate limits
+  // (checkDemoRateLimit: 5/min IP bucket; checkAuthRateLimit: 15/hour email bucket).
+  // The global IP limit was causing legitimate owners to be locked out of /auth
+  // when other unauthenticated traffic from the same NAT/proxy IP exhausted the
+  // shared-IP quota. Endpoint-specific limits remain enforced inside the route
+  // handlers in server/auth/*. Note the trailing slash: /api/agent-auth/* and any
+  // hypothetical /api/authentication path do NOT match this prefix.
+  if (req.path.startsWith("/api/auth/")) {
+    return next();
+  }
+
   // Internal probes (health-check, lockout-prevention worker) bypass via
   // shared secret in X-Internal-Health header. Fail-safe: if env unset, the
   // header is ignored — never accept a missing/empty secret as valid.
