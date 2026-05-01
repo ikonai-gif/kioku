@@ -64,6 +64,12 @@ export interface LucaEnv {
   // Day 5 — untrusted-by-policy (TOOL_TRUST_POLICY). Flag reserved now so
   // Day 5 PR can register without touching env.ts / isLucaToolEnabled union.
   LUCA_TOOL_READ_URL_ENABLED: boolean;
+  /**
+   * Per-tool flag for `luca_agent_browser`. Default false (ship-dark).
+   * Boss flips manually after BRO3 mock smoke. See
+   * server/lib/luca-tools/agent-browser.ts for the full defense stack.
+   */
+  LUCA_TOOL_AGENT_BROWSER_ENABLED: boolean;
   LUCA_TOOL_READ_MEMORY_ENABLED: boolean;
   LUCA_TOOL_WRITE_MEMORY_ENABLED: boolean;
   LUCA_TOOL_READ_FILE_ENABLED: boolean;
@@ -148,6 +154,8 @@ export function readLucaEnv(): LucaEnv {
     LUCA_TOOL_ANALYZE_IMAGE_ENABLED: process.env.LUCA_TOOL_ANALYZE_IMAGE_ENABLED === "true",
     LUCA_TOOL_SEARCH_ENABLED: process.env.LUCA_TOOL_SEARCH_ENABLED === "true",
     LUCA_TOOL_READ_URL_ENABLED: process.env.LUCA_TOOL_READ_URL_ENABLED === "true",
+    LUCA_TOOL_AGENT_BROWSER_ENABLED:
+      process.env.LUCA_TOOL_AGENT_BROWSER_ENABLED === "true",
     LUCA_TOOL_READ_MEMORY_ENABLED: process.env.LUCA_TOOL_READ_MEMORY_ENABLED === "true",
     LUCA_TOOL_WRITE_MEMORY_ENABLED: process.env.LUCA_TOOL_WRITE_MEMORY_ENABLED === "true",
     LUCA_TOOL_READ_FILE_ENABLED: process.env.LUCA_TOOL_READ_FILE_ENABLED === "true",
@@ -222,6 +230,7 @@ export function isLucaToolEnabled(
     | "LUCA_TOOL_ANALYZE_IMAGE_ENABLED"
     | "LUCA_TOOL_SEARCH_ENABLED"
     | "LUCA_TOOL_READ_URL_ENABLED"
+    | "LUCA_TOOL_AGENT_BROWSER_ENABLED"
     | "LUCA_TOOL_READ_MEMORY_ENABLED"
     | "LUCA_TOOL_WRITE_MEMORY_ENABLED"
     | "LUCA_TOOL_READ_FILE_ENABLED"
