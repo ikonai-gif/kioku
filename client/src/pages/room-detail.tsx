@@ -7,6 +7,7 @@ import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDo
 import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
 import { cn, safeParseIds } from "@/lib/utils";
+import { nextBackoffMs } from "@/lib/ws-reconnect";
 import { useAuth } from "../App";
 
 const FLOW_COLORS = [
@@ -1008,6 +1009,8 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let unmounted = false;
+    // R418 — exponential backoff + jitter; reset on successful open
+    let reconnectAttempt = 0;
 
     function connect() {
       ws = new WebSocket(wsUrl);
@@ -1015,6 +1018,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       ws.onopen = () => {
         if (unmounted) { ws.close(); return; }
         setWsConnected(true);
+        reconnectAttempt = 0;
         ws.send(JSON.stringify({ type: "subscribe", roomId }));
       };
 
@@ -1048,7 +1052,8 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       ws.onclose = () => {
         setWsConnected(false);
         if (!unmounted) {
-          reconnectTimer = setTimeout(connect, 3000);
+          const delay = nextBackoffMs(reconnectAttempt++);
+          reconnectTimer = setTimeout(connect, delay);
         }
       };
 

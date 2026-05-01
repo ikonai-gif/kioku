@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { nextBackoffMs } from "@/lib/ws-reconnect";
 import { useAuth } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
@@ -2115,6 +2116,8 @@ export default function PartnerChat() {
     let ws: WebSocket;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let unmounted = false;
+    // R418 — exponential backoff + jitter; reset on successful open
+    let reconnectAttempt = 0;
 
     function connect() {
       ws = new WebSocket(wsUrl);
@@ -2122,6 +2125,7 @@ export default function PartnerChat() {
       ws.onopen = () => {
         if (unmounted) { ws.close(); return; }
         setWsConnected(true);
+        reconnectAttempt = 0;
         ws.send(JSON.stringify({ type: "subscribe", roomId: partnerRoomId }));
       };
 
@@ -2314,7 +2318,10 @@ export default function PartnerChat() {
 
       ws.onclose = () => {
         setWsConnected(false);
-        if (!unmounted) reconnectTimer = setTimeout(connect, 3000);
+        if (!unmounted) {
+          const delay = nextBackoffMs(reconnectAttempt++);
+          reconnectTimer = setTimeout(connect, delay);
+        }
       };
 
       ws.onerror = () => ws.close();
