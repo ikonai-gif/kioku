@@ -381,11 +381,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   }));
 
-  // ── Debug — Luca Day 6 gate state (master key only) ──
+  // ── Debug — Luca Day 6 gate state ──
+  // Auth: owner session OR master key. The Luca Board UI (LucaWorkPanel,
+  // luca-board) hits this on load via the unified apiRequest path that
+  // sends x-session-token / httpOnly cookie — master-key-only would
+  // return 403 to every owner browser session and the panel would render
+  // gate=null forever.
   app.get("/api/debug/luca-gate", asyncHandler(async (req, res) => {
-    const mk = req.headers["x-master-key"] as string || "";
+    const mk = (req.headers["x-master-key"] as string) || "";
     const masterKey = process.env.KIOKU_MASTER_KEY;
-    if (!masterKey || !safeCompare(mk, masterKey)) return res.status(403).json({ error: "Forbidden" });
+    const masterKeyOk = !!masterKey && safeCompare(mk, masterKey);
+    let ownerOk = false;
+    if (!masterKeyOk) {
+      const userId = await getUser(req);
+      if (userId !== null) {
+        try { ownerOk = await isOwner(userId); } catch { ownerOk = false; }
+      }
+    }
+    if (!masterKeyOk && !ownerOk) return res.status(403).json({ error: "Forbidden" });
     let resolved: any;
     try {
       const { isApprovalGateActive, isApprovalGateEnforcing } = await import("./lib/luca/env");
