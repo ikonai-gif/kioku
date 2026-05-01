@@ -15,6 +15,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
+    "@browserbasehq/sdk": "^2.10.0",
+    "@browserbasehq/stagehand": "^3.3.0",
     "@composio/core": "^0.6.10",
     "@e2b/code-interpreter": "^2.4.0",
     "@google/genai": "^1.50.1",

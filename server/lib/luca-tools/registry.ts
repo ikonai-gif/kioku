@@ -39,6 +39,12 @@ import {
   type ReadUrlContext,
 } from "./read-url";
 import {
+  agentBrowserTool,
+  agentBrowserHandler,
+  buildAgentBrowserTool,
+  type AgentBrowserContext,
+} from "./agent-browser";
+import {
   inboxListTool,
   inboxListHandler,
   emailReadTool,
@@ -82,6 +88,10 @@ const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
   { kind: "tool", spec: analyzeImageTool, flag: "LUCA_TOOL_ANALYZE_IMAGE_ENABLED" },
   { kind: "tool", spec: searchTool, flag: "LUCA_TOOL_SEARCH_ENABLED" },
   { kind: "tool", spec: readUrlTool, flag: "LUCA_TOOL_READ_URL_ENABLED" },
+  // R343 — Stagehand-driven multi-step browser. Three-level flag stack PLUS
+  // global LUCA_BROWSER_DISABLED kill-switch PLUS empty-allowlist short-circuit
+  // (see server/lib/luca-tools/agent-browser.ts module doc).
+  { kind: "tool", spec: agentBrowserTool, flag: "LUCA_TOOL_AGENT_BROWSER_ENABLED" },
   // Step 4 PR A — Gmail read tools (extra scope master)
   { kind: "email", spec: inboxListTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
   { kind: "email", spec: emailReadTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
@@ -106,7 +116,11 @@ function isEntryLive(entry: LucaToolEntry): boolean {
  * own flag and returns `{status: "disabled"}` without side-effects.
  */
 export function getLucaTools(): Anthropic.Messages.Tool[] {
-  return LUCA_TOOL_ENTRIES.filter(isEntryLive).map((e) => e.spec);
+  return LUCA_TOOL_ENTRIES.filter(isEntryLive).map((e) =>
+    // agent_browser embeds the live allowlist in its description — rebuild
+    // every call so the LLM sees fresh env values without process restart.
+    e.spec.name === "luca_agent_browser" ? buildAgentBrowserTool() : e.spec,
+  );
 }
 
 // ─── Dispatch ────────────────────────────────────────────────────────────
@@ -127,6 +141,7 @@ export async function dispatchLucaTool(
     AnalyzeImageContext &
     SearchContext &
     ReadUrlContext &
+    AgentBrowserContext &
     EmailReadContext,
 ): Promise<unknown> {
   switch (toolName) {
@@ -138,6 +153,8 @@ export async function dispatchLucaTool(
       return searchHandler(toolInput, ctx);
     case "luca_read_url":
       return readUrlHandler(toolInput, ctx);
+    case "luca_agent_browser":
+      return agentBrowserHandler(toolInput, ctx);
     // Step 4 PR A — Luca-native Gmail reads
     case "luca_inbox_list":
       return inboxListHandler(toolInput, ctx);
