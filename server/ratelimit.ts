@@ -42,6 +42,12 @@ const PLANS: Record<string, { daily: number; perMin: number }> = {
   team:       { daily: 1_000_000, perMin: 5_000 },
   business:   { daily: 1_000_000, perMin: 5_000 },
   enterprise: { daily: 99_999_999, perMin: 9_999 },
+  // R415 — owner role bypass tier. Owners run the platform UI which polls
+  // many endpoints in parallel (rooms, status, gallery, approvals, WS
+  // reconnect). Effective "unlimited" so the owner is never locked out of
+  // their own product. Telemetry headers are still emitted so behaviour
+  // stays observable.
+  owner:      { daily: 99_999_999, perMin: 9_999 },
 };
 
 const UNAUTHENTICATED_PER_MIN = 100;
@@ -379,7 +385,13 @@ async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<
   if (apiKey && apiKey.startsWith("kk_")) {
     try {
       const user = await storage.getUserByApiKey(apiKey);
-      if (user) return user.plan || "dev";
+      if (user) {
+        // R415 — owner role overrides plan tier. An owner on a 'dev' or 'free'
+        // plan would otherwise be locked out of the product UI by their own
+        // rate limits.
+        if ((user as any).role === 'owner') return "owner";
+        return user.plan || "dev";
+      }
     } catch {}
   }
 
@@ -392,7 +404,11 @@ async function resolveUserPlan(apiKey?: string, sessionToken?: string): Promise<
       const payload = jwt.default.verify(sessionToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       if (payload.userId) {
         const user = await storage.getUserById(payload.userId);
-        if (user) return user.plan || "dev";
+        if (user) {
+          // R415 — owner role overrides plan tier (see api-key branch above).
+          if ((user as any).role === 'owner') return "owner";
+          return user.plan || "dev";
+        }
       }
     } catch {}
   }
