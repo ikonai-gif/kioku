@@ -134,6 +134,21 @@ export interface LucaEnv {
   TELEGRAM_BOT_TOKEN: string | null;
   /** Telegram chat_id for BOSS. Null disables Telegram tool. */
   TELEGRAM_BOSS_CHAT_ID: string | null;
+
+  // ── R403 — Anthropic prompt caching (Phase 1) ─────────────────────
+  /**
+   * When true, partner-chat deliberation passes the system prompt to
+   * Anthropic as a two-element array with `cache_control: ephemeral` on
+   * the static block (persona + tools manifest + honesty layer +
+   * approval lifecycle). The dynamic tail (mood / openingStyle /
+   * memoryContext / emotion / relationship) stays uncached. Default
+   * false — ship-dark; BOSS flips after BRO3 contract verifies request
+   * shape in production.
+   *
+   * Telemetry (`event:'anthropic_cache_usage'`) is emitted **regardless**
+   * of this flag so we can baseline cost pre-flip vs post-flip.
+   */
+  LUCA_PROMPT_CACHING_ENABLED: boolean;
 }
 
 export function readLucaEnv(): LucaEnv {
@@ -180,6 +195,9 @@ export function readLucaEnv(): LucaEnv {
       .filter((s) => s.length > 0),
     TELEGRAM_BOT_TOKEN: (process.env.TELEGRAM_BOT_TOKEN ?? "").trim() || null,
     TELEGRAM_BOSS_CHAT_ID: (process.env.TELEGRAM_BOSS_CHAT_ID ?? "").trim() || null,
+    // R403 — prompt caching (Phase 1). Default false (ship-dark).
+    LUCA_PROMPT_CACHING_ENABLED:
+      process.env.LUCA_PROMPT_CACHING_ENABLED === "true",
   };
 }
 
