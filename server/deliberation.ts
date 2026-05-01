@@ -5912,9 +5912,14 @@ export async function triggerAgentResponses(
   triggerAgentName: string,
   triggerContent: string,
   roomAgentIds: number[],
-  roomName?: string
+  roomName?: string,
+  roomType?: string
 ): Promise<void> {
-  const isPartnerChat = roomName === "Partner";
+  // W8 P2.11: Prefer roomType === 'partner' over legacy roomName === 'Partner'.
+  // The column is the single source of truth after consolidation; roomName
+  // is kept as a back-compat fallback for callsites that haven't been
+  // updated yet.
+  const isPartnerChat = roomType === "partner" || roomName === "Partner";
   const __turnStartedAt = Date.now();
   if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) return; // no shared provider
   // Check room lock with auto-expiry

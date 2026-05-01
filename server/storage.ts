@@ -673,6 +673,147 @@ export async function initDb() {
   // Demo migration: verifies the migration-guard infrastructure works end-to-end.
   // Uses a no-op SQL (SELECT 1) so it is safe to run on any database state.
   await runMigration('v2026_04_21_001_meeting_room_week3', 'SELECT 1;');
+
+  // ── W8 P2.11: Partner Room Consolidation (2026-04-22) ──────────────────────
+  //
+  // Problem: 174 duplicate Partner rooms accumulated for user 10 (30 with
+  // messages, 144 empty) because frontend auto-created a new Partner room
+  // whenever `rooms.find(r => r.name === "Partner")` returned a different id
+  // between renders. Root cause was P2.10 (routing), but the duplicates
+  // remained as user-visible fragmentation.
+  //
+  // Design (Bro2-reviewed 9.0/10):
+  //   1. Expand CHECK constraint to allow room_type = 'partner' (was
+  //      'standard'/'meeting' only from Meeting Room Track A Week 1).
+  //   2. Backfill existing 'Partner' rooms → room_type='partner'.
+  //   3. Pick canonical partner room per user (newest by created_at — it's
+  //      the one the user was most recently talking to, has live WebSocket).
+  //   4. Re-home child rows in 6 tables (room_messages, meetings,
+  //      scheduled_tasks, kioku_deliberation_sessions, tool_activity_log,
+  //      agent_turns) to the canonical room BEFORE deleting non-canonical.
+  //   5. pg-side snapshot (rooms_backup_p211, room_messages_backup_p211) as
+  //      safety net — can be dropped after 1 release cycle.
+  //   6. Assertion: zero users with >1 partner room after consolidation.
+  //   7. Partial unique index: one partner room per user, enforced by DB.
+  //
+  // Everything in a single transaction — if any step fails, ROLLBACK leaves
+  // the DB untouched and next cold start retries cleanly.
+  await runMigration('v2026_04_22_001_partner_room_consolidation', `
+    BEGIN;
+
+    -- Safety net: full snapshot before we touch anything.
+    CREATE TABLE IF NOT EXISTS rooms_backup_p211 AS
+      SELECT *, NOW() AS backup_at FROM rooms WHERE FALSE;
+    CREATE TABLE IF NOT EXISTS room_messages_backup_p211 AS
+      SELECT *, NOW() AS backup_at FROM room_messages WHERE FALSE;
+    INSERT INTO rooms_backup_p211 SELECT *, NOW() FROM rooms
+      WHERE name = 'Partner' OR lower(name) LIKE '%partner%';
+    INSERT INTO room_messages_backup_p211 SELECT rm.*, NOW() FROM room_messages rm
+      JOIN rooms r ON rm.room_id = r.id
+      WHERE r.name = 'Partner' OR lower(r.name) LIKE '%partner%';
+
+    -- 1. Expand CHECK constraint. Postgres doesn't allow ALTER CHECK
+    -- directly; drop and re-add.
+    ALTER TABLE rooms DROP CONSTRAINT IF EXISTS rooms_room_type_check;
+    ALTER TABLE rooms ADD CONSTRAINT rooms_room_type_check
+      CHECK (room_type IN ('standard', 'meeting', 'partner'));
+
+    -- 2. Backfill Partner rooms with room_type='partner'.
+    UPDATE rooms SET room_type = 'partner'
+      WHERE (name = 'Partner' OR lower(name) LIKE '%partner%')
+        AND room_type = 'standard';
+
+    -- 3-4. Pick canonical per user (newest created_at — live one) and
+    -- re-home child tables. We use a single CTE shared across statements
+    -- via the session via temp table for clarity.
+    CREATE TEMP TABLE partner_canonical ON COMMIT DROP AS
+      SELECT DISTINCT ON (user_id) user_id, id AS canonical_id
+      FROM rooms
+      WHERE room_type = 'partner'
+      ORDER BY user_id, created_at DESC;
+
+    -- Re-home room_messages (no FK — manual).
+    UPDATE room_messages rm SET room_id = c.canonical_id
+      FROM partner_canonical c, rooms r
+      WHERE rm.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- Re-home meetings (FK ON DELETE CASCADE — must rehome BEFORE delete).
+    UPDATE meetings m SET room_id = c.canonical_id
+      FROM partner_canonical c, rooms r
+      WHERE m.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- Re-home scheduled_tasks (FK ON DELETE SET NULL — prevents NULL-out).
+    UPDATE scheduled_tasks st SET room_id = c.canonical_id
+      FROM partner_canonical c, rooms r
+      WHERE st.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- Re-home kioku_deliberation_sessions (no FK).
+    UPDATE kioku_deliberation_sessions ks SET room_id = c.canonical_id
+      FROM partner_canonical c, rooms r
+      WHERE ks.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- Re-home tool_activity_log (no FK).
+    UPDATE tool_activity_log tal SET room_id = c.canonical_id
+      FROM partner_canonical c, rooms r
+      WHERE tal.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- agent_turns: delete expired (useless), rehome pending.
+    DELETE FROM agent_turns at
+      USING partner_canonical c, rooms r
+      WHERE at.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id
+        AND at.status IN ('expired', 'completed');
+    UPDATE agent_turns at SET room_id = c.canonical_id
+      FROM partner_canonical c, rooms r
+      WHERE at.room_id = r.id
+        AND r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- 5. Delete non-canonical partner rooms.
+    DELETE FROM rooms r
+      USING partner_canonical c
+      WHERE r.room_type = 'partner'
+        AND r.user_id = c.user_id
+        AND r.id <> c.canonical_id;
+
+    -- 6. Pre-index assertion: zero users with >1 partner room.
+    DO $$
+    DECLARE dup_count INT;
+    BEGIN
+      SELECT COUNT(*) INTO dup_count FROM (
+        SELECT user_id, COUNT(*) c FROM rooms WHERE room_type='partner'
+        GROUP BY user_id HAVING COUNT(*) > 1
+      ) dups;
+      IF dup_count > 0 THEN
+        RAISE EXCEPTION 'P2.11 consolidation left % users with duplicate partner rooms — ROLLBACK', dup_count;
+      END IF;
+    END
+    $$;
+
+    -- 7. Partial unique index: DB-enforced one-partner-per-user.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_partner_per_user
+      ON rooms(user_id) WHERE room_type = 'partner';
+
+    COMMIT;
+  `);
 }
 
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────

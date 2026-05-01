@@ -2038,36 +2038,35 @@ export default function PartnerChat() {
 
   const emotion = partnerStatus?.emotion ?? "neutral";
 
-  // ── Find or create partner room ───────────────────────────────
-  const { data: rooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
-
-  const createRoomMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/rooms", {
-        name: "Partner",
-        description: "Direct conversation with Luca",
-      });
-      if (!res.ok) throw new Error("Failed to create partner room");
-      return res.json();
+  // ── Resolve canonical partner room via dedicated endpoint (P2.11) ─
+  //    GET /api/partner/room returns {id, roomType: 'partner', ...}.
+  //    Endpoint is authoritative post-consolidation; server auto-creates
+  //    if none exists. We refetch every 5min to catch server-side
+  //    re-canonicalization (M4: WS cutover on id change).
+  const { data: partnerRoom } = useQuery<any>({
+    queryKey: ["/api/partner/room"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/partner/room");
+      if (!r.ok) throw new Error("Failed to resolve partner room");
+      return r.json();
     },
-    onSuccess: (room: any) => {
-      setPartnerRoomId(room.id);
-      queryClient.invalidateQueries({ queryKey: ["/api/rooms"] });
-    },
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
   });
 
-  // Auto-find or create partner room
+  // M4 cutover: when canonical room id changes (e.g. post-migration),
+  // invalidate cached messages and let the WS effect tear down the old
+  // subscription and re-subscribe to the new roomId.
   useEffect(() => {
-    if (!rooms) return;
-    const existing = rooms.find(
-      (r: any) => r.name === "Partner" || r.name?.toLowerCase().includes("partner")
-    );
-    if (existing) {
-      setPartnerRoomId(existing.id);
-    } else if (!createRoomMutation.isPending) {
-      createRoomMutation.mutate();
+    if (!partnerRoom?.id) return;
+    if (partnerRoomId !== partnerRoom.id) {
+      if (partnerRoomId !== null) {
+        queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoomId, "messages"] });
+      }
+      setPartnerRoomId(partnerRoom.id);
+      queryClient.invalidateQueries({ queryKey: ["/api/rooms", partnerRoom.id, "messages"] });
     }
-  }, [rooms]);
+  }, [partnerRoom?.id]);
 
   // PR-A.6 — expose partnerRoomId on window for AttachmentBubble.refreshUrl.
   // Cheaper than threading the prop through ChatBubble; cleared on unmount.

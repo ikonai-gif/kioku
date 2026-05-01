@@ -1877,6 +1877,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!isPartnerRoom && roomCounts.rooms >= roomLimits.rooms) {
       return res.status(429).json({ error: `Plan limit reached: ${roomLimits.rooms} rooms (${roomPlan} plan)` });
     }
+    // W8 P2.11: Legacy POST /api/rooms {name: 'Partner'} now gracefully
+    // falls back to the canonical partner room. Old clients continue to
+    // work, but the DB unique index ensures no duplicates are created.
+    // New clients should use GET /api/partner/room directly.
+    if (isPartnerRoom) {
+      const existing = await pool.query(
+        `SELECT id, user_id, name, description, status, agent_ids, created_at, room_type
+         FROM rooms WHERE user_id = $1 AND room_type = 'partner' LIMIT 1`,
+        [userId]
+      );
+      if (existing.rows.length > 0) {
+        return res.json(existing.rows[0]);
+      }
+      // No canonical partner room yet — fall through to creation with
+      // explicit room_type='partner' stamp below.
+    }
     // For Partner room, auto-assign Luca specifically. Previously this fell
     // through to `userAgents[0]`, which picked whichever agent happened to
     // be first in the SELECT order (BOSS, BRO2, etc.) — causing the Partner
@@ -1906,6 +1922,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       status: "standby",
       agentIds: JSON.stringify(finalAgentIds),
     });
+    // W8 P2.11: stamp partner rooms with room_type so DB unique index catches them.
+    if (isPartnerRoom) {
+      await pool.query(`UPDATE rooms SET room_type = 'partner' WHERE id = $1`, [room.id]);
+      (room as any).room_type = 'partner';
+    }
     res.json(room);
   }));
 
@@ -2111,7 +2132,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         agentName,
         content,
         roomAgentIds,
-        room.name
+        room.name,
+        (room as any).roomType ?? (room as any).room_type
       ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
   }));
@@ -2191,7 +2213,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         userName,
         content.trim(),
         roomAgentIds,
-        room.name
+        room.name,
+        (room as any).roomType ?? (room as any).room_type
       ).catch((e) => logger.error({ source: "deliberation", err: e }, "deliberation error"));
     }
 
@@ -3630,6 +3653,72 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // ── Partner / Emotional State API ─────────────────────────────
+
+  // W8 P2.11: Single source of truth for the user's Partner room.
+  // Replaces the frontend's `rooms.find(r => r.name === "Partner")` dance,
+  // which returned different ids between renders when 174 duplicate Partner
+  // rooms existed. After migration v2026_04_22_001 there is a DB-level
+  // partial unique index enforcing one partner room per user.
+  //
+  // Idempotent by design: always returns the canonical partner room. Creates
+  // one if missing (e.g. new user). Cache-friendly via ETag — a Partner room
+  // id changes exactly zero times in a user's lifetime barring ops incident.
+  app.get("/api/partner/room", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    // Fast path: DB unique index guarantees ≤1 row.
+    let { rows } = await pool.query(
+      `SELECT id, user_id, name, description, status, agent_ids, created_at, room_type
+       FROM rooms WHERE user_id = $1 AND room_type = 'partner' LIMIT 1`,
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      // Bootstrap: new user, no partner room yet. Auto-provision with Luca
+      // (agent 16 canonical OR by name for non-Kote users).
+      const userAgents = await storage.getAgents(userId);
+      const luca =
+        userAgents.find((a: any) => a.name?.toLowerCase() === "luca") ||
+        userAgents.find((a: any) => a.id === 16) ||
+        null;
+      if (!luca) {
+        return res.status(500).json({ error: "Luca agent not found for user — cannot bootstrap Partner room" });
+      }
+      const created = await storage.createRoom({
+        userId,
+        name: "Partner",
+        description: "Direct conversation with Luca",
+        status: "standby",
+        agentIds: JSON.stringify([luca.id]),
+      });
+      // Stamp room_type='partner' (createRoom defaults to 'standard').
+      await pool.query(
+        `UPDATE rooms SET room_type = 'partner' WHERE id = $1`,
+        [created.id]
+      );
+      if (luca.status !== "online") {
+        await storage.updateAgent(luca.id, userId, { status: "online" } as any);
+      }
+      rows = (await pool.query(
+        `SELECT id, user_id, name, description, status, agent_ids, created_at, room_type
+         FROM rooms WHERE id = $1`,
+        [created.id]
+      )).rows;
+    }
+
+    const room = rows[0];
+    // Stable ETag from (id, agent_ids) — both are effectively immutable for
+    // the lifetime of the room; if admin/set-room-agents changes agent_ids,
+    // cache invalidates automatically.
+    const etag = `W/"partner-${room.id}-${Buffer.from(String(room.agent_ids || '')).toString('base64').slice(0, 8)}"`;
+    res.setHeader("ETag", etag);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    if (req.headers["if-none-match"] === etag) {
+      return res.status(304).end();
+    }
+    res.json(room);
+  }));
 
   // GET /api/agents/:agentId/emotional-state — returns current emotional state with decay applied
   app.get("/api/agents/:agentId/emotional-state", asyncHandler(async (req, res) => {

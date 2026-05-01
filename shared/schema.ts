@@ -142,6 +142,7 @@ export const rooms = pgTable("rooms", {
   description: text("description"),
   status:      text("status").notNull().default("standby"),  // active | standby | idle
   agentIds:    text("agent_ids").notNull().default("[]"),
+  roomType:    varchar("room_type", { length: 20 }).notNull().default("standard"),  // standard | meeting | partner
   createdAt:   bigint("created_at", { mode: "number" }).notNull(),
   // Self-monitoring (0007): `purpose='self_monitoring'` rooms are used by the
   // internal fabrication-test job and MUST NOT appear in user-facing UI.
