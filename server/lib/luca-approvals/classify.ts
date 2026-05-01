@@ -123,7 +123,12 @@ export type LucaAdmissibleTool =
   // R-strategic uplift (BRO3): Puppeteer browser in E2B sandbox. Same
   // SSRF surface as luca_read_url, mitigated by sandbox isolation. No
   // writes, no auth, no recipient — READ_ONLY.
-  | "browse_website";
+  | "browse_website"
+  // R343 (BRO3): Stagehand multi-step browser in isolated Browserbase
+  // session. Same risk profile as browse_website — sandboxed, per-domain
+  // allowlist, destructive-action guard, $0.50/turn cost cap, 5/h rate
+  // cap. No persistence outside the session. READ_ONLY.
+  | "luca_agent_browser";
 
 /**
  * Primary classification table by tool name (worst-case upper bound).
@@ -265,6 +270,14 @@ export const TOOL_WRITE_CLASS = {
   // arbitrary forms). If we ever add browser auth or login support, this
   // must be promoted to HIGH_STAKES_WRITE.
   browse_website:           "READ_ONLY",
+
+  // R343 (BRO3): Stagehand-driven multi-step agent in isolated Browserbase
+  // session. Same READ_ONLY classification as browse_website — defense-stack
+  // (per-domain allowlist, max_actions cap, destructive-action guard,
+  // sandbox isolation, $0.50/turn cost cap, 5/h rate cap, no auth/recipient)
+  // makes the side-effect surface equivalent. If we ever add login flows
+  // or persistent storage, promote to HIGH_STAKES_WRITE.
+  luca_agent_browser:       "READ_ONLY",
 } as const satisfies Record<LucaAdmissibleTool, ToolWriteClass>;
 
 /**

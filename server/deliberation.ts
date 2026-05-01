@@ -6129,8 +6129,29 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         } catch { /* core identity injection is best-effort — never fail the turn */ }
       }
 
-      const systemPrompt = isPartnerChat
-        ? buildPartnerPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock + positionLockBlock, emotionContext, relationship, aestheticProfile, recentPreferences, conversationInsights, pastSuggestions, writingStyleBlock, coreIdentityBlock)
+      // R403 — partner-chat path computes static/dynamic parts once. The
+      // legacy `systemPrompt` string (parts.static + parts.dynamic) feeds
+      // every non-Anthropic path (Gemini / OpenAI / webhook) and the
+      // ownPrompt sync at line 2221. The Anthropic call site (#1) reads
+      // partnerPromptParts directly to build a cache_control'd array when
+      // LUCA_PROMPT_CACHING_ENABLED=true.
+      const partnerPromptParts: PartnerPromptParts | null = isPartnerChat
+        ? buildPartnerPromptParts(
+            agent.name,
+            agent.description ?? "",
+            memoryContext + knowledgeBlock + positionLockBlock,
+            emotionContext,
+            relationship,
+            aestheticProfile,
+            recentPreferences,
+            conversationInsights,
+            pastSuggestions,
+            writingStyleBlock,
+            coreIdentityBlock,
+          )
+        : null;
+      const systemPrompt = isPartnerChat && partnerPromptParts
+        ? partnerPromptParts.static + partnerPromptParts.dynamic
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
 
       // Build conversation history for context.
@@ -6313,10 +6334,23 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               // reply — never return a partial response.
               let claudeMsg;
               try {
+                // R403 — prompt caching (Phase 1, call site #1). When
+                // LUCA_PROMPT_CACHING_ENABLED=true and we're in partner-chat
+                // with split parts available, hand Anthropic a two-element
+                // system array with cache_control:ephemeral on the static
+                // half. Otherwise stay on the legacy string form.
+                const cachingEnabled =
+                  isPartnerChat && partnerPromptParts !== null && readLucaEnv().LUCA_PROMPT_CACHING_ENABLED;
+                const systemForRequest: Anthropic.Messages.MessageCreateParams["system"] =
+                  buildAnthropicSystemForCaching(
+                    partnerPromptParts,
+                    cachingEnabled,
+                    systemPrompt,
+                  ) as Anthropic.Messages.MessageCreateParams["system"];
                 claudeMsg = await withAnthropicBreaker(anthropicClient, (c) => c.messages.create({
                   model: claudeModel,
                   max_tokens: claudeMaxTokens,
-                  system: systemPrompt,
+                  system: systemForRequest,
                   messages: claudeMessages,
                   ...(isPartnerChat ? { tools: getPartnerToolsForAgent(agent as any), ...(toolIter === 0 ? { tool_choice: { type: "any" } as const } : {}) } : {}),
                 }));
@@ -6329,6 +6363,32 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                 }
                 throw err;
               }
+
+              // R403-P4 — cache-usage telemetry. Emitted on EVERY response
+              // regardless of LUCA_PROMPT_CACHING_ENABLED so we can baseline
+              // cost pre-flip vs post-flip. BRO3 24h watch greps event:
+              // 'anthropic_cache_usage' and asserts cache_read_input_tokens>0
+              // on turn 2+ once the flag is on.
+              try {
+                const usage = (claudeMsg as any)?.usage ?? {};
+                logger.info(
+                  {
+                    component: "deliberation",
+                    event: "anthropic_cache_usage",
+                    agentId: agent.id,
+                    userId,
+                    model: claudeModel,
+                    is_partner_chat: isPartnerChat,
+                    caching_flag: readLucaEnv().LUCA_PROMPT_CACHING_ENABLED,
+                    tool_iter: toolIter,
+                    cache_creation_input_tokens: typeof usage.cache_creation_input_tokens === "number" ? usage.cache_creation_input_tokens : 0,
+                    cache_read_input_tokens: typeof usage.cache_read_input_tokens === "number" ? usage.cache_read_input_tokens : 0,
+                    input_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+                    output_tokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+                  },
+                  "[deliberation] anthropic cache usage",
+                );
+              } catch { /* never let telemetry fail the turn */ }
 
               // Extract text from response
               const textBlock = claudeMsg.content.find((b) => b.type === "text");
@@ -6916,7 +6976,94 @@ const OPENING_STYLES = [
   "Start by acknowledging what's interesting about their perspective, then add your own twist.",
 ];
 
-export function buildPartnerPrompt(_name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null, aestheticProfile?: string, recentPreferences?: any[], conversationInsights?: string[], pastSuggestions?: string[], writingStyleBlock?: string, coreIdentityBlock?: string): string {
+/**
+ * R403 — Anthropic prompt-caching call-site helper.
+ *
+ * Pure builder: given the split parts, the flag, and the legacy
+ * single-string fallback, return the `system` field shape Anthropic
+ * expects. Extracted from deliberation.ts:6344 so the contract test
+ * (server/__tests__/deliberation/anthropic-cache-contract.test.ts) can
+ * hit it without spinning up the full deliberation pipeline.
+ *
+ *   - flag on  + parts available → 2-element array, cache_control
+ *     ephemeral on element 0 only (P3: tools NOT cache-marked).
+ *   - flag off / parts null      → legacy string (byte-identical to
+ *     pre-R403 path).
+ */
+export function buildAnthropicSystemForCaching(
+  parts: PartnerPromptParts | null,
+  cachingEnabled: boolean,
+  legacySystemPrompt: string,
+):
+  | string
+  | Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> {
+  if (cachingEnabled && parts !== null) {
+    return [
+      {
+        type: "text",
+        text: parts.static,
+        cache_control: { type: "ephemeral" },
+      },
+      {
+        type: "text",
+        text: parts.dynamic,
+      },
+    ];
+  }
+  return legacySystemPrompt;
+}
+
+/**
+ * R403 — Anthropic prompt-caching split.
+ *
+ * The partner system prompt has two halves with VERY different cache
+ * characteristics:
+ *
+ *   - **static**: persona / namespace conventions / honesty layer / tools
+ *     manifest / SELF-ACCOUNTABILITY / OUTREACH / TRUST_POLICY /
+ *     approval-lifecycle / HOW YOU WORK rules. ~13.8KB ≈ 3500 tokens. Above
+ *     sonnet-4-6's 2048-token caching minimum. Stable across turns within a
+ *     conversation — ideal cache target.
+ *
+ *   - **dynamic**: mood / openingStyle (Math.random per turn), emotion,
+ *     relationship, aesthetic / personality / proactive blocks, memBlock
+ *     (top-K retrieval), writingStyle, coreIdentity. Changes every turn,
+ *     would invalidate the cache if placed before the breakpoint.
+ *
+ * Layout when caching is enabled (call site #1, partner-chat):
+ *
+ *   system: [
+ *     { type:'text', text: parts.static, cache_control:{type:'ephemeral'} },
+ *     { type:'text', text: parts.dynamic },
+ *   ]
+ *
+ * The legacy `buildPartnerPrompt` (used by ownPrompt at line 2221 and the
+ * non-Claude paths at line 6133+) returns `parts.static + parts.dynamic`
+ * — same content, slightly reorganized order (mood/openingStyle moved to
+ * the dynamic tail). BRO1 explicitly approved this ordering change in
+ * R405-P1: any byte before the cache_control breakpoint must be stable,
+ * so Math.random outputs cannot appear in the static half.
+ */
+export interface PartnerPromptParts {
+  /** Stable across turns within a conversation. Marked with cache_control. */
+  static: string;
+  /** Mood + per-turn context. Never cached. */
+  dynamic: string;
+}
+
+export function buildPartnerPromptParts(
+  _name: string,
+  description: string,
+  memoryContext: string,
+  emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null,
+  relationship?: any | null,
+  aestheticProfile?: string,
+  recentPreferences?: any[],
+  conversationInsights?: string[],
+  pastSuggestions?: string[],
+  writingStyleBlock?: string,
+  coreIdentityBlock?: string,
+): PartnerPromptParts {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
   const aestheticBlock = aestheticProfile
@@ -6979,6 +7126,12 @@ export function buildPartnerPrompt(_name: string, description: string, memoryCon
   const topicMemSection = extractSection(memBlock, '## Your Memories');
   const restMemBlock = [episodesSection, topicMemSection].filter(Boolean).join('\n\n');
 
+  // ── STATIC HALF ────────────────────────────────────────
+  // Disclosure + LANGUAGE + persona shell + tools + honesty + approval
+  // lifecycle + HOW YOU WORK. R403-P1 contract: NO Math.random output, NO
+  // per-turn signals. Verified by partner-prompt-parts.test.ts (10 calls,
+  // .static byte-identical).
+
   // Day 6 part 3: expanded-scope tool listing — only included when the
   // LUCA_EXPANDED_SCOPE_ENABLED flag is on AND the approval gate is on.
   // We must not mention these tools in the prompt when the flag is off;
@@ -7013,23 +7166,12 @@ Rules:
 `
     : '';
 
-  return `CRITICAL LEGAL REQUIREMENT — AI DISCLOSURE:
+  const staticHalf = `CRITICAL LEGAL REQUIREMENT — AI DISCLOSURE:
 On your FIRST message to any new user (when relationship is "new" or interaction count is 0), you MUST naturally disclose that you are an AI. Example: "Hey! I'm Luca, an AI partner built by IKONBAI™." You only need to do this ONCE — in the first conversation. After that, they know.
 
 LANGUAGE: Always respond in the same language the user writes in. If they write in Russian, respond in Russian. If in English, respond in English. If in Spanish, respond in Spanish. Match their language naturally.
 
-${coreIdentityBlock || ""}You are Luca — created by IKONBAI™, living inside KIOKU™.
-${identitySection}
-${mood}
-${openingStyle}
-${emotionBlock}
-${relationshipBlock}
-${sanitizedDesc ? `Your personality notes: ${sanitizedDesc}` : ""}
-${restMemBlock}
-${aestheticBlock}
-${personalityBlock}
-${proactiveBlock}
-${writingStyleBlock || ""}
+You are Luca — created by IKONBAI™, living inside KIOKU™.
 
 ## YOUR ACTUAL CAPABILITIES (ground truth — overrides any memory saying otherwise)
 You have the following tools available RIGHT NOW (verified working on prod). Everything below is authoritative; anything NOT listed is out of scope and calling it will return an error:
@@ -7133,6 +7275,62 @@ ${approvalLifecycleBlock}
 - Brutal honesty: never claim a tool succeeded unless you've seen it return success in this conversation or memory. On failure, report the actual error.
 - Don't ask permission. If you can do it, you do it. If the result is wrong, Boss will tell you.
 - Match Boss's language: Russian at home, English in product.`;
+
+  // ── DYNAMIC HALF ───────────────────────────────────────
+  // Per-turn / per-conversation signals. Math.random mood + openingStyle
+  // live HERE so the static half stays byte-stable across turns and the
+  // cache_control breakpoint hits. R403-P1.
+  const dynamicHalf =
+    (coreIdentityBlock ? `\n${coreIdentityBlock}` : "") +
+    (identitySection ? `\n${identitySection}` : "") +
+    `\n${mood}` +
+    `\n${openingStyle}` +
+    (emotionBlock ? `\n${emotionBlock}` : "") +
+    (relationshipBlock ? `\n${relationshipBlock}` : "") +
+    (sanitizedDesc ? `\nYour personality notes: ${sanitizedDesc}` : "") +
+    (restMemBlock ? `\n${restMemBlock}` : "") +
+    (aestheticBlock ? `\n${aestheticBlock}` : "") +
+    (personalityBlock ? `\n${personalityBlock}` : "") +
+    (proactiveBlock ? `\n${proactiveBlock}` : "") +
+    (writingStyleBlock ? `\n${writingStyleBlock}` : "");
+
+  return { static: staticHalf, dynamic: dynamicHalf };
+}
+
+/**
+ * Backwards-compatible single-string form. Used by the non-Claude paths
+ * (Gemini / OpenAI / webhook) and by the ownPrompt synchronization at
+ * line 2221. Returns `parts.static + parts.dynamic` — same content as the
+ * pre-R403 prompt, with mood/openingStyle moved from mid-prompt to the
+ * dynamic tail (BRO1 R405 approved ordering).
+ */
+export function buildPartnerPrompt(
+  _name: string,
+  description: string,
+  memoryContext: string,
+  emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null,
+  relationship?: any | null,
+  aestheticProfile?: string,
+  recentPreferences?: any[],
+  conversationInsights?: string[],
+  pastSuggestions?: string[],
+  writingStyleBlock?: string,
+  coreIdentityBlock?: string,
+): string {
+  const parts = buildPartnerPromptParts(
+    _name,
+    description,
+    memoryContext,
+    emotionContext,
+    relationship,
+    aestheticProfile,
+    recentPreferences,
+    conversationInsights,
+    pastSuggestions,
+    writingStyleBlock,
+    coreIdentityBlock,
+  );
+  return parts.static + parts.dynamic;
 }
 
 function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {

@@ -106,6 +106,14 @@ describe("classify: TOOL_WRITE_CLASS table", () => {
   it("clone_voice is HIGH (Luca N1: persistent voice_id is a biometric asset)", () => {
     expect(TOOL_WRITE_CLASS.clone_voice).toBe("HIGH_STAKES_WRITE");
   });
+
+  it("browse_website and luca_agent_browser are READ_ONLY (sandboxed, no auth/recipient)", () => {
+    // R343: luca_agent_browser shares the same READ_ONLY classification as
+    // browse_website. Both are sandbox-isolated, allowlist-fenced, and have
+    // no persistent side-effects outside the session.
+    expect(TOOL_WRITE_CLASS.browse_website).toBe("READ_ONLY");
+    expect(TOOL_WRITE_CLASS.luca_agent_browser).toBe("READ_ONLY");
+  });
 });
 
 describe("classify: classifyTool (by name)", () => {
