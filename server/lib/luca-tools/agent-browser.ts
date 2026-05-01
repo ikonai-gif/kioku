@@ -377,7 +377,28 @@ export async function agentBrowserHandler(
     max_actions ?? AGENT_BROWSER_DEFAULT_MAX_STEPS,
     AGENT_BROWSER_MAX_STEPS_CAP,
   );
-  const model = process.env.LUCA_AGENT_BROWSER_MODEL || AGENT_BROWSER_DEFAULT_MODEL;
+  // R401: trim env value before handing it to Stagehand. Railway's variable
+  // editor occasionally leaves a trailing newline/whitespace (we hit this
+  // in production with LUCA_TOOLS_ENABLED and LUCA_AGENT_BROWSER_MODEL).
+  // Anthropic 400s with the literal value echoed back ("model: <name>\n"),
+  // which costs hours of misdiagnosis since a direct curl with the same
+  // key+endpoint succeeds. Defensive trim here, plus log when we drop
+  // whitespace so future regressions surface immediately.
+  const rawModel = process.env.LUCA_AGENT_BROWSER_MODEL;
+  const trimmedModel = rawModel != null ? rawModel.trim() : "";
+  if (rawModel != null && rawModel !== trimmedModel) {
+    logger.warn(
+      {
+        source: "luca_agent_browser",
+        op: "env_whitespace_stripped",
+        env: "LUCA_AGENT_BROWSER_MODEL",
+        rawLength: rawModel.length,
+        trimmedLength: trimmedModel.length,
+      },
+      "agent_browser: stripped whitespace/newline from LUCA_AGENT_BROWSER_MODEL env",
+    );
+  }
+  const model = trimmedModel || AGENT_BROWSER_DEFAULT_MODEL;
 
   // 7. Acquire session via manager.
   const sessionMgr = ctx.agentBrowserSessionMgr ?? getSessionManager();
