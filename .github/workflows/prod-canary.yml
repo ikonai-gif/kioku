@@ -1,0 +1,106 @@
+name: prod-canary
+
+# R417 — owner-polling rate-limit canary
+#
+# Catches owner-bypass regressions in PROD before BOSS does.
+# Every 15 minutes: bursts the four UI-polled endpoints through the
+# master-key admin path and asserts zero 429 responses. If anything
+# trips, the run fails and a Repository Issue is opened so we see it.
+#
+# Why master-key, not session: the canary cannot hold a Magic Link
+# session. Master-key endpoints share the same `rateLimitMiddleware`
+# code path, so they exercise the same owner / plan resolution layer.
+# The /api/admin/dump-user endpoint is master-key-gated and already
+# bound to rateLimitMiddleware (verified in
+# server/__tests__/owner-polling-coverage.test.ts).
+#
+# Threshold: 80 calls in <60s. Owner-bypass (perMin=9999) and master-key
+# pass-through MUST handle this without a single 429. Any 429 means:
+#   • R415 owner-bypass got refactored away, OR
+#   • someone added a stricter per-route limiter, OR
+#   • a new global cap was introduced below 80/min.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: # manual trigger from Actions tab
+
+# Only one canary in flight at a time — no overlapping bursts.
+concurrency:
+  group: prod-canary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Burst /api/admin/dump-user — assert no 429
+        env:
+          KIOKU_MASTER_KEY: ${{ secrets.KIOKU_MASTER_KEY }}
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL || 'https://usekioku.com' }}
+        run: |
+          if [ -z "$KIOKU_MASTER_KEY" ]; then
+            echo "::warning::KIOKU_MASTER_KEY secret missing — skipping canary"
+            exit 0
+          fi
+
+          set -euo pipefail
+          fail_count=0
+          rl_count=0
+          total=80
+
+          for i in $(seq 1 $total); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST "$PROD_BASE_URL/api/admin/dump-user" \
+              -H "x-master-key: $KIOKU_MASTER_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"userId":10}' || echo "000")
+
+            case "$code" in
+              200|404) ;;                    # OK — endpoint reachable, plan applied
+              429)     rl_count=$((rl_count+1)) ;;
+              *)       fail_count=$((fail_count+1)); echo "  unexpected: $code" ;;
+            esac
+          done
+
+          echo "rl_count=$rl_count fail_count=$fail_count total=$total"
+          if [ "$rl_count" -gt 0 ]; then
+            echo "::error::CANARY: $rl_count/${total} requests rate-limited — owner-bypass regression suspected"
+            exit 1
+          fi
+          if [ "$fail_count" -gt 5 ]; then
+            echo "::error::CANARY: $fail_count/${total} unexpected response codes"
+            exit 1
+          fi
+
+      - name: Open issue on canary failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `prod-canary FAILED — ${new Date().toISOString()}`;
+            const body = [
+              "Prod owner-rate-limit canary failed.",
+              "",
+              `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              "",
+              "Investigation checklist:",
+              "- [ ] Did `resolveUserPlan()` in `server/ratelimit.ts` lose the `role === 'owner'` branch?",
+              "- [ ] Was the `owner` tier removed from `PLANS`?",
+              "- [ ] New per-route rate-limit wrapper added to a polled endpoint?",
+              "- [ ] Master-key path itself broken?",
+              "",
+              "If the failure persists for 2 consecutive runs, page BOSS.",
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["incident", "rate-limit", "automated"],
+            });
