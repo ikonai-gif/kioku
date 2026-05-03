@@ -17,8 +17,19 @@
  * Same shape as the browse-website key for observability uniformity.
  */
 
+// R-luca-browser-open-mode (2026-05-03): default cap raised from 5 to 20
+// per hour to give Luca real freedom now that open-internet mode is
+// available. Worst-case spend: 20 × $0.30 × 24h = $144/day in a hostile
+// loop — still bounded, still grep-able, still resets on restart. Operator
+// can override via `LUCA_AGENT_BROWSER_RATE_MAX_PER_HOUR` env var without
+// shipping code if the budget needs further tuning.
 const RL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const RL_MAX = 5;
+function readRateMax(): number {
+  const raw = (process.env.LUCA_AGENT_BROWSER_RATE_MAX_PER_HOUR ?? "").trim();
+  const n = Number.parseInt(raw, 10);
+  if (Number.isFinite(n) && n > 0 && n <= 200) return n;
+  return 20;
+}
 const recentCalls: Map<string, number[]> = new Map();
 
 /**
@@ -30,9 +41,8 @@ export function checkAgentBrowserRateLimit(agentKey: string): boolean {
   const now = Date.now();
   const cutoff = now - RL_WINDOW_MS;
   const arr = recentCalls.get(agentKey) ?? [];
-  // <=5 entries by definition; in-place prune is cheap.
   const fresh = arr.filter((t) => t > cutoff);
-  if (fresh.length >= RL_MAX) {
+  if (fresh.length >= readRateMax()) {
     recentCalls.set(agentKey, fresh);
     return false;
   }
@@ -54,8 +64,12 @@ export function getAgentBrowserRateLimitCount(agentKey: string): number {
   return arr.filter((t) => t > cutoff).length;
 }
 
-/** Exported constants for tests + observability. */
+/** Exported constants for tests + observability. `max` is computed lazily
+ * via a getter so env overrides are picked up without process restart in
+ * tests. */
 export const AGENT_BROWSER_RATE_LIMIT = {
   windowMs: RL_WINDOW_MS,
-  max: RL_MAX,
+  get max(): number {
+    return readRateMax();
+  },
 } as const;

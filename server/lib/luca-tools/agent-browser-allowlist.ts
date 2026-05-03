@@ -53,10 +53,28 @@ export function domainMatches(host: string, pattern: string): boolean {
 }
 
 /**
+ * R-luca-browser-open-mode (2026-05-03): true when the operator has
+ * explicitly opted into open-internet mode. Two ways to enable:
+ *   1. `LUCA_AGENT_BROWSER_ALLOWED_DOMAINS=*` (single literal asterisk)
+ *   2. `LUCA_AGENT_BROWSER_OPEN_MODE=true`
+ * Either form opens the door; the blocklist (agent-browser-blocklist.ts)
+ * still applies. Empty/missing allowlist still means tool-disabled.
+ */
+export function isOpenInternetMode(): boolean {
+  if ((process.env.LUCA_AGENT_BROWSER_OPEN_MODE ?? "").trim().toLowerCase() === "true") {
+    return true;
+  }
+  const patterns = readRawAllowlist();
+  return patterns.length === 1 && patterns[0] === "*";
+}
+
+/**
  * Returns true when `host` is permitted by the configured allowlist. An
- * empty allowlist always returns false — see module doc.
+ * empty allowlist always returns false — see module doc. In open-internet
+ * mode, every host is permitted (caller is responsible for blocklist check).
  */
 export function isHostAllowed(host: string): boolean {
+  if (isOpenInternetMode()) return true;
   const patterns = readRawAllowlist();
   if (patterns.length === 0) return false;
   return patterns.some((p) => domainMatches(host, p));
@@ -67,7 +85,11 @@ export function getAllowedDomainPatterns(): string[] {
   return readRawAllowlist();
 }
 
-/** True when no domains are configured — defense-in-depth check. */
+/** True when no domains are configured — defense-in-depth check.
+ * Open-internet mode (`*` or LUCA_AGENT_BROWSER_OPEN_MODE=true) is NOT
+ * considered empty: it is a deliberate operator opt-in to allow every host
+ * subject to the blocklist. */
 export function isAllowlistEmpty(): boolean {
+  if (isOpenInternetMode()) return false;
   return readRawAllowlist().length === 0;
 }
