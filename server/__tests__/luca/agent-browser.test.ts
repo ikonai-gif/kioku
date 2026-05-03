@@ -189,12 +189,19 @@ function makeFakeStagehand(opts: {
           },
         };
       },
-      page: opts.pageUrl
+      // R427 fix: Stagehand v3 exposes pages via `context.pages()`, not
+      // `stagehand.page`. Mirror that shape so the prod code path under test
+      // is the same code path that runs in Browserbase.
+      context: opts.pageUrl
         ? {
-            url: () => opts.pageUrl!,
-            async screenshot() {
-              return opts.screenshotBytes ?? Buffer.from("fakejpegbytes");
-            },
+            pages: () => [
+              {
+                url: () => opts.pageUrl!,
+                async screenshot() {
+                  return opts.screenshotBytes ?? Buffer.from("fakejpegbytes");
+                },
+              },
+            ],
           }
         : undefined,
     };
