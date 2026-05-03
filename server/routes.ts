@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage, pool, getToolActivityForMessage, getToolActivityForRoom } from "./storage";
+import { storage, pool, getToolActivityForMessage, getToolActivityForRoom, refreshExpiringMediaForActivity } from "./storage";
 import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
@@ -1970,7 +1970,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (row.rows.length === 0) return res.status(404).json({ error: "Not found" });
     } catch { return res.status(500).json({ error: "Server error" }); }
     const activity = await getToolActivityForMessage(messageId);
-    res.json(activity);
+    const refreshed = await refreshExpiringMediaForActivity(activity);
+    res.json(refreshed);
   }));
 
   // Phase 1 — Activity timeline (room-level stream).
@@ -2003,7 +2004,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const sinceMs = typeof sinceRaw === "string" ? Number(sinceRaw) : 0;
     const limit = typeof limitRaw === "string" ? Number(limitRaw) : undefined;
     const rows = await getToolActivityForRoom(roomId, { sinceMs, limit });
-    res.json(rows);
+    // Phase 2 (R-luca-computer-ui): re-sign media URLs nearing expiry so the
+    // UI never receives a dead signed link. Best-effort — noop without storage.
+    const refreshed = await refreshExpiringMediaForActivity(rows);
+    res.json(refreshed);
   }));
 
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
