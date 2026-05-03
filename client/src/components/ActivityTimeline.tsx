@@ -394,6 +394,8 @@ function ActivityCard({ row, roomId, onOpenMedia }: { row: ActivityRow; roomId: 
                 <LiveBrowserFrame
                   src={liveFrame.signedUrl}
                   replayUrl={liveFrame.sourceUrl}
+                  roomId={roomId ?? undefined}
+                  stepId={row.stepId}
                 />
               </div>
             )}

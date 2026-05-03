@@ -1,8 +1,16 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { type Server } from "http";
 import jwt from "jsonwebtoken";
-import { storage, pool } from "./storage";
+import { randomUUID } from "node:crypto";
+import { storage, pool, appendTakeoverLog } from "./storage";
 import { verifyMeetingAccess } from "./lib/meeting-acl";
+import { assertRoomOwnership, RoomNotFoundError } from "./lib/room-acl";
+import {
+  acquireTakeover,
+  releaseTakeover,
+  getTakeover,
+} from "./lib/luca-takeover";
+import { checkAuthRateLimit } from "./ratelimit";
 import type {
   MeetingEventBus,
   MeetingEventName,
@@ -123,6 +131,14 @@ export function setupWebSocket(httpServer: Server) {
     const subscribedMeetings = new Set<string>();
     // Day 6: flag so cleanup can drop this ws from userClients on close.
     let subscribedToUser = false;
+    // Phase 5 PR-B (R-luca-computer-ui) — stable per-connection id used as
+    // takeover-lock owner. Multi-tab safety: each WS gets its own UUID so the
+    // takeover module can pin a step to a single connection while other tabs
+    // (same user, different ws) get the broadcast read-only.
+    const connectionId = randomUUID();
+    // Step ids this connection currently owns a takeover for; used in cleanup
+    // to release locks if the tab closes mid-takeover.
+    const heldTakeoverSteps = new Set<string>();
 
     ws.on("message", async (raw) => {
       try {
@@ -217,6 +233,164 @@ export function setupWebSocket(httpServer: Server) {
           ws.send(JSON.stringify({ type: "unsubscribed", topic: "user", userId }));
           return;
         }
+
+        // Phase 5 PR-B (R-luca-computer-ui) — live_frame takeover.
+        // Boss takes over (interactive) or releases the running BB iframe of
+        // a tool_activity_log step. Security gates (R437 + R-convention
+        // categories 3, 6, 8):
+        //   1. JWT auth (already done at connect time).
+        //   2. assertRoomOwnership(roomId, userId) — reject 404 on mismatch.
+        //  3. checkAuthRateLimit(`takeover:${userId}:${roomId}`, 10, 60_000)
+        //      — BRO1 R438 MUST-FIX-B2: existing bucket, NOT a new one.
+        //   4. Step must exist for the room AND be `running` — a takeover on a
+        //      `done`/`error` row gets a 410-equivalent reply.
+        //   5. Single-tab lock per stepId via the takeover module.
+        //   6. Audit append on every state change (acquire/release/expire).
+        if (
+          msg.type === "liveFrameTakeover" &&
+          typeof msg.roomId === "number" &&
+          typeof msg.stepId === "string" &&
+          (msg.mode === "interactive" || msg.mode === "passive" || msg.mode === "release")
+        ) {
+          const roomId = msg.roomId as number;
+          const stepId = msg.stepId as string;
+          const mode = msg.mode as "interactive" | "passive" | "release";
+
+          // Gate 2 — ownership.
+          try {
+            await assertRoomOwnership(roomId, userId);
+          } catch (e) {
+            if (e instanceof RoomNotFoundError) {
+              ws.send(JSON.stringify({
+                type: "liveFrameTakeoverError",
+                stepId,
+                code: "ROOM_NOT_FOUND",
+              }));
+              return;
+            }
+            throw e;
+          }
+
+          // Gate 3 — rate limit (10/min per user-room). Per BRO1 R438
+          // MUST-FIX-B2 we reuse the existing checkAuthRateLimit bucket.
+          if (!checkAuthRateLimit(`takeover:${userId}:${roomId}`, 10, 60_000)) {
+            ws.send(JSON.stringify({
+              type: "liveFrameTakeoverError",
+              stepId,
+              code: "RATE_LIMITED",
+            }));
+            return;
+          }
+
+          // Gate 4 — step must exist for this room and be running.
+          let stepRow: { room_id: number; status: string } | undefined;
+          try {
+            const r = await pool.query<{ room_id: number; status: string }>(
+              `SELECT room_id, status FROM tool_activity_log WHERE step_id = $1 LIMIT 1`,
+              [stepId],
+            );
+            stepRow = r.rows[0];
+          } catch (err) {
+            logger.warn(
+              { source: "ws_takeover", op: "step_lookup_failed", err: String(err) },
+              "liveFrameTakeover step lookup failed",
+            );
+          }
+          if (!stepRow || stepRow.room_id !== roomId) {
+            ws.send(JSON.stringify({
+              type: "liveFrameTakeoverError",
+              stepId,
+              code: "STEP_NOT_FOUND",
+            }));
+            return;
+          }
+          if (stepRow.status !== "running") {
+            ws.send(JSON.stringify({
+              type: "liveFrameTakeoverError",
+              stepId,
+              code: "STEP_FINISHED",
+              status: stepRow.status,
+            }));
+            return;
+          }
+
+          // Release branch — only the holder may release.
+          if (mode === "release") {
+            const after = releaseTakeover(stepId, connectionId);
+            heldTakeoverSteps.delete(stepId);
+            if (after === null) {
+              // We held it (or no one did). Audit + broadcast cleared state.
+              await appendTakeoverLog(stepId, {
+                ts: Date.now(),
+                userId,
+                mode: "released",
+              });
+              broadcastToRoom(roomId, {
+                type: "liveFrameTakeoverState",
+                stepId,
+                active: false,
+                mode: null,
+                userId,
+              });
+              ws.send(JSON.stringify({
+                type: "liveFrameTakeoverAck",
+                stepId,
+                mode: "release",
+              }));
+              return;
+            }
+            // Someone else held it — we just refused.
+            ws.send(JSON.stringify({
+              type: "liveFrameTakeoverError",
+              stepId,
+              code: "NOT_HOLDER",
+            }));
+            return;
+          }
+
+          // Acquire / upgrade branch.
+          const result = acquireTakeover({
+            stepId,
+            roomId,
+            userId,
+            mode,
+            connectionId,
+          });
+          if (!result.ok) {
+            ws.send(JSON.stringify({
+              type: "liveFrameTakeoverError",
+              stepId,
+              code: "LOCKED",
+              heldByUserId: result.current.userId,
+            }));
+            return;
+          }
+          heldTakeoverSteps.add(stepId);
+          await appendTakeoverLog(stepId, {
+            ts: Date.now(),
+            userId,
+            mode,
+          });
+          // Broadcast new state to ALL room subscribers so other tabs flip
+          // their iframe pointerEvents accordingly. Per R-convention cat 8
+          // (WS broadcast surface): explicit type, room-scoped, no PII.
+          broadcastToRoom(roomId, {
+            type: "liveFrameTakeoverState",
+            stepId,
+            active: true,
+            mode,
+            userId,
+            holderConnectionId: connectionId,
+            expiresAt: result.state.expiresAt,
+          });
+          ws.send(JSON.stringify({
+            type: "liveFrameTakeoverAck",
+            stepId,
+            mode,
+            expiresAt: result.state.expiresAt,
+          }));
+          return;
+        }
       } catch {
         // ignore invalid messages
       }
@@ -234,6 +408,32 @@ export function setupWebSocket(httpServer: Server) {
         userClients.get(userId)?.delete(ws);
         subscribedToUser = false;
       }
+      // Phase 5 PR-B — release any takeover locks held by this connection so
+      // the agent loop unblocks the next time it samples isTakeoverActive().
+      // Audit + room-broadcast happen in the background; we don't await here
+      // so close handling stays synchronous.
+      for (const stepId of heldTakeoverSteps) {
+        const t = getTakeover(stepId);
+        const after = releaseTakeover(stepId, connectionId);
+        if (after === null && t) {
+          appendTakeoverLog(stepId, {
+            ts: Date.now(),
+            userId,
+            mode: "released",
+          }).catch(() => { /* best-effort */ });
+          try {
+            broadcastToRoom(t.roomId, {
+              type: "liveFrameTakeoverState",
+              stepId,
+              active: false,
+              mode: null,
+              userId,
+              reason: "connection_closed",
+            });
+          } catch { /* best-effort */ }
+        }
+      }
+      heldTakeoverSteps.clear();
     };
 
     ws.on("close", cleanup);

@@ -81,6 +81,7 @@ import {
   toLiveFrameRow,
   toToolActivityMedia,
 } from "./agent-browser-live-frame";
+import { isTakeoverActive, clearTakeover } from "../luca-takeover";
 import logger from "../../logger";
 
 // ─── Policy constants ────────────────────────────────────────────────────
@@ -530,6 +531,28 @@ export async function agentBrowserHandler(
       systemPrompt: DESTRUCTIVE_ACTION_GUARD,
     });
 
+    // Phase 5 PR-B (R-luca-computer-ui) — takeover yield gate.
+    // Stagehand SDK has no public pause()/resume(); BRO1 R438 Q4 GREEN path:
+    // before invoking `agent.execute` we sleep in 1s ticks while Boss holds
+    // the iframe. This blocks the start of the LLM step but does NOT pause
+    // mid-step (mid-step actions still run — Stagehand owns that cursor).
+    // The lock TTL ceiling (luca-takeover TAKEOVER_TTL_MS=10min) prevents an
+    // orphaned tab from hanging the agent forever; we additionally cap the
+    // wait at MAX_TAKEOVER_WAIT_MS so a single tool call can't run longer
+    // than the BB session.
+    const MAX_TAKEOVER_WAIT_MS = 10 * 60 * 1000;
+    const TAKEOVER_TICK_MS = 1000;
+    if (ctx.liveFramePublisher) {
+      const stepId = ctx.liveFramePublisher.stepId;
+      const waitStarted = Date.now();
+      while (
+        isTakeoverActive(stepId) &&
+        Date.now() - waitStarted < MAX_TAKEOVER_WAIT_MS
+      ) {
+        await new Promise<void>((resolve) => setTimeout(resolve, TAKEOVER_TICK_MS));
+      }
+    }
+
     const result = await agent.execute({ instruction: task, maxSteps });
     actionsTaken = Array.isArray(result.actions) ? result.actions.length : 0;
 
@@ -628,6 +651,10 @@ export async function agentBrowserHandler(
     //      the iframe unmounts it immediately (no race with the next poll).
     if (ctx.liveFramePublisher) {
       const { roomId, stepId, description } = ctx.liveFramePublisher;
+      // Phase 5 PR-B — release any takeover lock held against this step so
+      // the in-memory state doesn't leak across step ids. The WS broadcast
+      // below also tells the UI to drop its pointerEvents:'auto' override.
+      try { clearTakeover(stepId); } catch { /* best-effort */ }
       try {
         await removeToolActivityMediaByKind(stepId, "live_frame");
       } catch {

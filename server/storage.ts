@@ -911,6 +911,68 @@ export async function removeToolActivityMediaByKind(
 }
 
 /**
+ * Phase 5 PR-B (R-luca-computer-ui) — append-only takeover audit entry.
+ * BRO1 R438 MUST-FIX-B1: separate `takeover_log` JSONB column (NOT in
+ * media_urls). Atomic JSONB concat at the SQL layer so concurrent
+ * acquire/release entries from multiple tabs never lose data — the JS layer
+ * never reads-modifies-writes the column.
+ *
+ * Best-effort: a missing step row (e.g. step finished a microsecond before
+ * the WS arrived) is a silent no-op. The lock module (`luca-takeover.ts`)
+ * is the source of truth for live state; the column is for forensic audit.
+ */
+export interface TakeoverLogEntry {
+  ts: number;
+  userId: number;
+  /** 'interactive' | 'passive' | 'released' | 'expired' */
+  mode: "interactive" | "passive" | "released" | "expired";
+}
+
+export async function appendTakeoverLog(
+  stepId: string,
+  entry: TakeoverLogEntry,
+): Promise<void> {
+  if (!stepId) return;
+  try {
+    // Atomic append: `||` is JSONB concat; the to_jsonb($1) cast wraps the
+    // entry in a single-element array so the result type matches the
+    // existing array shape. WHERE step_id ensures we don't touch siblings.
+    await pool.query(
+      `UPDATE tool_activity_log
+         SET takeover_log = COALESCE(takeover_log, '[]'::jsonb) || jsonb_build_array($2::jsonb)
+         WHERE step_id = $1`,
+      [stepId, JSON.stringify(entry)],
+    );
+  } catch (e: any) {
+    console.warn("[tool-activity] takeover-log append failed:", e?.message);
+  }
+}
+
+/**
+ * Read the takeover audit trail for a step. Used by tests + future
+ * forensic UI. Returns [] if step missing or column empty.
+ */
+export async function getTakeoverLog(stepId: string): Promise<TakeoverLogEntry[]> {
+  if (!stepId) return [];
+  try {
+    const res = await pool.query<{ takeover_log: unknown }>(
+      `SELECT takeover_log FROM tool_activity_log WHERE step_id = $1`,
+      [stepId],
+    );
+    if (!res.rows[0]) return [];
+    const raw = res.rows[0].takeover_log;
+    if (Array.isArray(raw)) return raw as TakeoverLogEntry[];
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw) as TakeoverLogEntry[]; } catch { return []; }
+    }
+    return [];
+  } catch (e: any) {
+    console.warn("[tool-activity] takeover-log read failed:", e?.message);
+    return [];
+  }
+}
+
+/**
  * Phase 2 (R-luca-computer-ui): re-sign any media URLs whose signed_expires_at
  * is within `marginMs` of expiry. Best-effort — if re-sign fails we keep the
  * stale URL so the UI still renders something. Persists the refreshed URL
