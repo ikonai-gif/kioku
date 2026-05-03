@@ -240,8 +240,21 @@ export interface StagehandLike {
       metadata?: Record<string, unknown>;
     }>;
   };
-  /** Optional — used only for screenshot capture. */
-  page?: { url(): string; screenshot(opts?: unknown): Promise<Buffer> };
+  /**
+   * Stagehand v3 dropped the `stagehand.page` shortcut — pages now hang off
+   * the Playwright `BrowserContext` (verified 2026-05-02 by inspecting
+   * `Object.getOwnPropertyNames(Stagehand.prototype)` against
+   * `@browserbasehq/stagehand@3.3.x`: there is `context`, `act`, `extract`,
+   * `observe`, `agent` — but no `page` getter). The handler below dereferences
+   * via `context.pages()[0]` for screenshot/finalUrl. Optional — both fields
+   * are nullable so a stub omitting them remains valid.
+   */
+  context?: {
+    pages(): Array<{
+      url(): string;
+      screenshot(opts?: unknown): Promise<Buffer>;
+    }>;
+  };
 }
 
 export type StagehandFactory = (opts: {
@@ -447,10 +460,15 @@ export async function agentBrowserHandler(
     const result = await agent.execute({ instruction: task, maxSteps });
     actionsTaken = Array.isArray(result.actions) ? result.actions.length : 0;
 
+    // Stagehand v3: pages live on `stagehand.context`, not `stagehand.page`
+    // (R427 fix — the previous reference always evaluated to undefined,
+    // silently dropping every screenshot and final_url in prod).
+    const activePage = stagehand.context?.pages?.()[0];
+
     let screenshot_b64: string | undefined;
-    if (capture_screenshot && stagehand.page) {
+    if (capture_screenshot && activePage) {
       try {
-        const buf = await stagehand.page.screenshot({
+        const buf = await activePage.screenshot({
           fullPage: false,
           type: "jpeg",
           quality: 70,
@@ -464,7 +482,7 @@ export async function agentBrowserHandler(
       }
     }
 
-    const finalUrl = stagehand.page ? safeUrl(stagehand.page) : undefined;
+    const finalUrl = activePage ? safeUrl(activePage) : undefined;
     const session_replay_url = `https://browserbase.com/sessions/${sessionId}`;
 
     // BRO1 R395 P3: cost retrospective evidence — emit on every success.
