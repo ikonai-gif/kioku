@@ -3743,10 +3743,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Find user's first agent (Agent O / primary partner)
     const agents = await storage.getAgents(userId);
-    const primaryAgent = agents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || agents[0];
+    // R-luca-partner-status-routing (2026-05-03): the matcher used to look
+    // only for "agent o" / "partner" — Boss's partner is named "Luca", so
+    // it always fell through to agents[0] (NIKA, trust 0.01). UI showed
+    // `trust: new` regardless of Luca's actual relationship state. Mirror
+    // the matcher used in routes.ts:4415 / :4537 (already includes /luca/).
+    const primaryAgent = agents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || agents[0];
 
     if (!primaryAgent) {
       return res.json({
@@ -4262,10 +4264,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Find primary agent for memory storage
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+    const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
     if (primaryAgent) {
       await storage.createMemory({
@@ -4336,10 +4337,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Find primary agent for memory storage
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+    const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
     if (primaryAgent) {
       await storage.createMemory({
@@ -4599,10 +4599,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Find primary agent
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+    const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
     if (!primaryAgent) return res.status(400).json({ error: "No agent found" });
 
@@ -4734,10 +4733,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Find primary agent
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+    const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
     if (!primaryAgent) return res.status(400).json({ error: "No agent found" });
 
@@ -4804,10 +4802,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Store deliberation result as memory
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+    const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
     if (primaryAgent) {
       await storage.createMemory({
@@ -4947,10 +4944,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Find primary agent for memory storage
     const userAgents = await storage.getAgents(userId);
-    const primaryAgent = userAgents.find((a: any) =>
-      a.name.toLowerCase().includes("agent o") ||
-      a.name.toLowerCase().includes("partner")
-    ) || userAgents[0];
+    // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+    const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
     // Process in background
     (async () => {
@@ -5062,10 +5058,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const genRemaining = genLimits.memories - genCounts.memories;
         const textChunks = splitIntoChunks(generatedContent, 500).slice(0, genRemaining);
         const userAgents = await storage.getAgents(userId);
-        const primaryAgent = userAgents.find((a: any) =>
-          a.name.toLowerCase().includes("agent o") ||
-          a.name.toLowerCase().includes("partner")
-        ) || userAgents[0];
+        // R-luca-partner-status-routing: include /luca/ in matcher (see routes.ts:3746)
+
+        const primaryAgent = userAgents.find((a: any) => /luca|agent o|partner/i.test(a.name)) || userAgents[0];
 
         let loaded = 0;
         for (const chunk of textChunks) {
