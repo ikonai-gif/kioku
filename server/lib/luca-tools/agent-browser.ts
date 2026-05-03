@@ -367,7 +367,20 @@ export async function agentBrowserHandler(
   const { task, domain, max_actions, capture_screenshot } = parsed.data;
   const cleanDomain = normalizeDomain(domain);
 
-  // 5. Allowlist match.
+  // 5a. Hard blocklist (R-luca-browser-open-mode 2026-05-03): runs BEFORE
+  // the allowlist so even open-internet mode (`*`) cannot reach banking,
+  // cloud-metadata, auth providers, or internal/private network ranges.
+  // See agent-browser-blocklist.ts for the full pattern list.
+  const { isHostBlocked } = await import("./agent-browser-blocklist");
+  if (isHostBlocked(cleanDomain)) {
+    return {
+      status: "domain_blocked",
+      error: `domain ${cleanDomain} is on the open-mode blocklist (banking / metadata / internal)`,
+    };
+  }
+
+  // 5b. Allowlist match (skipped automatically in open-internet mode —
+  // see isHostAllowed in agent-browser-allowlist.ts).
   if (!isHostAllowed(cleanDomain)) {
     return {
       status: "domain_blocked",
