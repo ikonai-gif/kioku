@@ -71,6 +71,16 @@ import {
   AGENT_BROWSER_RATE_LIMIT,
 } from "./agent-browser-guard";
 import { BrowserbaseSessionManager } from "../luca-browser/session";
+import {
+  setToolActivityMedia,
+  removeToolActivityMediaByKind,
+} from "../../storage";
+import { broadcastToolActivity } from "../../ws";
+import {
+  buildLiveFrameMedia,
+  toLiveFrameRow,
+  toToolActivityMedia,
+} from "./agent-browser-live-frame";
 import logger from "../../logger";
 
 // ─── Policy constants ────────────────────────────────────────────────────
@@ -293,6 +303,25 @@ export interface AgentBrowserContext {
    * leave this undefined.
    */
   agentBrowserSessionMgr?: BrowserbaseSessionManager;
+  /**
+   * Phase 4 (R-luca-computer-ui) — live preview routing. Provided by
+   * deliberation.ts when the tool is invoked from a chat room. The handler
+   * uses these to:
+   *   1. Append a kind:'live_frame' media row to the running tool_activity_log
+   *      step (append-semantics in setToolActivityMedia).
+   *   2. Broadcast the live frame on the room WebSocket so the activity
+   *      timeline can mount the iframe immediately.
+   *   3. Broadcast a `closeLiveFrame:true` payload in `finally` so the UI
+   *      tears the iframe down the moment Stagehand closes the session.
+   * All three are best-effort — missing room/step makes Phase 4 a no-op.
+   */
+  liveFramePublisher?: {
+    roomId: number;
+    stepId: string;
+    description?: string | null;
+    /** Forwarded into the broadcast for UI ordering. */
+    startedAt?: number;
+  };
 }
 
 export type AgentBrowserStatus =
@@ -429,12 +458,14 @@ export async function agentBrowserHandler(
   // 7. Acquire session via manager.
   const sessionMgr = ctx.agentBrowserSessionMgr ?? getSessionManager();
   let sessionId = "";
+  let debuggerFullscreenUrl: string | undefined;
   try {
     const handle = await sessionMgr.getOrCreate({
       userId: ctx.userId,
       domain: cleanDomain,
     });
     sessionId = handle.sessionId;
+    debuggerFullscreenUrl = handle.debuggerFullscreenUrl;
   } catch (e) {
     logger.warn(
       { source: "luca_agent_browser", op: "session_create_failed", err: String(e) },
@@ -460,6 +491,35 @@ export async function agentBrowserHandler(
     projectId,
     browserbaseSessionID: sessionId,
   });
+
+  // Phase 4 (R-luca-computer-ui): publish the live preview NOW — BEFORE
+  // Stagehand's potentially-30s init/agent loop — so the user sees the
+  // browser as soon as the BB session is reachable. Best-effort throughout:
+  // any failure here just hides the live preview, the agent itself runs.
+  if (ctx.liveFramePublisher && debuggerFullscreenUrl) {
+    try {
+      const { roomId, stepId, description, startedAt: pubStarted } = ctx.liveFramePublisher;
+      const liveMedia = buildLiveFrameMedia({
+        debuggerFullscreenUrl,
+        sessionReplayUrl: `https://browserbase.com/sessions/${sessionId}`,
+      });
+      await setToolActivityMedia(stepId, [toToolActivityMedia(liveMedia)]);
+      broadcastToolActivity(roomId, {
+        agentId: ctx.agentId,
+        tool: "luca_agent_browser",
+        status: "running",
+        description: description ?? undefined,
+        stepId,
+        timestamp: pubStarted ?? Date.now(),
+        mediaUrls: [toLiveFrameRow(liveMedia)],
+      });
+    } catch (err) {
+      logger.warn(
+        { source: "luca_agent_browser", op: "live_frame_publish_failed", err: String(err) },
+        "agent_browser: live frame publish failed (non-fatal)",
+      );
+    }
+  }
 
   let actionsTaken = 0;
   try {
@@ -558,6 +618,35 @@ export async function agentBrowserHandler(
       });
     } catch {
       // best effort
+    }
+    // Phase 4 (R-luca-computer-ui): live preview tear-down. The Browserbase
+    // session is now closed so the debuggerFullscreenUrl no longer resolves.
+    // We:
+    //   1. Drop the kind:'live_frame' row from the persisted media so future
+    //      /tool-activity polls don't try to mount a dead URL.
+    //   2. Broadcast `closeLiveFrame:true` so any client currently showing
+    //      the iframe unmounts it immediately (no race with the next poll).
+    if (ctx.liveFramePublisher) {
+      const { roomId, stepId, description } = ctx.liveFramePublisher;
+      try {
+        await removeToolActivityMediaByKind(stepId, "live_frame");
+      } catch {
+        // best effort — client tear-down via closeLiveFrame still happens
+      }
+      try {
+        broadcastToolActivity(roomId, {
+          agentId: ctx.agentId,
+          tool: "luca_agent_browser",
+          status: "running", // status moves to 'done' from deliberation.ts
+          description: description ?? undefined,
+          stepId,
+          timestamp: Date.now(),
+          closeLiveFrame: true,
+          mediaUrls: [],
+        });
+      } catch {
+        // best effort
+      }
     }
   }
 }

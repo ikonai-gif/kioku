@@ -56,6 +56,13 @@ export interface SessionHandle {
   sessionId: string;
   /** CDP `wss://` URL — Stagehand connects through this. */
   connectUrl: string;
+  /**
+   * Phase 4 (R-luca-computer-ui) — Browserbase live debugger URL suitable
+   * for embedding in an iframe (`<iframe src={debuggerFullscreenUrl}>`).
+   * Optional because `bb.sessions.debug()` is best-effort: a 5xx must not
+   * break Stagehand connect, the live preview just won't render.
+   */
+  debuggerFullscreenUrl?: string;
 }
 
 /**
@@ -106,7 +113,12 @@ export class BrowserbaseSessionManager {
       existing.sessionId = session.id;
       existing.lastUsedAt = now;
       this.sessions.set(mk, existing);
-      return { sessionId: session.id, connectUrl: session.connectUrl };
+      const debuggerFullscreenUrl = await this.fetchLiveUrl(session.id);
+      return {
+        sessionId: session.id,
+        connectUrl: session.connectUrl,
+        debuggerFullscreenUrl,
+      };
     }
 
     // Mint fresh context + first session against it.
@@ -121,7 +133,29 @@ export class BrowserbaseSessionManager {
       createdAt: now,
       lastUsedAt: now,
     });
-    return { sessionId: session.id, connectUrl: session.connectUrl };
+    const debuggerFullscreenUrl = await this.fetchLiveUrl(session.id);
+    return {
+      sessionId: session.id,
+      connectUrl: session.connectUrl,
+      debuggerFullscreenUrl,
+    };
+  }
+
+  /**
+   * Phase 4 (R-luca-computer-ui) — best-effort fetch of the embeddable live
+   * debugger URL via `bb.sessions.debug()`. Returns `undefined` on any error
+   * so the calling path stays alive and Stagehand still connects through
+   * `connectUrl` even if BB's debug endpoint returns 5xx.
+   */
+  private async fetchLiveUrl(sessionId: string): Promise<string | undefined> {
+    try {
+      const live = await this.bb.sessions.debug(sessionId);
+      const url = live?.debuggerFullscreenUrl;
+      return typeof url === "string" && url.length > 0 ? url : undefined;
+    } catch {
+      // Best-effort — live preview is optional; agent_browser still works.
+      return undefined;
+    }
   }
 
   /**

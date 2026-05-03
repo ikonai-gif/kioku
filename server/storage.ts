@@ -709,11 +709,23 @@ export async function initDb() {
  * URLs short-lived for GDPR/CCPA — BOSS California).
  */
 export interface ToolActivityMedia {
+  /**
+   * Supabase bucket key. Empty string allowed ONLY for kind:'live_frame'
+   * (no underlying file — the URL is an external Browserbase live debugger
+   * link with its own short-lived token). All other kinds REQUIRE a key.
+   */
   storageKey: string;
   signedUrl: string;
   signedExpiresAt: number;
   contentType: string;
-  kind: "screenshot" | "file" | "video";
+  /**
+   * Phase 4 (R-luca-computer-ui): added 'live_frame' for ephemeral
+   * Browserbase live preview iframes. live_frame rows are NEVER persisted
+   * to storage and have no `storageKey` — they exist only while the
+   * agent_browser tool is running. parseMediaCol gates this kind so it
+   * cannot leak through replay paths.
+   */
+  kind: "screenshot" | "file" | "video" | "live_frame";
   sourceUrl?: string | null;
   /**
    * Phase 3 (R-luca-computer-ui): file size in bytes (when known at write
@@ -808,20 +820,66 @@ export async function recordToolActivityEnd(params: {
  * activity row by step_id. Best-effort — failures must never break the
  * underlying tool call.
  *
- * Replaces the entire media_urls array (we currently only attach a single
- * screenshot per agent_browser call — future tools may attach multiple).
+ * Phase 4 (R-luca-computer-ui): append-semantics. The Browserbase live frame
+ * (kind:'live_frame') is broadcast at status:'running' BEFORE Stagehand
+ * does its work; the final screenshot (kind:'screenshot') is attached at
+ * status:'done'. Both must end up in the same row, so we read → merge →
+ * write instead of replacing. We dedupe by `storageKey + kind` so the
+ * helper is idempotent if called twice with the same payload (e.g. retry).
  */
 export async function setToolActivityMedia(
   stepId: string,
   media: ToolActivityMedia[]
 ): Promise<void> {
+  if (!stepId) return;
   try {
+    const existing = await pool.query<{ media_urls: unknown }>(
+      `SELECT media_urls FROM tool_activity_log WHERE step_id = $1`,
+      [stepId]
+    );
+    const prev = existing.rows[0] ? parseMediaCol(existing.rows[0].media_urls) : [];
+    const merged: ToolActivityMedia[] = [...prev];
+    const seen = new Set(prev.map((m) => `${m.kind}:${m.storageKey}:${m.signedUrl}`));
+    for (const m of media || []) {
+      const sig = `${m.kind}:${m.storageKey}:${m.signedUrl}`;
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      merged.push(m);
+    }
     await pool.query(
       `UPDATE tool_activity_log SET media_urls = $1::jsonb WHERE step_id = $2`,
-      [JSON.stringify(media || []), stepId]
+      [JSON.stringify(merged), stepId]
     );
   } catch (e: any) {
     console.warn("[tool-activity] media update failed:", e?.message);
+  }
+}
+
+/**
+ * Phase 4 (R-luca-computer-ui): drop a specific media kind from the row.
+ * Used to remove the ephemeral `live_frame` after `agent_browser` finishes
+ * (Browserbase session is closed — the URL is dead). Best-effort.
+ */
+export async function removeToolActivityMediaByKind(
+  stepId: string,
+  kind: ToolActivityMedia["kind"]
+): Promise<void> {
+  if (!stepId || !kind) return;
+  try {
+    const res = await pool.query<{ media_urls: unknown }>(
+      `SELECT media_urls FROM tool_activity_log WHERE step_id = $1`,
+      [stepId]
+    );
+    if (!res.rows[0]) return;
+    const prev = parseMediaCol(res.rows[0].media_urls);
+    const next = prev.filter((m) => m.kind !== kind);
+    if (next.length === prev.length) return;
+    await pool.query(
+      `UPDATE tool_activity_log SET media_urls = $1::jsonb WHERE step_id = $2`,
+      [JSON.stringify(next), stepId]
+    );
+  } catch (e: any) {
+    console.warn("[tool-activity] media kind-remove failed:", e?.message);
   }
 }
 
@@ -889,16 +947,34 @@ function parseMediaCol(raw: unknown): ToolActivityMedia[] {
   }
   if (!Array.isArray(arr)) return [];
   return arr
-    .filter((m: any) => m && typeof m === "object" && typeof m.storage_key === "string")
-    .map((m: any) => ({
-      storageKey: String(m.storage_key),
-      signedUrl: String(m.signed_url || ""),
-      signedExpiresAt: Number(m.signed_expires_at) || 0,
-      contentType: String(m.content_type || "application/octet-stream"),
-      kind: (m.kind === "file" || m.kind === "video" ? m.kind : "screenshot") as ToolActivityMedia["kind"],
-      sourceUrl: m.source_url ? String(m.source_url) : null,
-      sizeBytes: Number.isFinite(Number(m.size_bytes)) && Number(m.size_bytes) > 0 ? Number(m.size_bytes) : undefined,
-    }));
+    .filter((m: any) => {
+      if (!m || typeof m !== "object" || typeof m.storage_key !== "string") return false;
+      // Phase 4 (R-luca-computer-ui): live_frame is the ONLY kind allowed
+      // to carry an empty storage_key (no underlying bucket file). Keep the
+      // strict-key filter for every other kind so screenshot/file/video
+      // rows never slip through with bogus shapes.
+      if (m.storage_key.length === 0 && m.kind !== "live_frame") return false;
+      return true;
+    })
+    .map((m: any) => {
+      const rawKind = String(m.kind || "");
+      const kind: ToolActivityMedia["kind"] =
+        rawKind === "file" || rawKind === "video" || rawKind === "live_frame"
+          ? (rawKind as ToolActivityMedia["kind"])
+          : "screenshot";
+      return {
+        storageKey: String(m.storage_key),
+        signedUrl: String(m.signed_url || ""),
+        signedExpiresAt: Number(m.signed_expires_at) || 0,
+        contentType: String(m.content_type || "application/octet-stream"),
+        kind,
+        sourceUrl: m.source_url ? String(m.source_url) : null,
+        sizeBytes:
+          Number.isFinite(Number(m.size_bytes)) && Number(m.size_bytes) > 0
+            ? Number(m.size_bytes)
+            : undefined,
+      };
+    });
 }
 
 // Attach the most-recent unattached activity rows (within window) to a
