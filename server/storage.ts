@@ -547,6 +547,33 @@ export async function initDb() {
     -- BRO1 R431 must-fix: runtime DDL (NOT Drizzle migration) to keep the
     -- ensureToolActivityLog() schema authoritative.
     ALTER TABLE tool_activity_log ADD COLUMN IF NOT EXISTS media_urls JSONB DEFAULT '[]'::jsonb;
+    -- Phase 5 (R-luca-computer-ui) — takeover audit log for live_frame.
+    -- BRO1 R438 MUST-FIX-B1: separate column from media_urls (separation of
+    -- concerns: media stays media, takeover stays audit). Append-only array of
+    -- { ts, userId, mode } entries. Will be populated by Phase 5 PR-B.
+    ALTER TABLE tool_activity_log ADD COLUMN IF NOT EXISTS takeover_log JSONB DEFAULT '[]'::jsonb;
+  `);
+
+  // Phase 5 (R-luca-computer-ui) — pinned artifacts header strip.
+  // BRO1 R438 GREEN: runtime DDL (mirrors media_urls pattern, NOT Drizzle).
+  // UNIQUE(room_id, type, ref_id) — same artifact pinned twice to a room is a
+  // no-op (ON CONFLICT DO NOTHING). type enum is enforced at the storage helper
+  // layer (TS), keeping the column flexible for future kinds.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pinned_artifacts (
+      id          BIGSERIAL PRIMARY KEY,
+      room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type        TEXT NOT NULL,
+      ref_id      TEXT NOT NULL,
+      label       TEXT,
+      created_at  BIGINT NOT NULL,
+      UNIQUE (room_id, type, ref_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pinned_artifacts_room
+      ON pinned_artifacts(room_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_pinned_artifacts_user
+      ON pinned_artifacts(user_id);
   `);
 
   // Phase 10: Cross-session Decision Provenance Chain
@@ -1079,6 +1106,167 @@ export async function getToolActivityForMessage(messageId: number): Promise<Tool
     console.warn("[tool-activity] fetch failed:", e?.message);
     return [];
   }
+}
+
+// ── Pinned artifacts (Phase 5, R-luca-computer-ui) ─────────────────────────
+// Header strip in Activity panel. UNIQUE(room_id, type, ref_id) at DB level
+// guarantees idempotent pin (re-pinning the same artifact is a no-op).
+export type PinnedArtifactType =
+  | "screenshot"
+  | "file"
+  | "live_frame"
+  | "message";
+
+export interface PinnedArtifact {
+  id: number;
+  roomId: number;
+  userId: number;
+  type: PinnedArtifactType;
+  refId: string;
+  label: string | null;
+  createdAt: number;
+}
+
+// BRO1 R438 Q3: hard limit 100 (server reject 409). Soft warning at 50 is a
+// UI concern — server only enforces the hard cap.
+export const PINNED_ARTIFACTS_HARD_LIMIT = 100;
+export const PINNED_ARTIFACTS_SOFT_WARN = 50;
+
+export class PinnedArtifactLimitError extends Error {
+  readonly code = "PINNED_ARTIFACT_LIMIT";
+  readonly status = 409;
+  constructor(public roomId: number, public count: number) {
+    super(
+      `pinned artifact limit reached for room ${roomId} (${count}/${PINNED_ARTIFACTS_HARD_LIMIT})`,
+    );
+    this.name = "PinnedArtifactLimitError";
+  }
+}
+
+const PINNED_TYPES: ReadonlySet<PinnedArtifactType> = new Set([
+  "screenshot",
+  "file",
+  "live_frame",
+  "message",
+]);
+
+function parsePinnedRow(r: any): PinnedArtifact {
+  return {
+    id: Number(r.id),
+    roomId: Number(r.room_id),
+    userId: Number(r.user_id),
+    type: r.type as PinnedArtifactType,
+    refId: String(r.ref_id),
+    label: r.label != null ? String(r.label) : null,
+    createdAt: Number(r.created_at),
+  };
+}
+
+/**
+ * Pin an artifact to a room. Idempotent (UNIQUE on (room_id, type, ref_id)
+ * with ON CONFLICT DO NOTHING). Returns the existing or newly-inserted row.
+ *
+ * Throws PinnedArtifactLimitError if the room already has
+ * PINNED_ARTIFACTS_HARD_LIMIT pins. Counted BEFORE insert so a duplicate pin
+ * (which would be a no-op) doesn't falsely trip the limit — we count first,
+ * then insert with ON CONFLICT.
+ *
+ * NOTE: caller MUST verify (roomId, userId) ownership via assertRoomOwnership
+ * BEFORE calling this. We re-check user_id at INSERT time defensively but
+ * trust the caller's row-level auth.
+ */
+export async function pinArtifact(params: {
+  roomId: number;
+  userId: number;
+  type: PinnedArtifactType;
+  refId: string;
+  label?: string | null;
+}): Promise<PinnedArtifact> {
+  const { roomId, userId, type, refId, label } = params;
+  if (!PINNED_TYPES.has(type)) {
+    throw new Error(`invalid pinned artifact type: ${type}`);
+  }
+  if (!refId || refId.length > 256) {
+    throw new Error(`invalid refId (1..256 required)`);
+  }
+
+  // Check existing pin first — idempotent path skips the count check.
+  const existing = await pool.query(
+    `SELECT id, room_id, user_id, type, ref_id, label, created_at
+       FROM pinned_artifacts
+      WHERE room_id = $1 AND type = $2 AND ref_id = $3
+      LIMIT 1`,
+    [roomId, type, refId],
+  );
+  if (existing.rows.length > 0) {
+    return parsePinnedRow(existing.rows[0]);
+  }
+
+  // Hard-limit check before insert.
+  const count = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM pinned_artifacts WHERE room_id = $1`,
+    [roomId],
+  );
+  const n = Number(count.rows[0]?.n ?? 0);
+  if (n >= PINNED_ARTIFACTS_HARD_LIMIT) {
+    throw new PinnedArtifactLimitError(roomId, n);
+  }
+
+  const now = Date.now();
+  const ins = await pool.query(
+    `INSERT INTO pinned_artifacts (room_id, user_id, type, ref_id, label, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (room_id, type, ref_id) DO NOTHING
+     RETURNING id, room_id, user_id, type, ref_id, label, created_at`,
+    [roomId, userId, type, refId, label ?? null, now],
+  );
+  if (ins.rows.length > 0) return parsePinnedRow(ins.rows[0]);
+
+  // Race: another concurrent insert won the UNIQUE — read it back.
+  const reread = await pool.query(
+    `SELECT id, room_id, user_id, type, ref_id, label, created_at
+       FROM pinned_artifacts
+      WHERE room_id = $1 AND type = $2 AND ref_id = $3
+      LIMIT 1`,
+    [roomId, type, refId],
+  );
+  if (reread.rows.length === 0) {
+    throw new Error("pinArtifact: insert race lost but row missing");
+  }
+  return parsePinnedRow(reread.rows[0]);
+}
+
+/**
+ * Unpin by id. Caller MUST have already asserted room ownership; we verify
+ * user_id again as defence-in-depth. Returns true on delete, false if not
+ * found / not owned.
+ */
+export async function unpinArtifact(
+  pinId: number,
+  userId: number,
+): Promise<boolean> {
+  const r = await pool.query(
+    `DELETE FROM pinned_artifacts WHERE id = $1 AND user_id = $2 RETURNING id`,
+    [pinId, userId],
+  );
+  return r.rows.length > 0;
+}
+
+/**
+ * List pins for a room, newest first. Caller MUST have already asserted
+ * ownership.
+ */
+export async function listPinnedArtifacts(
+  roomId: number,
+): Promise<PinnedArtifact[]> {
+  const r = await pool.query(
+    `SELECT id, room_id, user_id, type, ref_id, label, created_at
+       FROM pinned_artifacts
+      WHERE room_id = $1
+      ORDER BY created_at DESC, id DESC`,
+    [roomId],
+  );
+  return r.rows.map(parsePinnedRow);
 }
 
 function generateApiKey(): string {

@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage, pool, getToolActivityForMessage, getToolActivityForRoom, refreshExpiringMediaForActivity } from "./storage";
+import { storage, pool, getToolActivityForMessage, getToolActivityForRoom, refreshExpiringMediaForActivity, pinArtifact, unpinArtifact, listPinnedArtifacts, PinnedArtifactLimitError, type PinnedArtifactType } from "./storage";
+import { assertRoomOwnership, assertRoomOwnershipWithFields, RoomNotFoundError } from "./lib/room-acl";
 import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
@@ -630,12 +631,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (missing.length > 0) {
         return res.status(400).json({ error: "agentIds not owned by user", missing });
       }
-      const prev = await pool.query(
-        `SELECT id, agent_ids FROM rooms WHERE id = $1 AND user_id = $2`,
-        [roomId, userId]
-      );
-      if (prev.rows.length === 0) return res.status(404).json({ error: "room not found for user" });
-      const previousAgentIds = prev.rows[0].agent_ids;
+      // Phase 5 (R-luca-computer-ui): assertRoomOwnershipWithFields extracted
+      // from per-route SELECT — keeps ownership check + agent_ids fetch in one
+      // shot. RoomNotFoundError → 404 via global handler.
+      let previousAgentIds: any;
+      try {
+        const prev = await assertRoomOwnershipWithFields(roomId, userId, ["agentIds"]);
+        previousAgentIds = prev.agentIds;
+      } catch (e: any) {
+        if (e instanceof RoomNotFoundError) return res.status(404).json({ error: "room not found for user" });
+        throw e;
+      }
       const r = await pool.query(
         `UPDATE rooms SET agent_ids = $1 WHERE id = $2 AND user_id = $3 RETURNING id, user_id, agent_ids, name`,
         [JSON.stringify(agentIds), roomId, userId]
@@ -719,12 +725,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const name = sanitizeHtml(rawName);
     try {
       const { pool } = await import("./storage");
-      const prev = await pool.query(
-        `SELECT id, name FROM rooms WHERE id = $1 AND user_id = $2`,
-        [roomId, userId]
-      );
-      if (prev.rows.length === 0) return res.status(404).json({ error: "room not found for user" });
-      const previousName = prev.rows[0].name;
+      // Phase 5 (R-luca-computer-ui): use assertRoomOwnershipWithFields.
+      let previousName: any;
+      try {
+        const prev = await assertRoomOwnershipWithFields(roomId, userId, ["name"]);
+        previousName = prev.name;
+      } catch (e: any) {
+        if (e instanceof RoomNotFoundError) return res.status(404).json({ error: "room not found for user" });
+        throw e;
+      }
       const r = await pool.query(
         `UPDATE rooms SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING id, user_id, name`,
         [name, roomId, userId]
@@ -1991,14 +2000,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.setHeader("Retry-After", "60");
       return res.status(429).json({ error: "rate_limited", code: "RATE_LIMITED", detail: "60 req/min per room" });
     }
-    // Ownership check via existing getRoomMessages contract (returns null if not owned).
+    // Phase 5 (R-luca-computer-ui): assertRoomOwnership extract.
     try {
-      const own = await pool.query(
-        `SELECT 1 FROM rooms WHERE id = $1 AND user_id = $2 LIMIT 1`,
-        [roomId, userId]
-      );
-      if (own.rows.length === 0) return res.status(404).json({ error: "Not found" });
-    } catch { return res.status(500).json({ error: "Server error" }); }
+      await assertRoomOwnership(roomId, userId);
+    } catch (e: any) {
+      if (e instanceof RoomNotFoundError) return res.status(404).json({ error: "Not found" });
+      return res.status(500).json({ error: "Server error" });
+    }
     const sinceRaw = req.query.since;
     const limitRaw = req.query.limit;
     const sinceMs = typeof sinceRaw === "string" ? Number(sinceRaw) : 0;
@@ -2008,6 +2016,81 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // UI never receives a dead signed link. Best-effort — noop without storage.
     const refreshed = await refreshExpiringMediaForActivity(rows);
     res.json(refreshed);
+  }));
+
+  // ── Pinned artifacts (Phase 5, R-luca-computer-ui) ───────────────────────
+  // Header strip in Activity panel. assertRoomOwnership() enforces ownership;
+  // RoomNotFoundError is mapped to 404 by the global error handler.
+  const PINNED_TYPES_RUNTIME: ReadonlySet<PinnedArtifactType> = new Set([
+    "screenshot",
+    "file",
+    "live_frame",
+    "message",
+  ]);
+
+  app.get("/api/rooms/:id/pinned-artifacts", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad roomId" });
+    await assertRoomOwnership(roomId, userId);
+    const items = await listPinnedArtifacts(roomId);
+    res.json({ items });
+  }));
+
+  app.post("/api/rooms/:id/pinned-artifacts", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad roomId" });
+    await assertRoomOwnership(roomId, userId);
+
+    const type = String(req.body?.type ?? "");
+    const refId = String(req.body?.refId ?? "");
+    const labelRaw = req.body?.label;
+    const label = typeof labelRaw === "string" && labelRaw.length > 0
+      ? sanitizeHtml(labelRaw.slice(0, 200))
+      : null;
+    if (!PINNED_TYPES_RUNTIME.has(type as PinnedArtifactType)) {
+      return res.status(400).json({ error: "invalid type", code: "INVALID_TYPE" });
+    }
+    if (!refId || refId.length > 256) {
+      return res.status(400).json({ error: "invalid refId", code: "INVALID_REF_ID" });
+    }
+    try {
+      const item = await pinArtifact({
+        roomId,
+        userId,
+        type: type as PinnedArtifactType,
+        refId,
+        label,
+      });
+      res.status(201).json({ item });
+    } catch (e: any) {
+      if (e instanceof PinnedArtifactLimitError) {
+        return res.status(409).json({
+          error: "pin_limit_reached",
+          code: e.code,
+          count: e.count,
+          limit: 100,
+        });
+      }
+      throw e;
+    }
+  }));
+
+  app.delete("/api/rooms/:id/pinned-artifacts/:pinId", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    const pinId = Number(req.params.pinId);
+    if (!Number.isFinite(roomId) || !Number.isFinite(pinId)) {
+      return res.status(400).json({ error: "Bad roomId/pinId" });
+    }
+    await assertRoomOwnership(roomId, userId);
+    const ok = await unpinArtifact(pinId, userId);
+    if (!ok) return res.status(404).json({ error: "pin not found" });
+    res.json({ ok: true });
   }));
 
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
@@ -3761,14 +3844,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.body?.roomId);
     if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad roomId" });
-    // Ownership: only allow aborting rooms that belong to this user
+    // Phase 5 (R-luca-computer-ui): assertRoomOwnership extract.
     try {
-      const row = await pool.query(
-        `SELECT id FROM rooms WHERE id = $1 AND user_id = $2 LIMIT 1`,
-        [roomId, userId]
-      );
-      if (row.rows.length === 0) return res.status(404).json({ error: "Not found" });
-    } catch { return res.status(500).json({ error: "Server error" }); }
+      await assertRoomOwnership(roomId, userId);
+    } catch (e: any) {
+      if (e instanceof RoomNotFoundError) return res.status(404).json({ error: "Not found" });
+      return res.status(500).json({ error: "Server error" });
+    }
     const aborted = abortRoomTurn(roomId);
     res.json({ aborted, active: isRoomTurnActive(roomId) });
   }));
@@ -5193,9 +5275,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.params.roomId);
-    // Verify room belongs to user
-    const room = await pool.query('SELECT id FROM rooms WHERE id = $1 AND user_id = $2', [roomId, userId]);
-    if (room.rows.length === 0) return res.status(404).json({ error: "Room not found" });
+    // Phase 5 (R-luca-computer-ui): assertRoomOwnership extract.
+    try {
+      await assertRoomOwnership(roomId, userId);
+    } catch (e: any) {
+      if (e instanceof RoomNotFoundError) return res.status(404).json({ error: "Room not found" });
+      throw e;
+    }
     await pool.query('DELETE FROM room_messages WHERE room_id = $1', [roomId]);
     res.json({ success: true });
   }));
@@ -6387,6 +6473,12 @@ Do NOT:
     // for any route whose catch misses and lets next(err) bubble.
     if (isCircuitOpenError(err)) {
       return send503(res, err);
+    }
+    // Phase 5 (R-luca-computer-ui): typed room ACL errors → 404. No enumeration
+    // leak — RoomForbiddenError is reserved for future shared-room paths;
+    // assertRoomOwnership() collapses missing+forbidden into 404 by design.
+    if (err instanceof RoomNotFoundError) {
+      return res.status(404).json({ error: "Room not found", code: err.code });
     }
     logger.error({ source: "routes", err }, "unhandled error");
     res.status(500).json({ error: "Internal server error" });

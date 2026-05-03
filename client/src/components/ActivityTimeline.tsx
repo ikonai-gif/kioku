@@ -19,6 +19,8 @@ import { API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { FileLightbox, IconForContentType } from "./FileLightbox";
 import { LiveBrowserFrame } from "./LiveBrowserFrame";
+import { PinnedArtifactsStrip, pinArtifactClient, type PinnedArtifactItem } from "./PinnedArtifacts";
+import { Pin } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -114,8 +116,34 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
   const [rows, setRows] = useState<ActivityRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<ActivityMedia | null>(null);
+  // Phase 5 (R-luca-computer-ui): bumped on pin/unpin so the strip refreshes.
+  const [pinRefresh, setPinRefresh] = useState(0);
   const lastCreatedRef = useRef<number>(0);
   const inflightRef = useRef<boolean>(false);
+
+  // Refresh strip when any chip is pinned/unpinned (cross-component event).
+  useEffect(() => {
+    if (!show || roomId == null) return;
+    function onChange(ev: Event) {
+      const detail = (ev as CustomEvent).detail;
+      if (detail?.roomId === roomId) setPinRefresh((n) => n + 1);
+    }
+    window.addEventListener("pinned-artifacts:changed", onChange);
+    return () => window.removeEventListener("pinned-artifacts:changed", onChange);
+  }, [show, roomId]);
+
+  function onClickPin(pin: PinnedArtifactItem) {
+    // For screenshot/file/live_frame pins we try to find the underlying media
+    // in the loaded rows and open the lightbox. live_frame falls back to the
+    // running row scroll behavior.
+    for (const r of rows) {
+      const m = (r.mediaUrls ?? []).find((mm) => mm.storageKey === pin.refId || mm.signedUrl === pin.refId);
+      if (m) {
+        if (m.kind !== "live_frame") setLightbox(m);
+        return;
+      }
+    }
+  }
 
   // Reset when room changes or panel re-opens.
   useEffect(() => {
@@ -210,6 +238,11 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
         </button>
       </div>
 
+      {/* Phase 5 (R-luca-computer-ui): pinned artifacts strip. */}
+      {roomId != null && (
+        <PinnedArtifactsStrip roomId={roomId} onClickPin={onClickPin} refreshKey={pinRefresh} />
+      )}
+
       {/* List */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
         {error && (
@@ -230,7 +263,7 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
           </div>
         )}
         {grouped.map((r) => (
-          <ActivityCard key={r.stepId} row={r} onOpenMedia={setLightbox} />
+          <ActivityCard key={r.stepId} row={r} roomId={roomId} onOpenMedia={setLightbox} />
         ))}
       </div>
       {lightbox && lightbox.kind !== "live_frame" && (
@@ -273,7 +306,7 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
 
 // ── Card ──────────────────────────────────────────────────────────────
 
-function ActivityCard({ row, onOpenMedia }: { row: ActivityRow; onOpenMedia: (m: ActivityMedia) => void }) {
+function ActivityCard({ row, roomId, onOpenMedia }: { row: ActivityRow; roomId: number | null; onOpenMedia: (m: ActivityMedia) => void }) {
   const dotColor =
     row.status === "error" ? "#ef4444" : row.status === "done" ? "#4ade80" : "#C9A340";
   const elapsed = formatElapsed(row.elapsedMs);
@@ -304,6 +337,34 @@ function ActivityCard({ row, onOpenMedia }: { row: ActivityRow; onOpenMedia: (m:
         {elapsed && (
           <span className="text-[9px] text-muted-foreground/50 flex-shrink-0">{elapsed}</span>
         )}
+        {/* Phase 5 (R-luca-computer-ui): pin first non-live media or message. */}
+        {roomId != null && (() => {
+          const pinnable = (row.mediaUrls ?? []).find((m) => m.kind !== "live_frame");
+          if (!pinnable) return null;
+          return (
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  await pinArtifactClient({
+                    roomId,
+                    type: pinnable.kind === "screenshot" ? "screenshot" : "file",
+                    refId: pinnable.storageKey || pinnable.signedUrl,
+                    label: row.description || labelFor(row.tool),
+                  });
+                } catch {
+                  // Soft-fail; UI re-renders without strip change. Future: toast.
+                }
+              }}
+              aria-label="Закрепить"
+              className="flex-shrink-0 p-0.5 rounded hover:bg-white/10 transition"
+              title="Закрепить"
+            >
+              <Pin className="w-2.5 h-2.5 text-[#C9A340]/60" />
+            </button>
+          );
+        })()}
       </div>
       {desc && (
         <div className="mt-1 text-muted-foreground/80 break-words">{desc}</div>
