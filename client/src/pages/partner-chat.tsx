@@ -29,6 +29,7 @@ import { VoiceOutput } from "@/components/voice/VoiceOutput";
 import { CameraCapture } from "@/components/vision/CameraCapture";
 import { VisionResult } from "@/components/vision/VisionResult";
 import { EmailConfirmModal, type EmailConfirmPayload } from "@/components/EmailConfirmModal";
+import { LucaCanvasProvider, LucaCanvasToggle } from "@/components/LucaCanvas";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -3135,6 +3136,10 @@ export default function PartnerChat() {
 
   // ── Render ────────────────────────────────────────────────────
   return (
+    <LucaCanvasProvider
+      roomId={partnerRoomId}
+      onEnterComputerMode={() => setShowActivityTimeline(true)}
+    >
     <div
       className="flex h-[100dvh] w-full overflow-hidden"
       style={{ background: "linear-gradient(180deg, #0a0f1e 0%, #0F1B3D 50%, #0a0f1e 100%)" }}
@@ -3230,6 +3235,9 @@ export default function PartnerChat() {
         >
           <Inbox className="w-3.5 h-3.5" />
         </button>
+
+        {/* Phase 6 PR-A — LucaCanvas mode toggle (chat ↔ computer) */}
+        <LucaCanvasToggle />
 
         {/* Phase 1 — Activity Timeline Toggle (right sidebar) */}
         <button
@@ -4061,5 +4069,6 @@ export default function PartnerChat() {
       onCancelled={() => setEmailConfirmPayload(null)}
     />
     </div>
+    </LucaCanvasProvider>
   );
 }
