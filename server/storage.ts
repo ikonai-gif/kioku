@@ -541,6 +541,12 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_tool_activity_room ON tool_activity_log(room_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_tool_activity_message ON tool_activity_log(message_id) WHERE message_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_tool_activity_step ON tool_activity_log(step_id);
+    -- Phase 2 (R-luca-computer-ui): inline screenshot/media for tool activity rows.
+    -- Stored as JSONB array of { storage_key, signed_url, signed_expires_at,
+    -- content_type, kind, source_url } so the UI can show thumbnails inline.
+    -- BRO1 R431 must-fix: runtime DDL (NOT Drizzle migration) to keep the
+    -- ensureToolActivityLog() schema authoritative.
+    ALTER TABLE tool_activity_log ADD COLUMN IF NOT EXISTS media_urls JSONB DEFAULT '[]'::jsonb;
   `);
 
   // Phase 10: Cross-session Decision Provenance Chain
@@ -692,6 +698,25 @@ export async function initDb() {
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────
 // Records every partner-tool invocation so users can audit what Luca did.
 // Best-effort — failures here must never break the actual tool call.
+/**
+ * Phase 2 (R-luca-computer-ui): inline media attached to a tool activity row.
+ * E.g. agent_browser captures a screenshot, stores it in the private
+ * `luca-workspace` Supabase bucket, then attaches the signed URL here so the
+ * activity timeline can render an inline thumbnail.
+ *
+ * `signedExpiresAt` is the epoch-ms when `signedUrl` expires. The API layer
+ * re-signs on read when expiry is < 5 min away (BRO1 R431 must-fix #1: keep
+ * URLs short-lived for GDPR/CCPA — BOSS California).
+ */
+export interface ToolActivityMedia {
+  storageKey: string;
+  signedUrl: string;
+  signedExpiresAt: number;
+  contentType: string;
+  kind: "screenshot" | "file" | "video";
+  sourceUrl?: string | null;
+}
+
 export interface ToolActivityRecord {
   id: number;
   stepId: string;
@@ -707,6 +732,7 @@ export interface ToolActivityRecord {
   finishedAt: number | null;
   elapsedMs: number | null;
   createdAt: number;
+  mediaUrls: ToolActivityMedia[];
 }
 
 export async function recordToolActivityStart(params: {
@@ -770,6 +796,103 @@ export async function recordToolActivityEnd(params: {
   }
 }
 
+/**
+ * Phase 2 (R-luca-computer-ui): attach media (e.g. screenshot) to a tool
+ * activity row by step_id. Best-effort — failures must never break the
+ * underlying tool call.
+ *
+ * Replaces the entire media_urls array (we currently only attach a single
+ * screenshot per agent_browser call — future tools may attach multiple).
+ */
+export async function setToolActivityMedia(
+  stepId: string,
+  media: ToolActivityMedia[]
+): Promise<void> {
+  try {
+    await pool.query(
+      `UPDATE tool_activity_log SET media_urls = $1::jsonb WHERE step_id = $2`,
+      [JSON.stringify(media || []), stepId]
+    );
+  } catch (e: any) {
+    console.warn("[tool-activity] media update failed:", e?.message);
+  }
+}
+
+/**
+ * Phase 2 (R-luca-computer-ui): re-sign any media URLs whose signed_expires_at
+ * is within `marginMs` of expiry. Best-effort — if re-sign fails we keep the
+ * stale URL so the UI still renders something. Persists the refreshed URL
+ * back to the DB so subsequent polls pick up the new TTL window.
+ */
+export async function refreshExpiringMediaForActivity(
+  rows: ToolActivityRecord[],
+  marginMs: number = 5 * 60 * 1000
+): Promise<ToolActivityRecord[]> {
+  const now = Date.now();
+  // Lazy import to avoid circular deps with workspace-storage at module load.
+  let getSignedUrl: ((key: string, expiresSec?: number) => Promise<string>) | null = null;
+  try {
+    const ws = await import("./workspace-storage");
+    if (ws.workspaceEnabled) getSignedUrl = ws.getSignedUrl;
+  } catch { /* workspace not configured */ }
+
+  if (!getSignedUrl) return rows;
+
+  for (const row of rows) {
+    if (!row.mediaUrls || row.mediaUrls.length === 0) continue;
+    let touched = false;
+    const refreshed: ToolActivityMedia[] = [];
+    for (const m of row.mediaUrls) {
+      const willExpireSoon = !m.signedExpiresAt || m.signedExpiresAt - now < marginMs;
+      if (!willExpireSoon || !m.storageKey) {
+        refreshed.push(m);
+        continue;
+      }
+      try {
+        const newUrl = await getSignedUrl(m.storageKey, 3600);
+        refreshed.push({
+          ...m,
+          signedUrl: newUrl,
+          signedExpiresAt: now + 3600 * 1000,
+        });
+        touched = true;
+      } catch {
+        refreshed.push(m); // keep stale on failure
+      }
+    }
+    if (touched) {
+      row.mediaUrls = refreshed;
+      // Best-effort persist; don't block the request if it fails.
+      setToolActivityMedia(row.stepId, refreshed).catch(() => { /* swallowed */ });
+    }
+  }
+  return rows;
+}
+
+/** Internal helper: parse a media_urls JSONB column safely. */
+function parseMediaCol(raw: unknown): ToolActivityMedia[] {
+  if (!raw) return [];
+  let arr: any = raw;
+  if (typeof raw === "string") {
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((m: any) => m && typeof m === "object" && typeof m.storage_key === "string")
+    .map((m: any) => ({
+      storageKey: String(m.storage_key),
+      signedUrl: String(m.signed_url || ""),
+      signedExpiresAt: Number(m.signed_expires_at) || 0,
+      contentType: String(m.content_type || "application/octet-stream"),
+      kind: (m.kind === "file" || m.kind === "video" ? m.kind : "screenshot") as ToolActivityMedia["kind"],
+      sourceUrl: m.source_url ? String(m.source_url) : null,
+    }));
+}
+
 // Attach the most-recent unattached activity rows (within window) to a
 // freshly-persisted Luca message. Called right after we save the message.
 export async function attachToolActivityToMessage(params: {
@@ -808,7 +931,8 @@ export async function getToolActivityForRoom(
   try {
     const res = await pool.query(
       `SELECT id, step_id, room_id, message_id, user_id, agent_id, tool, status,
-              description, preview, started_at, finished_at, elapsed_ms, created_at
+              description, preview, started_at, finished_at, elapsed_ms, created_at,
+              media_urls
          FROM tool_activity_log
         WHERE room_id = $1 AND created_at > $2
         ORDER BY created_at DESC, id DESC
@@ -831,6 +955,7 @@ export async function getToolActivityForRoom(
       finishedAt: r.finished_at != null ? Number(r.finished_at) : null,
       elapsedMs: r.elapsed_ms,
       createdAt: Number(r.created_at),
+      mediaUrls: parseMediaCol(r.media_urls),
     }));
   } catch (e: any) {
     console.warn("[tool-activity] room fetch failed:", e?.message);
@@ -842,7 +967,8 @@ export async function getToolActivityForMessage(messageId: number): Promise<Tool
   try {
     const res = await pool.query(
       `SELECT id, step_id, room_id, message_id, user_id, agent_id, tool, status,
-              description, preview, started_at, finished_at, elapsed_ms, created_at
+              description, preview, started_at, finished_at, elapsed_ms, created_at,
+              media_urls
          FROM tool_activity_log
         WHERE message_id = $1
         ORDER BY started_at ASC, id ASC`,
@@ -863,6 +989,7 @@ export async function getToolActivityForMessage(messageId: number): Promise<Tool
       finishedAt: r.finished_at != null ? Number(r.finished_at) : null,
       elapsedMs: r.elapsed_ms,
       createdAt: Number(r.created_at),
+      mediaUrls: parseMediaCol(r.media_urls),
     }));
   } catch (e: any) {
     console.warn("[tool-activity] fetch failed:", e?.message);

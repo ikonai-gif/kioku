@@ -393,6 +393,20 @@ export function broadcastToolActivity(roomId: number, payload: {
   stream?: "stdout" | "stderr";
   /** Step identity — lets the UI attach chunks to the correct step even if several of the same tool run concurrently. */
   stepId?: string;
+  /**
+   * Phase 2 (R-luca-computer-ui): media (e.g. screenshots) attached to a
+   * 'done' status — lets the UI render inline thumbnails the moment the tool
+   * finishes, instead of waiting for the next /tool-activity poll.
+   * Each entry mirrors the JSONB row format in tool_activity_log.media_urls.
+   */
+  mediaUrls?: Array<{
+    storage_key: string;
+    signed_url: string;
+    signed_expires_at: number;
+    content_type: string;
+    kind: "screenshot" | "file" | "video";
+    source_url?: string | null;
+  }>;
   timestamp: number;
 }) {
   const clients = roomClients.get(roomId);

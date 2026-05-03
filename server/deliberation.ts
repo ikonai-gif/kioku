@@ -8,7 +8,8 @@
 
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage } from "./storage";
+import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage, setToolActivityMedia } from "./storage";
+import { persistAgentBrowserScreenshot, toMediaRow } from "./lib/luca-tools/agent-browser-screenshot";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
 import { withOpenAIBreaker } from "./lib/openai-client";
 import { isCircuitOpenError } from "./lib/http-errors";
@@ -1666,6 +1667,55 @@ export async function executePartnerTool(
         elapsedMs: __v1aEnded - __v1aStarted,
         finishedAt: __v1aEnded,
       }).catch(() => { /* best-effort */ });
+
+      // Phase 2 (R-luca-computer-ui): persist agent_browser screenshots so the
+      // activity timeline can show inline thumbnails. Best-effort — a failure
+      // here must never break the actual tool result returned to the LLM.
+      if (toolName === "luca_agent_browser" && lucaResult && typeof lucaResult === "object") {
+        try {
+          const r = lucaResult as { status?: string; result?: { screenshot_b64?: string; final_url?: string; session_replay_url?: string } };
+          const b64 = r.result?.screenshot_b64;
+          if (r.status === "ok" && b64) {
+            const sessionId = (r.result?.session_replay_url || "").split("/sessions/").pop() || "unknown";
+            const persisted = await persistAgentBrowserScreenshot({
+              userId,
+              agentId,
+              sessionId,
+              screenshotB64: b64,
+              finalUrl: r.result?.final_url ?? null,
+            });
+            if (persisted) {
+              await setToolActivityMedia(__v1aStepId, [{
+                storageKey: persisted.storageKey,
+                signedUrl: persisted.signedUrl,
+                signedExpiresAt: persisted.signedExpiresAt,
+                contentType: persisted.contentType,
+                kind: persisted.kind,
+                sourceUrl: persisted.sourceUrl,
+              }]);
+              if (roomId) {
+                try {
+                  broadcastToolActivity(roomId, {
+                    agentId,
+                    tool: toolName,
+                    status: "done",
+                    description: __v1aDescription,
+                    stepId: __v1aStepId,
+                    timestamp: __v1aEnded,
+                    mediaUrls: [toMediaRow(persisted)],
+                  });
+                } catch { /* best-effort */ }
+              }
+            }
+          }
+        } catch (mediaErr) {
+          logger.warn(
+            { component: "deliberation", event: "agent_browser_media_persist_failed", err: String(mediaErr) },
+            "[deliberation] Phase 2 screenshot persist failed (non-fatal)"
+          );
+        }
+      }
+
       return resultStr;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -13,12 +13,22 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, X } from "lucide-react";
+import { Activity, X, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 
 // ── Types ─────────────────────────────────────────────────────────────
+
+// Phase 2 (R-luca-computer-ui): inline media attached to a tool activity row.
+export interface ActivityMedia {
+  storageKey: string;
+  signedUrl: string;
+  signedExpiresAt: number;
+  contentType: string;
+  kind: "screenshot" | "file" | "video";
+  sourceUrl?: string | null;
+}
 
 export interface ActivityRow {
   id: number;
@@ -35,6 +45,7 @@ export interface ActivityRow {
   finishedAt: number | null;
   elapsedMs: number | null;
   createdAt: number;
+  mediaUrls?: ActivityMedia[];
 }
 
 interface Props {
@@ -93,6 +104,7 @@ function formatTime(ms: number): string {
 export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
   const [rows, setRows] = useState<ActivityRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<ActivityMedia | null>(null);
   const lastCreatedRef = useRef<number>(0);
   const inflightRef = useRef<boolean>(false);
 
@@ -209,9 +221,12 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
           </div>
         )}
         {grouped.map((r) => (
-          <ActivityCard key={r.stepId} row={r} />
+          <ActivityCard key={r.stepId} row={r} onOpenMedia={setLightbox} />
         ))}
       </div>
+      {lightbox && (
+        <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
+      )}
     </div>
   );
 
@@ -240,12 +255,13 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
 
 // ── Card ──────────────────────────────────────────────────────────────
 
-function ActivityCard({ row }: { row: ActivityRow }) {
+function ActivityCard({ row, onOpenMedia }: { row: ActivityRow; onOpenMedia: (m: ActivityMedia) => void }) {
   const dotColor =
     row.status === "error" ? "#ef4444" : row.status === "done" ? "#4ade80" : "#C9A340";
   const elapsed = formatElapsed(row.elapsedMs);
   const preview = (row.preview ?? "").trim();
   const desc = (row.description ?? "").trim();
+  const media = Array.isArray(row.mediaUrls) ? row.mediaUrls : [];
 
   return (
     <div
@@ -282,6 +298,104 @@ function ActivityCard({ row }: { row: ActivityRow }) {
           {preview}
         </div>
       )}
+      {media.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {media.map((m, i) => (
+            <button
+              key={`${row.stepId}-m-${i}`}
+              onClick={() => onOpenMedia(m)}
+              className="block rounded overflow-hidden hover:ring-1 hover:ring-[#C9A340]/60 transition"
+              style={{
+                width: 80,
+                height: 60,
+                background: "rgba(0,0,0,0.4)",
+                border: "1px solid rgba(201,163,64,0.2)",
+              }}
+              aria-label="Показать скриншот"
+              title={m.sourceUrl || "screenshot"}
+            >
+              <img
+                src={m.signedUrl}
+                alt="agent_browser screenshot"
+                loading="lazy"
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  // signed URL likely expired — next poll re-signs.
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
+              />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Phase 2 (R-luca-computer-ui): basic lightbox for inline screenshots.
+// Phase 3 will replace this with the shared FileLightbox supporting PDF / code.
+function MediaLightbox({ media, onClose }: { media: ActivityMedia; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.92)" }}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Просмотр скриншота"
+    >
+      <div
+        className="relative max-w-[95vw] max-h-[95vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={media.signedUrl}
+          alt="agent_browser screenshot full"
+          className="max-w-[95vw] max-h-[90vh] object-contain rounded"
+          style={{ border: "1px solid rgba(201,163,64,0.3)" }}
+        />
+        <div
+          className="absolute top-2 right-2 flex items-center gap-2"
+        >
+          {media.sourceUrl && (
+            <a
+              href={media.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-[11px] px-2.5 py-1.5 rounded-md"
+              style={{
+                background: "rgba(0,0,0,0.6)",
+                color: "#C9A340",
+                border: "1px solid rgba(201,163,64,0.3)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ExternalLink className="w-3 h-3" />
+              Открыть
+            </a>
+          )}
+          <button
+            onClick={onClose}
+            aria-label="Закрыть"
+            className="p-1.5 rounded-md"
+            style={{
+              background: "rgba(0,0,0,0.6)",
+              color: "#fff",
+              border: "1px solid rgba(255,255,255,0.2)",
+            }}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
