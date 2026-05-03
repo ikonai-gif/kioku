@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage, pool, getToolActivityForMessage } from "./storage";
+import { storage, pool, getToolActivityForMessage, getToolActivityForRoom } from "./storage";
 import jwt from "jsonwebtoken";
 import logger from "./logger";
 import { embedText, embeddingsEnabled } from "./embeddings";
@@ -1971,6 +1971,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch { return res.status(500).json({ error: "Server error" }); }
     const activity = await getToolActivityForMessage(messageId);
     res.json(activity);
+  }));
+
+  // Phase 1 — Activity timeline (room-level stream).
+  // Returns tool_activity_log rows for a room since `since` (ms epoch), capped
+  // at `limit` (default 200, max 500). UI polls every 2s when sidebar is open.
+  // Ownership: user must own the room.
+  app.get("/api/rooms/:id/tool-activity", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad room id" });
+    // Ownership check via existing getRoomMessages contract (returns null if not owned).
+    try {
+      const own = await pool.query(
+        `SELECT 1 FROM rooms WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [roomId, userId]
+      );
+      if (own.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    } catch { return res.status(500).json({ error: "Server error" }); }
+    const sinceRaw = req.query.since;
+    const limitRaw = req.query.limit;
+    const sinceMs = typeof sinceRaw === "string" ? Number(sinceRaw) : 0;
+    const limit = typeof limitRaw === "string" ? Number(limitRaw) : undefined;
+    const rows = await getToolActivityForRoom(roomId, { sinceMs, limit });
+    res.json(rows);
   }));
 
   app.post("/api/rooms/:id/messages", asyncHandler(async (req, res) => {
