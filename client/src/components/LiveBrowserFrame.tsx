@@ -1,29 +1,23 @@
 /**
- * Phase 4 (R-luca-computer-ui) \u2014 ChatGPT-Atlas / Claude-Code style live
- * Browserbase preview iframe. Mounted while `luca_agent_browser` is running
- * so Boss watches the agent click in real time, then auto-removed on
- * `closeLiveFrame:true` / status:'done' / `visibilitychange=hidden`.
+ * Phase 4 (R-luca-computer-ui) — ChatGPT-Atlas / Claude-Code style live
+ * Browserbase preview iframe.
  *
- * BRO1 R436 must-fixes:
- *   #4.1  sandbox="allow-same-origin allow-scripts" \u2014 Browserbase official
- *         sample; cross-origin (browserbase.com \u2260 usekioku.com) so the combo
- *         is safe (the same-origin only collapses sandbox when the iframe
- *         shares origin with the parent).
- *   #4.2  pointerEvents:'none' on the <iframe> \u2014 passive view; takeover is
- *         deferred to Phase 5. Boss can't accidentally type or click into
- *         the agent's session.
- *
- * BRO1 R431 must-fix #3 (pause when hidden): on `visibilitychange=hidden`
- * we UNMOUNT the iframe entirely (not just `display:none`) so Browserbase
- * pauses billing on idle background tabs ($0.10/min adds up).
- *
- * Audio/permissions: `allow="clipboard-read; clipboard-write"` only \u2014
- * matches BB official sample. Audio mute is unnecessary (BB tabs are silent
- * by default; autoplay is browser-blocked).
+ * Phase 5 PR-B (R-luca-computer-ui): Boss can take over the iframe to drive
+ * Stagehand's session manually while the agent loop yields. Wire-up:
+ *   • Click the "взять управление" pill → WS `liveFrameTakeover` mode=interactive.
+ *   • Server flips a per-stepId lock (luca-takeover.ts) and broadcasts
+ *     `liveFrameTakeoverState` to the room. We watch that broadcast for our
+ *     own state (single source of truth, multi-tab safe).
+ *   • While `active && mode==='interactive'`, the iframe gets pointerEvents:'auto'
+ *     and a red border + "Босс управляет — Лука ждёт" badge.
+ *   • Click "вернуть управление" → WS `liveFrameTakeover` mode=release;
+ *     server clears the lock and re-broadcasts `active:false`.
+ *   • Step ends (server tears the iframe down via closeLiveFrame:true on the
+ *     activity row) and the parent unmounts us — local state is GC'd.
  */
 
-import { useEffect, useState } from "react";
-import { Globe } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Globe, Hand } from "lucide-react";
 
 interface Props {
   /** Browserbase `debuggerFullscreenUrl`. */
@@ -33,6 +27,9 @@ interface Props {
    * so Boss can keep watching after the live session ends.
    */
   replayUrl?: string | null;
+  /** Phase 5 PR-B — needed to send WS takeover messages. */
+  roomId?: number;
+  stepId?: string;
 }
 
 /**
@@ -53,14 +50,131 @@ function useVisibility(): boolean {
   return visible;
 }
 
-export function LiveBrowserFrame({ src, replayUrl }: Props) {
+/**
+ * Phase 5 PR-B — connect to the room WS to send takeover messages and
+ * react to server-broadcast state. We piggyback on the existing room WS
+ * (`/ws`); no new connection. The hook returns the active state (so the
+ * iframe can flip pointerEvents) and a `request(mode)` helper.
+ *
+ * The room subscription is owned by the parent (ActivityTimeline already
+ * subscribes); here we open a thin sender-only WS for outbound messages.
+ * That keeps coupling minimal — broadcast events route through the
+ * existing WsBroadcast pipe (window event below).
+ */
+function useTakeover(roomId: number | undefined, stepId: string | undefined) {
+  const [active, setActive] = useState(false);
+  const [holderIsMe, setHolderIsMe] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /**
+   * BRO1 R443 NICE-5 — server echoes `expiresAt` in both Ack and State
+   * broadcasts (luca-takeover.ts TAKEOVER_TTL_MS=10min). We arm a local
+   * timer so the UI flips back to “inactive” slightly BEFORE the server
+   * eviction — prevents the user from clicking through a stale lock.
+   */
+  const wsRef = useRef<WebSocket | null>(null);
+  const expireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearLocalExpireTimer() {
+    if (expireTimerRef.current !== null) {
+      clearTimeout(expireTimerRef.current);
+      expireTimerRef.current = null;
+    }
+  }
+
+  function armLocalExpireTimer(expiresAt: number | undefined) {
+    clearLocalExpireTimer();
+    if (typeof expiresAt !== "number") return;
+    // Fire 1s before server TTL so the UI feels “snappy” — server is still
+    // authoritative; this is a UX hint only.
+    const ms = Math.max(0, expiresAt - Date.now() - 1000);
+    expireTimerRef.current = setTimeout(() => {
+      setActive(false);
+      setHolderIsMe(false);
+      setError("TTL_EXPIRED");
+      expireTimerRef.current = null;
+    }, ms);
+  }
+
+  useEffect(() => {
+    if (!roomId || !stepId) return;
+    if (typeof window === "undefined") return;
+
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+    wsRef.current = ws;
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({ type: "subscribe", roomId }));
+    });
+    ws.addEventListener("message", (ev) => {
+      try {
+        const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+        if (msg.type === "liveFrameTakeoverState" && msg.stepId === stepId) {
+          const nextActive = Boolean(msg.active && msg.mode === "interactive");
+          setActive(nextActive);
+          // We don't have a reliable connection-id echo client-side; treat
+          // the holder as "me" while our last ack was an acquire and
+          // server-state is still active. The optimistic flag flips back
+          // off whenever an `active:false` lands.
+          if (!msg.active) {
+            setHolderIsMe(false);
+            clearLocalExpireTimer();
+          } else if (typeof msg.expiresAt === "number") {
+            armLocalExpireTimer(msg.expiresAt);
+          }
+        }
+        if (msg.type === "liveFrameTakeoverAck" && msg.stepId === stepId) {
+          setError(null);
+          if (msg.mode === "interactive" || msg.mode === "passive") {
+            setHolderIsMe(true);
+            armLocalExpireTimer(msg.expiresAt);
+          } else if (msg.mode === "release") {
+            setHolderIsMe(false);
+            clearLocalExpireTimer();
+          }
+        }
+        if (msg.type === "liveFrameTakeoverError" && msg.stepId === stepId) {
+          setError(String(msg.code || "unknown"));
+        }
+      } catch { /* best-effort */ }
+    });
+    ws.addEventListener("close", () => { wsRef.current = null; });
+
+    return () => {
+      clearLocalExpireTimer();
+      try { ws.close(); } catch { /* noop */ }
+      wsRef.current = null;
+    };
+  }, [roomId, stepId]);
+
+  function request(mode: "interactive" | "release") {
+    if (!roomId || !stepId) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    setError(null);
+    ws.send(JSON.stringify({ type: "liveFrameTakeover", roomId, stepId, mode }));
+  }
+
+  return { active, holderIsMe, error, request };
+}
+
+export function LiveBrowserFrame({ src, replayUrl, roomId, stepId }: Props) {
   const visible = useVisibility();
+  const { active, holderIsMe, error, request } = useTakeover(roomId, stepId);
+  // Boss drives the iframe only if he's the active holder. Other tabs (or
+  // cross-user) see active=true but holderIsMe=false → still passive.
+  const interactive = active && holderIsMe;
+
   return (
     <div
       className="w-full rounded-md overflow-hidden"
       style={{
         background: "rgba(0,0,0,0.5)",
-        border: "1px solid rgba(201,163,64,0.2)",
+        // Phase 5 PR-B — red border while Boss is in the seat to make it
+        // unambiguous which surface receives clicks.
+        border: interactive
+          ? "1px solid rgba(220,38,38,0.8)"
+          : "1px solid rgba(201,163,64,0.2)",
         aspectRatio: "16 / 10",
         position: "relative",
       }}
@@ -82,9 +196,9 @@ export function LiveBrowserFrame({ src, replayUrl }: Props) {
             width: "100%",
             height: "100%",
             border: 0,
-            // BRO1 R436 must-fix #4.2: passive view. Boss can watch but
-            // not interact. Takeover \u2192 Phase 5.
-            pointerEvents: "none",
+            // Phase 4 default: passive view. Phase 5 PR-B flips to 'auto'
+            // ONLY for the active holder. Other observers stay passive.
+            pointerEvents: interactive ? "auto" : "none",
           }}
         />
       ) : (
@@ -98,6 +212,73 @@ export function LiveBrowserFrame({ src, replayUrl }: Props) {
           </div>
         </div>
       )}
+
+      {/* Phase 5 PR-B — takeover controls + state badge. */}
+      {roomId && stepId && (
+        <div className="absolute top-1 left-1 flex items-center gap-1.5">
+          {interactive ? (
+            <>
+              <span
+                className="text-[9px] font-medium uppercase tracking-wide rounded px-1.5 py-0.5"
+                style={{ background: "rgba(220,38,38,0.85)", color: "white" }}
+              >
+                Босс управляет — Лука ждёт
+              </span>
+              <button
+                type="button"
+                onClick={() => request("release")}
+                className="text-[9px] rounded px-1.5 py-0.5 hover:bg-black/40 text-white/90 border border-white/20"
+                aria-label="Вернуть управление агенту"
+              >
+                вернуть управление
+              </button>
+            </>
+          ) : active ? (
+            // BRO1 R443 NICE-3 — the lock is held but not by this tab.
+            // Until Phase 6+ adds a multi-user shared-room model, the only
+            // realistic case is “Boss has the same step open in another
+            // tab”, so the copy is explicit about that.
+            <span
+              className="text-[9px] rounded px-1.5 py-0.5"
+              style={{
+                background: "rgba(220,38,38,0.55)",
+                color: "white",
+                border: "1px solid rgba(220,38,38,0.7)",
+              }}
+              title="Другая вкладка уже управляет из вашего браузера"
+            >
+              другая вкладка управляет
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => request("interactive")}
+              className="text-[9px] rounded px-1.5 py-0.5 hover:bg-black/40 text-[#C9A340] border border-[#C9A340]/40 flex items-center gap-1"
+              aria-label="Взять управление"
+            >
+              <Hand className="w-3 h-3" />
+              взять управление
+            </button>
+          )}
+          {error && (
+            <span
+              className="text-[9px] rounded px-1.5 py-0.5"
+              style={{ background: "rgba(220,38,38,0.55)", color: "white" }}
+              title={error}
+            >
+              {error === "RATE_LIMITED" ? "слишком часто" :
+               error === "STEP_FINISHED" ? "шаг завершён" :
+               error === "STEP_NOT_FOUND" ? "шаг не найден" :
+               error === "ROOM_NOT_FOUND" ? "комната не найдена" :
+               error === "LOCKED" ? "занято" :
+               error === "NOT_HOLDER" ? "не ваш захват" :
+               error === "TTL_EXPIRED" ? "время истекло" :
+               "ошибка"}
+            </span>
+          )}
+        </div>
+      )}
+
       {replayUrl && (
         <a
           href={replayUrl}
