@@ -1977,11 +1977,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Returns tool_activity_log rows for a room since `since` (ms epoch), capped
   // at `limit` (default 200, max 500). UI polls every 2s when sidebar is open.
   // Ownership: user must own the room.
+  //
+  // BRO1 hot-fix: per-user per-endpoint rate-limit 60/min. Default poll cadence
+  // is one request every 2s = 30/min, so a single open tab is comfortably under.
+  // Two simultaneous tabs (60/min) hit the cap and queue — acceptable.
   app.get("/api/rooms/:id/tool-activity", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.params.id);
     if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad room id" });
+    if (!checkAuthRateLimit(`tool-activity:${userId}:${roomId}`, 60, 60_000)) {
+      res.setHeader("Retry-After", "60");
+      return res.status(429).json({ error: "rate_limited", code: "RATE_LIMITED", detail: "60 req/min per room" });
+    }
     // Ownership check via existing getRoomMessages contract (returns null if not owned).
     try {
       const own = await pool.query(

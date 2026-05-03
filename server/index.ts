@@ -31,6 +31,7 @@ import { closeQueues } from "./queue";
 import { closeRedisClient } from "./lib/redis";
 import { getWss } from "./ws";
 import { startMeetingReaper, type ReaperHandle } from "./lib/meeting-reaper";
+import { startToolActivityReaper, type ToolActivityReaperHandle } from "./lib/tool-activity-reaper";
 import { getMeetingEventBus } from "./lib/meeting-event-bus-registry";
 import { assertLucaEnvConsistency, readLucaEnv } from "./lib/luca/env";
 import { startApprovalExpireWorker } from "./lib/luca-approvals/expire-worker";
@@ -446,9 +447,12 @@ void runInitLoop();
   // flag is off, this is a no-op (logs once and returns a no-op handle).
   // The handle's interval is unref'd so it never holds the event loop open.
   let meetingReaper: ReaperHandle | null = null;
+  let toolActivityReaper: ToolActivityReaperHandle | null = null;
   try {
     const { pool } = await import("./storage");
     meetingReaper = startMeetingReaper({ pool, eventBus: getMeetingEventBus() });
+    // BRO1 hot-fix: TTL reaper for tool_activity_log (default 30d, every 6h)
+    toolActivityReaper = startToolActivityReaper({ pool });
   } catch (err) {
     logger.error({ err: (err as Error).message }, "failed to start meeting reaper");
   }
@@ -500,6 +504,13 @@ void runInitLoop();
       meetingReaper?.stop();
     } catch (err) {
       logger.warn({ err: (err as Error).message }, '[shutdown] meeting reaper stop error');
+    }
+
+    // 3c'. Stop tool-activity TTL reaper
+    try {
+      toolActivityReaper?.stop();
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] tool-activity reaper stop error');
     }
 
     // 4. Close Postgres pool (the `pool` export from storage.ts)
