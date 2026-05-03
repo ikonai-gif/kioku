@@ -673,6 +673,20 @@ export async function initDb() {
   // Demo migration: verifies the migration-guard infrastructure works end-to-end.
   // Uses a no-op SQL (SELECT 1) so it is safe to run on any database state.
   await runMigration('v2026_04_21_001_meeting_room_week3', 'SELECT 1;');
+
+  // R-luca-trust-growth (2026-05-02): backfill trust_level for existing
+  // relationships that accumulated interactions before the trust-growth bug
+  // was fixed. Same +0.005/turn rate as the live increment in
+  // incrementInteraction(). LEAST/GREATEST keeps existing higher values
+  // intact and clamps at 1.0. Idempotent: running twice produces the same
+  // result because we GREATEST-merge with current trust_level.
+  await runMigration(
+    'v2026_05_02_001_backfill_trust_level',
+    `UPDATE agent_relationships
+        SET trust_level = LEAST(1.0, GREATEST(trust_level, interaction_count * 0.01))
+      WHERE interaction_count > 0
+        AND trust_level < LEAST(1.0, interaction_count * 0.01);`
+  );
 }
 
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────
@@ -2572,12 +2586,23 @@ export class Storage implements IStorage {
   }
 
   async incrementInteraction(agentId: number, userId: number): Promise<void> {
+    // R-luca-trust-growth (2026-05-02): trust_level was previously read-only
+    // in code — it stayed at 0 forever, so the partner status board always
+    // displayed `trust: new` no matter how many turns happened. We now grow
+    // trust by +0.01 per turn alongside the existing interaction_count++,
+    // capped at 1.0. Matches the +0.01 familiarity growth at
+    // deliberation.ts:6758 and structured-deliberation.ts:682.
+    // Threshold map (routes.ts:3781):
+    //   >0.7 "high", >0.3 "moderate", else "new".
+    // → "moderate" at ~30 turns, "high" at ~70 turns. Slow on purpose so
+    //   trust is earned over time, not auto-granted on day one.
     const now = Date.now();
     await pool.query(`
-      INSERT INTO agent_relationships (agent_id, user_id, interaction_count, last_interaction_at, created_at)
-      VALUES ($1, $2, 1, $3, $3)
+      INSERT INTO agent_relationships (agent_id, user_id, trust_level, familiarity, interaction_count, last_interaction_at, created_at)
+      VALUES ($1, $2, 0.01, 0.01, 1, $3, $3)
       ON CONFLICT (agent_id, user_id) DO UPDATE SET
-        interaction_count = agent_relationships.interaction_count + 1,
+        interaction_count   = agent_relationships.interaction_count + 1,
+        trust_level         = LEAST(1.0, agent_relationships.trust_level + 0.01),
         last_interaction_at = $3
     `, [agentId, userId, now]);
   }
