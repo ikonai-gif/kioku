@@ -118,6 +118,58 @@ describe("agent-browser-blocklist: open-mode safety net", () => {
     expect(isHostBlocked("172.32.0.1")).toBe(false);   // outside 16-31
     expect(isHostBlocked("172.15.0.1")).toBe(false);
     expect(isHostBlocked("11.0.0.1")).toBe(false);
+    expect(isHostBlocked("100.63.0.0")).toBe(false);   // just below CGNAT
+    expect(isHostBlocked("100.128.0.0")).toBe(false);  // just above CGNAT
+    expect(isHostBlocked("169.253.0.0")).toBe(false);  // just below link-local
+    expect(isHostBlocked("169.255.0.0")).toBe(false);  // just above link-local
+  });
+
+  // BRO1 R431 must-fix — IPv4 must include CGNAT and full link-local /16.
+  it("blocks CGNAT range 100.64.0.0/10", () => {
+    expect(isHostBlocked("100.64.0.0")).toBe(true);
+    expect(isHostBlocked("100.100.50.5")).toBe(true);
+    expect(isHostBlocked("100.127.255.255")).toBe(true);
+  });
+
+  it("blocks the FULL 169.254.0.0/16 link-local range (not just .169.254)", () => {
+    expect(isHostBlocked("169.254.0.1")).toBe(true);
+    expect(isHostBlocked("169.254.169.254")).toBe(true); // AWS IMDS
+    expect(isHostBlocked("169.254.255.255")).toBe(true);
+    expect(isHostBlocked("169.254.42.42")).toBe(true);   // DNS rebinding
+  });
+
+  // BRO1 R431 must-fix — IPv6 SSRF coverage.
+  it("blocks IPv6 loopback (::1)", () => {
+    expect(isHostBlocked("::1")).toBe(true);
+    expect(isHostBlocked("[::1]")).toBe(true);
+  });
+
+  it("blocks IPv6 ULA fc00::/7", () => {
+    expect(isHostBlocked("fc00::1")).toBe(true);
+    expect(isHostBlocked("fd12:3456:789a::1")).toBe(true);
+    expect(isHostBlocked("[fd00::1]")).toBe(true);
+  });
+
+  it("blocks IPv6 link-local fe80::/10", () => {
+    expect(isHostBlocked("fe80::1")).toBe(true);
+    expect(isHostBlocked("febf::1")).toBe(true);
+    expect(isHostBlocked("[fe80::dead:beef]")).toBe(true);
+  });
+
+  it("blocks IPv6 site-local fec0::/10 (deprecated but still risky)", () => {
+    expect(isHostBlocked("fec0::1")).toBe(true);
+  });
+
+  it("blocks IPv4-mapped IPv6 (::ffff:a.b.c.d) including AWS IMDS", () => {
+    expect(isHostBlocked("::ffff:127.0.0.1")).toBe(true);
+    expect(isHostBlocked("::ffff:169.254.169.254")).toBe(true); // SSRF bypass attempt
+    expect(isHostBlocked("::ffff:10.0.0.1")).toBe(true);
+    expect(isHostBlocked("[::ffff:192.168.1.1]")).toBe(true);
+  });
+
+  it("does NOT block public IPv6 (e.g. Google DNS 2001:4860::)", () => {
+    expect(isHostBlocked("2001:4860:4860::8888")).toBe(false);
+    expect(isHostBlocked("[2606:4700:4700::1111]")).toBe(false); // Cloudflare
   });
 
   it("blocks .local / .internal / .lan suffixes", () => {

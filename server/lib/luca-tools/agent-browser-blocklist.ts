@@ -72,19 +72,66 @@ const AUTH_HOSTS: readonly string[] = [
   "duosecurity.com", "*.duosecurity.com",
 ];
 
-/** Private/internal — should never be reachable from a managed browser. */
+/**
+ * Private/internal — should never be reachable from a managed browser.
+ *
+ * BRO1 R431 hot-fix: extended IPv4 + full IPv6 coverage.
+ *
+ * IPv4 ranges (in addition to base RFC-1918):
+ *   - 127.0.0.0/8       loopback
+ *   - 10.0.0.0/8        private
+ *   - 192.168.0.0/16    private
+ *   - 172.16.0.0/12     private
+ *   - 100.64.0.0/10     CGNAT (Tailscale, ngrok, etc.) — BRO1 must-fix
+ *   - 169.254.0.0/16    link-local entire range — not just .169.254     — BRO1 must-fix
+ *   - 0.0.0.0/8         "this network"
+ *
+ * IPv6 ranges (BRO1 must-fix — SSRF on cloud-metadata IPv6 is real):
+ *   - ::1               loopback
+ *   - ::ffff:a.b.c.d    IPv4-mapped — strip wrapper before checking
+ *   - fc00::/7          ULA (unique local address)
+ *   - fe80::/10         link-local
+ *   - fec0::/10         deprecated site-local (kept for safety)
+ *   - bracketed-host    [::1] / [fe80::1] forms accepted by URL parser
+ */
 const INTERNAL_HOST_PATTERNS: readonly RegExp[] = [
   /^localhost$/i,
-  /^127(\.\d+){3}$/,                                        // 127.0.0.0/8
+  // ── IPv4 ranges ──
+  /^127(\.\d+){3}$/,                                        // 127.0.0.0/8 loopback
   /^10(\.\d+){3}$/,                                         // 10.0.0.0/8
   /^192\.168(\.\d+){2}$/,                                   // 192.168.0.0/16
   /^172\.(1[6-9]|2\d|3[01])(\.\d+){2}$/,                    // 172.16.0.0/12
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])(\.\d+){2}$/,      // 100.64.0.0/10 CGNAT
+  /^169\.254(\.\d+){2}$/,                                   // 169.254.0.0/16 link-local (entire)
   /^0(\.\d+){3}$/,                                          // 0.0.0.0/8
+  // ── IPv6 ranges (host may be bracketed [::1] or bare ::1) ──
+  /^\[?::1\]?$/i,                                            // ::1 loopback
+  /^\[?::ffff:[0-9a-f.:]+\]?$/i,                             // IPv4-mapped (defense-in-depth; stripping below also catches it)
+  /^\[?f[cd][0-9a-f]{2}:/i,                                  // fc00::/7 ULA
+  /^\[?fe[89ab][0-9a-f]:/i,                                  // fe80::/10 link-local
+  /^\[?fec[0-9a-f]:/i,                                       // fec0::/10 deprecated site-local
+  // ── hostname suffixes ──
   /\.local$/i,
   /\.internal$/i,
   /\.lan$/i,
   /^kioku-postgres\.railway\.internal$/i,                   // explicit our own
 ];
+
+/**
+ * Strip [...] brackets and IPv4-mapped IPv6 wrapper ("::ffff:1.2.3.4")
+ * so the underlying IPv4 string is re-checked against IPv4 regexes.
+ * BRO1 R431: prevents an attacker from passing 169.254.169.254 as
+ * `[::ffff:169.254.169.254]` to bypass the IPv4-only checks.
+ */
+function normalizeHost(host: string): string {
+  let h = host.trim().toLowerCase();
+  // Strip surrounding brackets used in URL parsing for IPv6 hosts.
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  // IPv4-mapped: ::ffff:1.2.3.4 → 1.2.3.4 (let IPv4 regexes catch it).
+  const v4mapped = h.match(/^::ffff:([0-9.]+)$/i);
+  if (v4mapped) return v4mapped[1];
+  return h;
+}
 
 const BLOCKED_DOMAIN_PATTERNS: readonly string[] = [
   ...METADATA_HOSTS,
@@ -98,13 +145,16 @@ const BLOCKED_DOMAIN_PATTERNS: readonly string[] = [
  */
 export function isHostBlocked(host: string): boolean {
   if (!host) return true;
-  // Internal/private network checks (regex-based, IP ranges + .local)
+  // Normalize: strip brackets, unwrap IPv4-mapped IPv6 so IPv4 regexes catch it.
+  const normalized = normalizeHost(host);
+  // Internal/private network checks — against BOTH original (for IPv6 forms
+  // like ::1, fc00::/7) and normalized (for unwrapped IPv4 inside ::ffff:).
   for (const re of INTERNAL_HOST_PATTERNS) {
-    if (re.test(host)) return true;
+    if (re.test(host) || re.test(normalized)) return true;
   }
   // Domain-pattern checks (banking, metadata, auth)
   for (const p of BLOCKED_DOMAIN_PATTERNS) {
-    if (domainMatches(host, p)) return true;
+    if (domainMatches(normalized, p)) return true;
   }
   return false;
 }
