@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { FileLightbox, IconForContentType } from "./FileLightbox";
+import { LiveBrowserFrame } from "./LiveBrowserFrame";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -27,7 +28,12 @@ export interface ActivityMedia {
   signedUrl: string;
   signedExpiresAt: number;
   contentType: string;
-  kind: "screenshot" | "file" | "video";
+  /**
+   * Phase 4 (R-luca-computer-ui): added 'live_frame' for ephemeral
+   * Browserbase live debugger iframes. Mounted only while the agent_browser
+   * tool activity row is `status:'running'`; removed on done/error.
+   */
+  kind: "screenshot" | "file" | "video" | "live_frame";
   sourceUrl?: string | null;
   /** Phase 3 (R-luca-computer-ui): file size for FileLightbox PDF gate. */
   sizeBytes?: number;
@@ -227,8 +233,17 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
           <ActivityCard key={r.stepId} row={r} onOpenMedia={setLightbox} />
         ))}
       </div>
-      {lightbox && (
-        <FileLightbox media={lightbox} onClose={() => setLightbox(null)} />
+      {lightbox && lightbox.kind !== "live_frame" && (
+        <FileLightbox
+          media={{
+            signedUrl: lightbox.signedUrl,
+            contentType: lightbox.contentType,
+            kind: lightbox.kind,
+            sourceUrl: lightbox.sourceUrl,
+            sizeBytes: lightbox.sizeBytes,
+          }}
+          onClose={() => setLightbox(null)}
+        />
       )}
     </div>
   );
@@ -301,56 +316,85 @@ function ActivityCard({ row, onOpenMedia }: { row: ActivityRow; onOpenMedia: (m:
           {preview}
         </div>
       )}
-      {media.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {media.map((m, i) => {
-            // Phase 3 (R-luca-computer-ui): branch by kind.
-            // - screenshot/image → 80×60 thumbnail (Phase 2 behaviour)
-            // - file (pdf/text/code) → icon-only chip with filename hint
-            const isImage = /^image\//i.test(m.contentType) || m.kind === "screenshot";
-            return (
-              <button
-                key={`${row.stepId}-m-${i}`}
-                onClick={() => onOpenMedia(m)}
-                className="rounded overflow-hidden hover:ring-1 hover:ring-[#C9A340]/60 transition"
-                style={{
-                  width: isImage ? 80 : "auto",
-                  height: 60,
-                  minWidth: 80,
-                  background: "rgba(0,0,0,0.4)",
-                  border: "1px solid rgba(201,163,64,0.2)",
-                  display: isImage ? "block" : "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: isImage ? 0 : "0 10px",
-                }}
-                aria-label={isImage ? "Показать скриншот" : "Открыть файл"}
-                title={m.sourceUrl || m.contentType || "file"}
-              >
-                {isImage ? (
-                  <img
-                    src={m.signedUrl}
-                    alt="preview"
-                    loading="lazy"
-                    className="w-full h-full object-cover"
-                    onError={(e) => {
-                      // signed URL likely expired — next poll re-signs.
-                      (e.currentTarget as HTMLImageElement).style.display = "none";
-                    }}
-                  />
-                ) : (
-                  <>
-                    <IconForContentType ct={m.contentType} className="w-4 h-4 text-[#C9A340]" />
-                    <span className="text-[10px] text-muted-foreground/80 font-mono truncate" style={{ maxWidth: 140 }}>
-                      {m.contentType.split("/").pop() || "file"}
-                    </span>
-                  </>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {(() => {
+        // Phase 4 (R-luca-computer-ui): pull live_frame OUT of the thumbnail
+        // grid — it renders as a full-width inline iframe, not a chip. Only
+        // mount it while the row is still running; on done/error the server
+        // has already torn down the BB session so the URL is dead.
+        const liveFrame =
+          row.status === "running"
+            ? media.find((m) => m.kind === "live_frame")
+            : undefined;
+        const otherMedia = media.filter((m) => m.kind !== "live_frame");
+        return (
+          <>
+            {liveFrame && (
+              <div className="mt-2">
+                <LiveBrowserFrame
+                  src={liveFrame.signedUrl}
+                  replayUrl={liveFrame.sourceUrl}
+                />
+              </div>
+            )}
+            {otherMedia.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {otherMedia.map((m, i) => {
+                  // Phase 3 (R-luca-computer-ui): branch by kind.
+                  // - screenshot/image → 80×60 thumbnail (Phase 2 behaviour)
+                  // - file (pdf/text/code) → icon-only chip with filename hint
+                  const isImage =
+                    /^image\//i.test(m.contentType) || m.kind === "screenshot";
+                  return (
+                    <button
+                      key={`${row.stepId}-m-${i}`}
+                      onClick={() => onOpenMedia(m)}
+                      className="rounded overflow-hidden hover:ring-1 hover:ring-[#C9A340]/60 transition"
+                      style={{
+                        width: isImage ? 80 : "auto",
+                        height: 60,
+                        minWidth: 80,
+                        background: "rgba(0,0,0,0.4)",
+                        border: "1px solid rgba(201,163,64,0.2)",
+                        display: isImage ? "block" : "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: isImage ? 0 : "0 10px",
+                      }}
+                      aria-label={
+                        isImage ? "Показать скриншот" : "Открыть файл"
+                      }
+                      title={m.sourceUrl || m.contentType || "file"}
+                    >
+                      {isImage ? (
+                        <img
+                          src={m.signedUrl}
+                          alt="preview"
+                          loading="lazy"
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            // signed URL likely expired — next poll re-signs.
+                            (e.currentTarget as HTMLImageElement).style.display = "none";
+                          }}
+                        />
+                      ) : (
+                        <>
+                          <IconForContentType ct={m.contentType} className="w-4 h-4 text-[#C9A340]" />
+                          <span
+                            className="text-[10px] text-muted-foreground/80 font-mono truncate"
+                            style={{ maxWidth: 140 }}
+                          >
+                            {m.contentType.split("/").pop() || "file"}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

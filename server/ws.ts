@@ -404,11 +404,24 @@ export function broadcastToolActivity(roomId: number, payload: {
     signed_url: string;
     signed_expires_at: number;
     content_type: string;
-    kind: "screenshot" | "file" | "video";
+    /**
+     * Phase 4 (R-luca-computer-ui): added 'live_frame' for ephemeral
+     * Browserbase live preview iframe URLs. live_frame entries carry an
+     * empty `storage_key` because there is no bucket file behind them.
+     */
+    kind: "screenshot" | "file" | "video" | "live_frame";
     source_url?: string | null;
     /** Phase 3 (R-luca-computer-ui): size for FileLightbox PDF gate. */
     size_bytes?: number;
   }>;
+  /**
+   * Phase 4 (R-luca-computer-ui): explicit signal that the live preview
+   * iframe should be torn down NOW (Browserbase session ended). The UI
+   * filter on this flag avoids any race between an empty `mediaUrls`
+   * payload and a still-incoming /tool-activity poll that re-introduces
+   * the live_frame.
+   */
+  closeLiveFrame?: boolean;
   timestamp: number;
 }) {
   const clients = roomClients.get(roomId);

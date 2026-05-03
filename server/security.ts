@@ -58,7 +58,12 @@ export const helmetMiddleware = helmet({
       // Phase 3 (R-luca-computer-ui): pdf.js Web Worker is loaded via Vite
       // `?worker` import — ships from `'self'` and instantiates as `blob:`.
       workerSrc:      ["'self'", "blob:"],
-      frameSrc:       ["https://js.stripe.com"],
+      // Phase 4 (R-luca-computer-ui): Browserbase live debugger iframe
+      // (`debuggerFullscreenUrl`) lives on www.browserbase.com plus various
+      // shard subdomains (live-debug-*.browserbase.com). Wildcard covers
+      // all current/future shards — sandbox attribute on the <iframe>
+      // (allow-same-origin allow-scripts) provides the actual isolation.
+      frameSrc:       ["https://js.stripe.com", "https://www.browserbase.com", "https://*.browserbase.com"],
       frameAncestors: ["'none'"],
       upgradeInsecureRequests: [],
     },

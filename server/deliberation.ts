@@ -1655,12 +1655,28 @@ export async function executePartnerTool(
       startedAt: __v1aStarted,
     }).catch(() => { /* best-effort */ });
     try {
+      // Phase 4 (R-luca-computer-ui): wire live preview routing for
+      // luca_agent_browser — the handler appends a kind:'live_frame' media
+      // row + broadcasts the iframe URL the moment the BB session is up,
+      // and tears it down in `finally`. Other luca_* tools ignore this
+      // field. roomId may be null (background turns) — publisher only
+      // wires when both room and step exist.
+      const liveFramePublisher =
+        toolName === "luca_agent_browser" && roomId
+          ? {
+              roomId,
+              stepId: __v1aStepId,
+              description: __v1aDescription,
+              startedAt: __v1aStarted,
+            }
+          : undefined;
       const lucaResult = await dispatchLucaTool(toolName, toolInput, {
         userId,
         agentId,
         meetingId: null,
         turnId: null,
         ctxKey,
+        liveFramePublisher,
       });
       const resultStr = typeof lucaResult === "string" ? lucaResult : JSON.stringify(lucaResult);
       const __v1aEnded = Date.now();
