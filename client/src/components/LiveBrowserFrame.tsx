@@ -65,7 +65,35 @@ function useTakeover(roomId: number | undefined, stepId: string | undefined) {
   const [active, setActive] = useState(false);
   const [holderIsMe, setHolderIsMe] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * BRO1 R443 NICE-5 — server echoes `expiresAt` in both Ack and State
+   * broadcasts (luca-takeover.ts TAKEOVER_TTL_MS=10min). We arm a local
+   * timer so the UI flips back to “inactive” slightly BEFORE the server
+   * eviction — prevents the user from clicking through a stale lock.
+   */
   const wsRef = useRef<WebSocket | null>(null);
+  const expireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearLocalExpireTimer() {
+    if (expireTimerRef.current !== null) {
+      clearTimeout(expireTimerRef.current);
+      expireTimerRef.current = null;
+    }
+  }
+
+  function armLocalExpireTimer(expiresAt: number | undefined) {
+    clearLocalExpireTimer();
+    if (typeof expiresAt !== "number") return;
+    // Fire 1s before server TTL so the UI feels “snappy” — server is still
+    // authoritative; this is a UX hint only.
+    const ms = Math.max(0, expiresAt - Date.now() - 1000);
+    expireTimerRef.current = setTimeout(() => {
+      setActive(false);
+      setHolderIsMe(false);
+      setError("TTL_EXPIRED");
+      expireTimerRef.current = null;
+    }, ms);
+  }
 
   useEffect(() => {
     if (!roomId || !stepId) return;
@@ -82,19 +110,27 @@ function useTakeover(roomId: number | undefined, stepId: string | undefined) {
       try {
         const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
         if (msg.type === "liveFrameTakeoverState" && msg.stepId === stepId) {
-          setActive(Boolean(msg.active && msg.mode === "interactive"));
+          const nextActive = Boolean(msg.active && msg.mode === "interactive");
+          setActive(nextActive);
           // We don't have a reliable connection-id echo client-side; treat
           // the holder as "me" while our last ack was an acquire and
           // server-state is still active. The optimistic flag flips back
           // off whenever an `active:false` lands.
-          if (!msg.active) setHolderIsMe(false);
+          if (!msg.active) {
+            setHolderIsMe(false);
+            clearLocalExpireTimer();
+          } else if (typeof msg.expiresAt === "number") {
+            armLocalExpireTimer(msg.expiresAt);
+          }
         }
         if (msg.type === "liveFrameTakeoverAck" && msg.stepId === stepId) {
           setError(null);
           if (msg.mode === "interactive" || msg.mode === "passive") {
             setHolderIsMe(true);
+            armLocalExpireTimer(msg.expiresAt);
           } else if (msg.mode === "release") {
             setHolderIsMe(false);
+            clearLocalExpireTimer();
           }
         }
         if (msg.type === "liveFrameTakeoverError" && msg.stepId === stepId) {
@@ -105,6 +141,7 @@ function useTakeover(roomId: number | undefined, stepId: string | undefined) {
     ws.addEventListener("close", () => { wsRef.current = null; });
 
     return () => {
+      clearLocalExpireTimer();
       try { ws.close(); } catch { /* noop */ }
       wsRef.current = null;
     };
@@ -197,11 +234,20 @@ export function LiveBrowserFrame({ src, replayUrl, roomId, stepId }: Props) {
               </button>
             </>
           ) : active ? (
+            // BRO1 R443 NICE-3 — the lock is held but not by this tab.
+            // Until Phase 6+ adds a multi-user shared-room model, the only
+            // realistic case is “Boss has the same step open in another
+            // tab”, so the copy is explicit about that.
             <span
               className="text-[9px] rounded px-1.5 py-0.5"
-              style={{ background: "rgba(0,0,0,0.55)", color: "rgba(255,255,255,0.85)" }}
+              style={{
+                background: "rgba(220,38,38,0.55)",
+                color: "white",
+                border: "1px solid rgba(220,38,38,0.7)",
+              }}
+              title="Другая вкладка уже управляет из вашего браузера"
             >
-              кто-то уже управляет
+              другая вкладка управляет
             </span>
           ) : (
             <button
@@ -222,7 +268,11 @@ export function LiveBrowserFrame({ src, replayUrl, roomId, stepId }: Props) {
             >
               {error === "RATE_LIMITED" ? "слишком часто" :
                error === "STEP_FINISHED" ? "шаг завершён" :
+               error === "STEP_NOT_FOUND" ? "шаг не найден" :
+               error === "ROOM_NOT_FOUND" ? "комната не найдена" :
                error === "LOCKED" ? "занято" :
+               error === "NOT_HOLDER" ? "не ваш захват" :
+               error === "TTL_EXPIRED" ? "время истекло" :
                "ошибка"}
             </span>
           )}

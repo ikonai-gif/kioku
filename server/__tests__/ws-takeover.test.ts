@@ -86,6 +86,15 @@ describe("ws-takeover — source pin", () => {
     expect(src).toMatch(/heldTakeoverSteps/);
     expect(src).toMatch(/releaseTakeover\s*\(/);
   });
+
+  it("step lookup includes AND user_id check (BRO1 R443 NICE-1 defense-in-depth)", () => {
+    // Gate 4 SELECT must constrain user_id explicitly. The legacy-NULL
+    // tolerance is intentional (pre-Phase-2 rows have user_id NULL); Gate 2
+    // already covers ownership in that case.
+    expect(src).toMatch(
+      /SELECT\s+room_id,\s+status\s+FROM\s+tool_activity_log[\s\S]*?WHERE\s+step_id\s*=\s*\$1[\s\S]*?AND\s*\(\s*user_id\s+IS\s+NULL\s+OR\s+user_id\s*=\s*\$2\s*\)/i,
+    );
+  });
 });
 
 // ─── Behavioural layer ───────────────────────────────────────────────────
@@ -98,6 +107,8 @@ interface FakeStep {
   stepId: string;
   roomId: number;
   status: "running" | "done" | "error";
+  /** Phase 5 PR-B NICE-1 — mirror of tool_activity_log.user_id (nullable). */
+  userId: number | null;
 }
 
 interface FakeRoom {
@@ -133,7 +144,12 @@ function makeHandler(opts: {
       return { ok: false, code: "RATE_LIMITED" };
     }
 
-    const step = opts.steps.find((s) => s.stepId === args.stepId);
+    // Mirrors the tightened SQL: `AND (user_id IS NULL OR user_id = $2)`.
+    const step = opts.steps.find(
+      (s) =>
+        s.stepId === args.stepId &&
+        (s.userId === null || s.userId === args.userId),
+    );
     if (!step || step.roomId !== args.roomId) {
       return { ok: false, code: "STEP_NOT_FOUND" };
     }
@@ -173,8 +189,18 @@ describe("ws-takeover — behavioural", () => {
   const USER_A = 1;
   const USER_B = 2;
   const ROOM_A = { id: 10, userId: USER_A };
-  const STEP_RUNNING = { stepId: "s-run", roomId: 10, status: "running" as const };
-  const STEP_DONE = { stepId: "s-done", roomId: 10, status: "done" as const };
+  const STEP_RUNNING = {
+    stepId: "s-run", roomId: 10, status: "running" as const, userId: USER_A,
+  };
+  const STEP_DONE = {
+    stepId: "s-done", roomId: 10, status: "done" as const, userId: USER_A,
+  };
+  const STEP_LEGACY_NULL = {
+    stepId: "s-legacy", roomId: 10, status: "running" as const, userId: null,
+  };
+  const STEP_OTHER_OWNER = {
+    stepId: "s-other", roomId: 10, status: "running" as const, userId: USER_B,
+  };
 
   it("rejects ROOM_NOT_FOUND when user does not own the room", async () => {
     const handle = makeHandler({ rooms: [ROOM_A], steps: [STEP_RUNNING] });
@@ -294,5 +320,35 @@ describe("ws-takeover — behavioural", () => {
       expect(r.state.userId).toBe(USER_A);
       expect(r.state.lockedByConnectionId).toBe("c-A");
     }
+  });
+
+  it("NICE-1: rejects step owned by another user (defense-in-depth)", async () => {
+    // Even if Gate 2 somehow let through (e.g. shared room future), Gate 4
+    // SQL filter on user_id must prevent cross-user step lookup.
+    const handle = makeHandler({
+      rooms: [ROOM_A, { id: 10, userId: USER_B }], // pretend B also "owns" room
+      steps: [STEP_OTHER_OWNER],
+    });
+    const r = await handle({
+      userId: USER_A, connectionId: "c-A", roomId: 10,
+      stepId: "s-other", mode: "interactive",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("STEP_NOT_FOUND");
+  });
+
+  it("NICE-1: legacy NULL user_id rows still pass (Gate 2 covers ownership)", async () => {
+    // Pre-Phase-2 rows have user_id=NULL. They must continue to work
+    // because Gate 2 (assertRoomOwnership) already proved the user owns the
+    // room, and step.room_id=roomId is checked separately.
+    const handle = makeHandler({
+      rooms: [ROOM_A],
+      steps: [STEP_LEGACY_NULL],
+    });
+    const r = await handle({
+      userId: USER_A, connectionId: "c-A", roomId: 10,
+      stepId: "s-legacy", mode: "interactive",
+    });
+    expect(r.ok).toBe(true);
   });
 });

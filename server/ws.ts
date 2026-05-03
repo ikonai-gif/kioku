@@ -282,12 +282,21 @@ export function setupWebSocket(httpServer: Server) {
             return;
           }
 
-          // Gate 4 — step must exist for this room and be running.
+          // Gate 4 — step must exist for this room AND be running. We tighten
+          // the SELECT with `AND (user_id IS NULL OR user_id = $2)` per BRO1
+          // R443 NICE-1: defense-in-depth so a step lookup can never even
+          // return a row for a different owner. Gate 2 (assertRoomOwnership)
+          // already proves user→room, and Phase 4 ensured step→room, so this
+          // is a belt-and-suspenders guard. Legacy rows with NULL user_id
+          // (pre-Phase-2) still pass — Gate 2 is sufficient there.
           let stepRow: { room_id: number; status: string } | undefined;
           try {
             const r = await pool.query<{ room_id: number; status: string }>(
-              `SELECT room_id, status FROM tool_activity_log WHERE step_id = $1 LIMIT 1`,
-              [stepId],
+              `SELECT room_id, status FROM tool_activity_log
+               WHERE step_id = $1
+                 AND (user_id IS NULL OR user_id = $2)
+               LIMIT 1`,
+              [stepId, userId],
             );
             stepRow = r.rows[0];
           } catch (err) {
