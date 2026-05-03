@@ -715,6 +715,13 @@ export interface ToolActivityMedia {
   contentType: string;
   kind: "screenshot" | "file" | "video";
   sourceUrl?: string | null;
+  /**
+   * Phase 3 (R-luca-computer-ui): file size in bytes (when known at write
+   * time — e.g. workspace_save knows buf.length). Used by FileLightbox to
+   * gate PDF inline-render at MAX_PDF_BYTES. Optional — unknown values fall
+   * back to fetch-time `Content-Length`.
+   */
+  sizeBytes?: number;
 }
 
 export interface ToolActivityRecord {
@@ -890,6 +897,7 @@ function parseMediaCol(raw: unknown): ToolActivityMedia[] {
       contentType: String(m.content_type || "application/octet-stream"),
       kind: (m.kind === "file" || m.kind === "video" ? m.kind : "screenshot") as ToolActivityMedia["kind"],
       sourceUrl: m.source_url ? String(m.source_url) : null,
+      sizeBytes: Number.isFinite(Number(m.size_bytes)) && Number(m.size_bytes) > 0 ? Number(m.size_bytes) : undefined,
     }));
 }
 

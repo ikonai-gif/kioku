@@ -55,6 +55,9 @@ export const helmetMiddleware = helmet({
       // explicit wss:// origin avoids "Refused to connect" errors on hardened Chromium builds.
       connectSrc:     ["'self'", "https://usekioku.com", "wss://usekioku.com", "https://api.openai.com", "https://js.stripe.com"],
       mediaSrc:       ["'self'", "blob:", "data:", "https:"],
+      // Phase 3 (R-luca-computer-ui): pdf.js Web Worker is loaded via Vite
+      // `?worker` import — ships from `'self'` and instantiates as `blob:`.
+      workerSrc:      ["'self'", "blob:"],
       frameSrc:       ["https://js.stripe.com"],
       frameAncestors: ["'none'"],
       upgradeInsecureRequests: [],

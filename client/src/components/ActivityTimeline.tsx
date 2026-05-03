@@ -13,10 +13,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, X, ExternalLink } from "lucide-react";
+import { Activity, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
+import { FileLightbox, IconForContentType } from "./FileLightbox";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -28,6 +29,8 @@ export interface ActivityMedia {
   contentType: string;
   kind: "screenshot" | "file" | "video";
   sourceUrl?: string | null;
+  /** Phase 3 (R-luca-computer-ui): file size for FileLightbox PDF gate. */
+  sizeBytes?: number;
 }
 
 export interface ActivityRow {
@@ -225,7 +228,7 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
         ))}
       </div>
       {lightbox && (
-        <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
+        <FileLightbox media={lightbox} onClose={() => setLightbox(null)} />
       )}
     </div>
   );
@@ -300,102 +303,58 @@ function ActivityCard({ row, onOpenMedia }: { row: ActivityRow; onOpenMedia: (m:
       )}
       {media.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {media.map((m, i) => (
-            <button
-              key={`${row.stepId}-m-${i}`}
-              onClick={() => onOpenMedia(m)}
-              className="block rounded overflow-hidden hover:ring-1 hover:ring-[#C9A340]/60 transition"
-              style={{
-                width: 80,
-                height: 60,
-                background: "rgba(0,0,0,0.4)",
-                border: "1px solid rgba(201,163,64,0.2)",
-              }}
-              aria-label="Показать скриншот"
-              title={m.sourceUrl || "screenshot"}
-            >
-              <img
-                src={m.signedUrl}
-                alt="agent_browser screenshot"
-                loading="lazy"
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  // signed URL likely expired — next poll re-signs.
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
+          {media.map((m, i) => {
+            // Phase 3 (R-luca-computer-ui): branch by kind.
+            // - screenshot/image → 80×60 thumbnail (Phase 2 behaviour)
+            // - file (pdf/text/code) → icon-only chip with filename hint
+            const isImage = /^image\//i.test(m.contentType) || m.kind === "screenshot";
+            return (
+              <button
+                key={`${row.stepId}-m-${i}`}
+                onClick={() => onOpenMedia(m)}
+                className="rounded overflow-hidden hover:ring-1 hover:ring-[#C9A340]/60 transition"
+                style={{
+                  width: isImage ? 80 : "auto",
+                  height: 60,
+                  minWidth: 80,
+                  background: "rgba(0,0,0,0.4)",
+                  border: "1px solid rgba(201,163,64,0.2)",
+                  display: isImage ? "block" : "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: isImage ? 0 : "0 10px",
                 }}
-              />
-            </button>
-          ))}
+                aria-label={isImage ? "Показать скриншот" : "Открыть файл"}
+                title={m.sourceUrl || m.contentType || "file"}
+              >
+                {isImage ? (
+                  <img
+                    src={m.signedUrl}
+                    alt="preview"
+                    loading="lazy"
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      // signed URL likely expired — next poll re-signs.
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                  />
+                ) : (
+                  <>
+                    <IconForContentType ct={m.contentType} className="w-4 h-4 text-[#C9A340]" />
+                    <span className="text-[10px] text-muted-foreground/80 font-mono truncate" style={{ maxWidth: 140 }}>
+                      {m.contentType.split("/").pop() || "file"}
+                    </span>
+                  </>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-// Phase 2 (R-luca-computer-ui): basic lightbox for inline screenshots.
-// Phase 3 will replace this with the shared FileLightbox supporting PDF / code.
-function MediaLightbox({ media, onClose }: { media: ActivityMedia; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+// Phase 3 (R-luca-computer-ui): legacy MediaLightbox replaced by FileLightbox
+// in `./FileLightbox.tsx`, which supports image / pdf / code / fallback.
 
-  return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.92)" }}
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Просмотр скриншота"
-    >
-      <div
-        className="relative max-w-[95vw] max-h-[95vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <img
-          src={media.signedUrl}
-          alt="agent_browser screenshot full"
-          className="max-w-[95vw] max-h-[90vh] object-contain rounded"
-          style={{ border: "1px solid rgba(201,163,64,0.3)" }}
-        />
-        <div
-          className="absolute top-2 right-2 flex items-center gap-2"
-        >
-          {media.sourceUrl && (
-            <a
-              href={media.sourceUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-[11px] px-2.5 py-1.5 rounded-md"
-              style={{
-                background: "rgba(0,0,0,0.6)",
-                color: "#C9A340",
-                border: "1px solid rgba(201,163,64,0.3)",
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ExternalLink className="w-3 h-3" />
-              Открыть
-            </a>
-          )}
-          <button
-            onClick={onClose}
-            aria-label="Закрыть"
-            className="p-1.5 rounded-md"
-            style={{
-              background: "rgba(0,0,0,0.6)",
-              color: "#fff",
-              border: "1px solid rgba(255,255,255,0.2)",
-            }}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
