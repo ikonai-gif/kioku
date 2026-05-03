@@ -406,6 +406,8 @@ export function broadcastToolActivity(roomId: number, payload: {
     content_type: string;
     kind: "screenshot" | "file" | "video";
     source_url?: string | null;
+    /** Phase 3 (R-luca-computer-ui): size for FileLightbox PDF gate. */
+    size_bytes?: number;
   }>;
   timestamp: number;
 }) {

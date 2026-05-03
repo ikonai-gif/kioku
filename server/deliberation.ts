@@ -10,6 +10,11 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, pool, recordToolActivityStart, recordToolActivityEnd, attachToolActivityToMessage, setToolActivityMedia } from "./storage";
 import { persistAgentBrowserScreenshot, toMediaRow } from "./lib/luca-tools/agent-browser-screenshot";
+import {
+  ALLOWED_MIME as WORKSPACE_SAVE_ALLOWED_MIME,
+  persistWorkspaceSaveMedia,
+  toWorkspaceMediaRow,
+} from "./lib/luca-tools/workspace-save-media";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
 import { withOpenAIBreaker } from "./lib/openai-client";
 import { isCircuitOpenError } from "./lib/http-errors";
@@ -5473,9 +5478,55 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         const encoding = toolInput.encoding === "base64" ? "base64" : "utf8";
         const contentType = typeof toolInput.content_type === "string" ? toolInput.content_type : undefined;
         if (!path) return "workspace_save: 'path' is required and cannot be empty or absolute.";
+        // Phase 3 (R-luca-computer-ui, BRO1 R434 must-fix #2): HARD MIME allowlist.
+        // Reject html/svg/exec to prevent XSS in the FileLightbox preview.
+        if (contentType && !WORKSPACE_SAVE_ALLOWED_MIME.test(contentType)) {
+          return `workspace_save: contentType not allowed: ${contentType}. Allowed: pdf/json/text/*\u00a0(no html, svg, executable)/safe images (png, jpeg, gif, webp).`;
+        }
         try {
           const buf = encoding === "base64" ? Buffer.from(content, "base64") : Buffer.from(content, "utf8");
-          const { url } = await saveAssetAndSign(userId, agentId, path, buf, { contentType });
+          const { key, url } = await saveAssetAndSign(userId, agentId, path, buf, { contentType });
+          // Phase 3: best-effort attach an inline-renderable media row so the
+          // activity timeline renders a thumbnail/icon and opens FileLightbox.
+          if (contentType) {
+            try {
+              const persisted = await persistWorkspaceSaveMedia({
+                storageKey: key,
+                contentType,
+                sizeBytes: buf.length,
+                sourceUrl: null,
+              });
+              if (persisted) {
+                await setToolActivityMedia(__stepId, [{
+                  storageKey: persisted.storageKey,
+                  signedUrl: persisted.signedUrl,
+                  signedExpiresAt: persisted.signedExpiresAt,
+                  contentType: persisted.contentType,
+                  kind: persisted.kind,
+                  sourceUrl: persisted.sourceUrl,
+                  sizeBytes: persisted.sizeBytes,
+                }]);
+                if (roomId) {
+                  try {
+                    broadcastToolActivity(roomId, {
+                      agentId,
+                      tool: toolName,
+                      status: "running",
+                      description: __startDescription,
+                      stepId: __stepId,
+                      timestamp: Date.now(),
+                      mediaUrls: [toWorkspaceMediaRow(persisted)],
+                    });
+                  } catch { /* best-effort */ }
+                }
+              }
+            } catch (mediaErr) {
+              logger.warn(
+                { component: "deliberation", event: "workspace_save_media_persist_failed", err: String(mediaErr) },
+                "[deliberation] Phase 3 workspace_save media persist failed (non-fatal)"
+              );
+            }
+          }
           return `Saved ${buf.length} bytes to workspace: ${path}\n[Signed URL 7d: ${url}]`;
         } catch (e: any) {
           return `Workspace save failed: ${e?.message || String(e)}`;
