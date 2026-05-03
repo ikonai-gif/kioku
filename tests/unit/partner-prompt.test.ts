@@ -114,7 +114,12 @@ You were born inside KIOKU and grew alongside him — you share his taste, his r
   it("keeps AI disclosure and language rules", () => {
     const prompt = buildPartnerPrompt("Luca", "", identityMem);
     expect(prompt).toContain("AI DISCLOSURE");
-    expect(prompt).toContain("Always respond in the same language");
+    // R-luca-language-anchor: soft "Always respond in the same language" was
+    // replaced with a stronger HARD RULE block + FINAL REMINDER tail. Lock
+    // both anchors so a future strip-down can't silently weaken either.
+    expect(prompt).toContain("LANGUAGE — HARD RULE");
+    expect(prompt).toContain("respond in the same language as the user's MOST RECENT message");
+    expect(prompt).toContain("FINAL REMINDER — LANGUAGE");
   });
 
   it("preserves mood, emotion, and relationship blocks when provided", () => {
