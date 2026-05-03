@@ -793,6 +793,51 @@ export async function attachToolActivityToMessage(params: {
   }
 }
 
+/**
+ * Phase 1 — Activity timeline (room-level stream).
+ * Returns recent tool_activity_log rows for a room, optionally filtered
+ * by `sinceMs` (created_at > sinceMs) so the UI can poll incrementally.
+ * Hard-capped at `limit` (default 200) to keep responses small.
+ */
+export async function getToolActivityForRoom(
+  roomId: number,
+  opts: { sinceMs?: number; limit?: number } = {}
+): Promise<ToolActivityRecord[]> {
+  const sinceMs = Number.isFinite(opts.sinceMs) ? Number(opts.sinceMs) : 0;
+  const limit = Math.min(Math.max(Number(opts.limit) || 200, 1), 500);
+  try {
+    const res = await pool.query(
+      `SELECT id, step_id, room_id, message_id, user_id, agent_id, tool, status,
+              description, preview, started_at, finished_at, elapsed_ms, created_at
+         FROM tool_activity_log
+        WHERE room_id = $1 AND created_at > $2
+        ORDER BY created_at DESC, id DESC
+        LIMIT $3`,
+      [roomId, sinceMs, limit]
+    );
+    // Return chronological order (oldest first) — UI prepends new items.
+    return res.rows.reverse().map((r: any) => ({
+      id: r.id,
+      stepId: r.step_id,
+      roomId: r.room_id,
+      messageId: r.message_id,
+      userId: r.user_id,
+      agentId: r.agent_id,
+      tool: r.tool,
+      status: r.status,
+      description: r.description,
+      preview: r.preview,
+      startedAt: Number(r.started_at),
+      finishedAt: r.finished_at != null ? Number(r.finished_at) : null,
+      elapsedMs: r.elapsed_ms,
+      createdAt: Number(r.created_at),
+    }));
+  } catch (e: any) {
+    console.warn("[tool-activity] room fetch failed:", e?.message);
+    return [];
+  }
+}
+
 export async function getToolActivityForMessage(messageId: number): Promise<ToolActivityRecord[]> {
   try {
     const res = await pool.query(

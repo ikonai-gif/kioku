@@ -4,7 +4,7 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { nextBackoffMs } from "@/lib/ws-reconnect";
 import { useAuth } from "../App";
@@ -18,6 +18,7 @@ import { ActionPanel } from "@/components/ActionPanel";
 import { ActionPanelToggle } from "@/components/ActionPanelToggle";
 import { InboxPanel, type InboxFullMessage } from "@/components/InboxPanel";
 import { LucaWorkPanel } from "@/components/LucaWorkPanel";
+import { ActivityTimeline } from "@/components/ActivityTimeline";
 import { countPending } from "@/lib/luca-board-helpers";
 import { type Artifact, type ArtifactCategory } from "@/components/ArtifactViewer";
 import { DailyBriefCard, isDailyBriefMessage } from "@/components/DailyBriefCard";
@@ -2005,6 +2006,8 @@ export default function PartnerChat() {
   const [showInboxPanel, setShowInboxPanel] = useState(false);
   const [activeInboxMessage, setActiveInboxMessage] = useState<InboxFullMessage | null>(null);
   const [showWorkPanel, setShowWorkPanel] = useState(false);
+  // Phase 1 — Activity timeline (right sidebar streaming tool_activity_log)
+  const [showActivityTimeline, setShowActivityTimeline] = useState(false);
   // Email confirm-modal state (for send_new_email / send_email_reply Luca tool calls)
   const [emailConfirmPayload, setEmailConfirmPayload] = useState<EmailConfirmPayload | null>(null);
   const [visionResult, setVisionResult] = useState<{ analysis: string; suggestions: Array<{ type: string; label: string; payload: string }>; imagePreview?: string } | null>(null);
@@ -3070,6 +3073,7 @@ export default function PartnerChat() {
       if (next) {
         setShowActionPanel(false);
         setShowInboxPanel(false);
+        setShowActivityTimeline(false);
       }
       return next;
     });
@@ -3078,7 +3082,7 @@ export default function PartnerChat() {
   const toggleInboxPanel = useCallback(() => {
     setShowInboxPanel((prev) => {
       const next = !prev;
-      if (next) { setShowActionPanel(false); setShowWorkPanel(false); }
+      if (next) { setShowActionPanel(false); setShowWorkPanel(false); setShowActivityTimeline(false); }
       return next;
     });
   }, []);
@@ -3086,7 +3090,20 @@ export default function PartnerChat() {
   const toggleActionPanel = useCallback(() => {
     setShowInboxPanel(false);
     setShowWorkPanel(false);
+    setShowActivityTimeline(false);
     setShowActionPanel((prev) => !prev);
+  }, []);
+
+  const toggleActivityTimeline = useCallback(() => {
+    setShowActivityTimeline((prev) => {
+      const next = !prev;
+      if (next) {
+        setShowActionPanel(false);
+        setShowInboxPanel(false);
+        setShowWorkPanel(false);
+      }
+      return next;
+    });
   }, []);
 
   // ── Deliberation content for Action Panel ────────────────────
@@ -3126,7 +3143,7 @@ export default function PartnerChat() {
     <div
       className="flex flex-col h-full overflow-hidden transition-all duration-300"
       style={{
-        width: !isMobile && (showActionPanel || showInboxPanel || showWorkPanel) ? "55%" : "100%",
+        width: !isMobile && (showActionPanel || showInboxPanel || showWorkPanel || showActivityTimeline) ? "55%" : "100%",
         minWidth: 0,
       }}
     >
@@ -3212,6 +3229,20 @@ export default function PartnerChat() {
           title="Inbox"
         >
           <Inbox className="w-3.5 h-3.5" />
+        </button>
+
+        {/* Phase 1 — Activity Timeline Toggle (right sidebar) */}
+        <button
+          onClick={toggleActivityTimeline}
+          className="relative flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs transition-colors"
+          style={{
+            background: showActivityTimeline ? "rgba(201,163,64,0.2)" : "rgba(255,255,255,0.05)",
+            color: showActivityTimeline ? "#C9A340" : "rgba(255,255,255,0.5)",
+            border: `1px solid ${showActivityTimeline ? "rgba(201,163,64,0.3)" : "rgba(255,255,255,0.08)"}`,
+          }}
+          title="Активность Луки"
+        >
+          <Activity className="w-3.5 h-3.5" />
         </button>
 
         {/* Artifacts / Action Panel Toggle (desktop header) */}
@@ -3930,6 +3961,35 @@ export default function PartnerChat() {
       <LucaWorkPanel
         show={true}
         onClose={() => setShowWorkPanel(false)}
+        isMobile={true}
+      />
+    )}
+
+    {/* ── Phase 1: Activity Timeline (desktop inline) ──────── */}
+    {!isMobile && showActivityTimeline && (
+      <motion.div
+        initial={{ width: 0, opacity: 0 }}
+        animate={{ width: "45%", opacity: 1 }}
+        exit={{ width: 0, opacity: 0 }}
+        transition={{ duration: 0.3, ease: "easeInOut" }}
+        className="h-full overflow-hidden flex-shrink-0"
+        style={{ maxWidth: "45%", minWidth: 0, borderLeft: "1px solid rgba(255,255,255,0.06)" }}
+      >
+        <ActivityTimeline
+          roomId={partnerRoomId ?? null}
+          show={true}
+          onClose={() => setShowActivityTimeline(false)}
+          isMobile={false}
+        />
+      </motion.div>
+    )}
+
+    {/* ── Phase 1: Activity Timeline (mobile overlay) ──────── */}
+    {isMobile && showActivityTimeline && (
+      <ActivityTimeline
+        roomId={partnerRoomId ?? null}
+        show={true}
+        onClose={() => setShowActivityTimeline(false)}
         isMobile={true}
       />
     )}
