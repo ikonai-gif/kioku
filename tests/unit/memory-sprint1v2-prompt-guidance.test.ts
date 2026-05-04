@@ -18,7 +18,9 @@ const deliberationSource = readFileSync(
 );
 
 function extractSelfAccountabilityBlock(src: string): string {
-  const start = src.indexOf("SELF-ACCOUNTABILITY (1):");
+  // R455: section was renumbered (1)→(2) when luca_memory_schema entry
+  // was added alongside `remember` in the SELF-ACCOUNTABILITY block.
+  const start = src.indexOf("SELF-ACCOUNTABILITY (2):");
   if (start === -1) return "";
   const end = src.indexOf("OUTREACH (", start);
   if (end === -1) return src.slice(start, start + 4000);

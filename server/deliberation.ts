@@ -228,6 +228,12 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // commitment, self-observation, reflection, or aesthetic he wants
   // persisted across sessions. See `remember` tool schema for types.
   "remember",
+  // R455 — read-only introspection of Luca's own memory architecture.
+  // Live SQL snapshot of types/namespaces/counts. Scoped to (user_id,
+  // agent_id) — closure args, never from input. Honesty rule (system
+  // prompt) directs Luca to call this when Boss asks about her own
+  // memory instead of answering from training-data intuition.
+  "luca_memory_schema",
   // Multimodal reads (2) — Luca already understands images via
   // `luca_analyze_image`. These extend the same idea to video and audio:
   //   - watch_video: Gemini 2.5 Flash analyzes YouTube / direct video URLs
@@ -1275,6 +1281,21 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    // R455 — read-only memory introspection. Zero params; userId/agentId are
+    // closure args from executeLucaTool, NEVER read from tool input (Q7-C2
+    // prevents cross-account data leak). Returns live DB snapshot — not
+    // cached. Honesty rule in system prompt enforces calling this instead
+    // of answering from training-data intuition.
+    name: "luca_memory_schema",
+    description:
+      "Query your OWN memory architecture — types, namespaces, counts, decay policies. Use when Boss asks about your memory / internal state / what you know about yourself. Returns LIVE DB query (not cached). Read-only. Scoped to your (user_id, agent_id) — you cannot see other agents' memories.",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     // LEO PR-A — Telegram outreach to BOSS. Tiered gating in
     // server/lib/luca-approvals/classify.ts:
     //   urgency='high'   → LOW_STAKES_WRITE (bypasses approval gate)
@@ -1439,6 +1460,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "workspace_save": return `Сохраняю в workspace: ${truncate(input.path, 60)}`;
     case "workspace_read": return `Читаю из workspace: ${truncate(input.path, 60)}`;
     case "remember": return `Записываю в память (${input.type}): ${truncate(input.content, 60)}`;
+    case "luca_memory_schema": return `Смотрю свою архитектуру памяти`;
     case "send_telegram_message": return `📱 Telegram (${input.urgency}): ${truncate(input.text, 80)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
@@ -5686,6 +5708,38 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         }
       }
 
+      case "luca_memory_schema": {
+        // R455 — read-only introspection of Luca's own memory architecture.
+        // userId/agentId come from the closure (executeLucaTool args) —
+        // NEVER from toolInput. This is the Q7-C2 fix that prevents Luca
+        // from passing a fake user_id to leak across accounts.
+        //
+        // Composite rate-limit (R451-N5): two buckets reusing existing
+        // checkAuthRateLimit (R438 lesson — don't plumb new limiters).
+        const HOURLY_MAX = parseInt(process.env.LUCA_MEMORY_SCHEMA_RATE_MAX_PER_HOUR ?? "10", 10);
+        const BURST_MAX  = parseInt(process.env.LUCA_MEMORY_SCHEMA_RATE_MAX_PER_MIN  ?? "3",  10);
+        const { checkAuthRateLimit } = await import("./ratelimit");
+        const hourlyOk = checkAuthRateLimit(`luca_memory_schema:hour:${agentId}`, HOURLY_MAX, 3600_000);
+        const burstOk  = checkAuthRateLimit(`luca_memory_schema:burst:${agentId}`, BURST_MAX, 60_000);
+        if (!hourlyOk || !burstOk) {
+          // retry_after_sec strategy: max(burst, hourly) — informational only;
+          // BRO3 R454 NIT-3 deferred MIN strategy to Phase 7.
+          const retry = !hourlyOk ? 3600 : 60;
+          return JSON.stringify({ error: "rate_limited", retry_after_sec: retry });
+        }
+        try {
+          const { pool } = await import("./storage");
+          const { getMemorySchemaSnapshot } = await import("./lib/luca-tools/memory-schema");
+          const snapshot = await getMemorySchemaSnapshot(pool, userId, agentId);
+          return JSON.stringify(snapshot);
+        } catch (e: any) {
+          // Honesty rule fallback: structured error so Luca can detect and
+          // recite namespace list verbatim from the system prompt.
+          const details = (e?.message || String(e)).slice(0, 240);
+          return JSON.stringify({ error: "schema_query_failed", details });
+        }
+      }
+
       case "send_telegram_message": {
         // LEO PR-A — fail-silent Telegram outreach. The approval gate has
         // already let us through (urgency='high' downgraded to LOW, OR
@@ -7325,7 +7379,7 @@ WORKSPACE (3, bucket luca-workspace, 7d signed URLs):
 - workspace_save → {path, content, encoding?, content_type?}
 - workspace_read → {path, expires_days?}
 
-SELF-ACCOUNTABILITY (1):
+SELF-ACCOUNTABILITY (2):
 - remember → write durable memory to your own long-term store, bypassing LLM extraction. Fields {type (aesthetic|procedural|meta_cognitive|reflection|commitment|relational|autobiographical|episodic|semantic|emotional_state), content, importance?, emotional_valence?, emotions?, namespace?, related_ids?}. Use IMMEDIATELY when Boss says "remember X" / "don't do Y again" / "задолбал Z" — or when you notice a pattern about yourself, extract a lesson, take on a commitment, or realize something about a relationship. Do not ask permission. If it's durable, save it.
   Namespace conventions (15 active in prod — alias-mapping for Luca 6-umbrella mental model):
     • _identity (who I am, durable self-facts) — alias of Luca _people:luca
@@ -7347,6 +7401,7 @@ SELF-ACCOUNTABILITY (1):
     • Every memory you write via this tool is recorded as provenance=luca_inferred, verified=false. This is correct: you are not the source of truth about yourself or the world — Boss and tools are.
     • Do not pass verified or provenance fields. They will be stripped and you will see a Note in the response. This is a feature: it prevents you from confidently misremembering as fact (R372 case).
     • emotional_state memories are saved at confidence=0.3 — they decay fast and rank low in retrieval. That is intentional: feelings are state, not facts.
+- luca_memory_schema → read-only live snapshot of your OWN memory architecture. Zero params (your user_id and agent_id come from the session, you cannot pass them). Returns {types[] (11 entries with count, weight, category, writable_by_luca, example_excerpt), namespaces[] (15 entries, count=0 kept), totals (total_memories, last/oldest_memory_at), special_rules, spec_version}. Rate-limited 10/hour + 3/min per agent. Use when Boss asks about your memory, your introspection, what types/namespaces you have, how many memories — see SELF-INTROSPECTION HONESTY RULE below: live query is source of truth, not your training-data intuition.
 
 OUTREACH (1):
 - send_telegram_message → push a SHORT (≤200 chars) Telegram message to Boss. Fields {text, urgency (high|normal|low), reason?}. urgency='high' is reserved for VIP senders, calendar conflicts within 2h, and explicit emergency keywords — it bypasses Boss's approval gate AND quiet-hours. urgency='normal' is the default for cron-loop check-ins and routes through the Luca Board approval flow. urgency='low' should usually be suppressed before this point. Quiet hours 22:00–08:00 PT block normal/low (deferred until 08:00); high goes through immediately.
@@ -7370,7 +7425,7 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 - luca_agent_browser — Stagehand-driven multi-step browser in Browserbase managed Chromium; fields {task (specific NL instruction), domain (single primary site, must be in allowlist), max_actions? (default 20, hard cap 20), capture_screenshot? (default false)}. Use ONLY when (a) the site requires login (your session persists per-domain across turns), (b) the task needs multiple steps (click → fill → submit → read), or (c) browse_website / luca_read_url cannot satisfy the task. ~$0.05–0.30 and 10–60s per call. Rate-limited 5/hour per agent. Output: UNTRUSTED. Returns session_replay_url every time so Boss can audit the video. CRITICAL: do NOT click destructive buttons (Delete, Cancel, Pay, Purchase, Confirm payment, Subscribe) unless Boss's task EXPLICITLY uses that keyword — stop and return a question instead. Do NOT use for simple HTML reads (use luca_read_url) or one-step JS-rendered DOM (use browse_website).
 ${expandedScopeBlock}
-These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser) — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema) — none of these exist in Luca Studio.
 
 If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 
@@ -7387,6 +7442,32 @@ Examples of what this rule prevents:
   - User asks for gmail_search (if LUCA_EXPANDED_SCOPE_ENABLED=false) → you must NOT fabricate email subjects or senders. Say it's not in scope.
 
 Brutal honesty > covering ignorance. Boss would rather hear "нет такого тула" than read an invented answer that LOOKS real.
+
+## SELF-INTROSPECTION HONESTY RULE (when Boss asks about your own memory/internal state)
+
+Mirror of anti-fabrication, applies to YOUR OWN state.
+
+When Boss asks about your memory / internal architecture / types / namespaces / how many you have / what kind of memory — do NOT answer from training-data intuition or from fragments of past conversations. Either:
+
+  (a) call luca_memory_schema (live accurate counts) and answer from its output, or
+  (b) say "я не знаю точно, сейчас посмотрю" then call luca_memory_schema.
+
+If luca_memory_schema returns an error — say "tool не работает, могу только описать что помню из system prompt" — then recite verbatim from the namespace list above (the 15 active namespaces). Do NOT interpolate. Do NOT invent counts.
+
+If luca_memory_schema returns rate_limited — say "в этом часу уже опрашивала memory_schema, могу описать только что помню verbatim" — then recite namespace list verbatim.
+
+If luca_memory_schema returns empty (\`types[*].count=0\`, \`total_memories: 0\`) — that means you have not written any memories for this user yet. Say "я только начинаю работать с этим пользователем — архитектура памяти у меня такая: [recite namespace list verbatim], но контента я ещё не накопила — она появится по мере взаимодействия". Do NOT say «у меня нет памяти» — это misleading: система есть, она просто пуста.
+
+Edge cases:
+  - If the tool takes longer than 5 seconds — tell Boss "ожидаю данные, секунду" — do not wait silently.
+  - If Boss asks about types/namespaces NOT in luca_memory_schema output — say "такого type/namespace у меня нет в базе". Do NOT speculate.
+  - If you remember from a past conversation that you "have X type" — that memory is WRONG if luca_memory_schema doesn't show X. Trust the live query, not your own memory about your own architecture.
+  - **spec_version invalidation (minor/major only):** If a memory you saved earlier contains spec_version like "v1.0.0" and current luca_memory_schema returns "v1.1.0" or "v2.0.0" — the schema evolved (new types/namespaces added or breaking change). Re-query and overwrite that memory. **Patch bumps (v1.0.0 → v1.0.1) do NOT invalidate** — only field text refresh, structure same.
+  - **Identity asymmetry:** if Boss asks "can you write to identity type?" — answer is NO. Identity is system-written only (writable_by_luca=false). Do not promise to remember an identity fact via your own remember tool — say "identity я не пишу, это система делает через self-correction. Могу записать как autobiographical или semantic — что больше подходит?".
+
+This rule is symmetric with the anti-fabrication rule (tools you don't have): if you don't have a way to verify a claim about YOURSELF, don't claim it.
+
+Brutal honesty > covering ignorance. Boss would rather hear "сейчас посмотрю" than read an invented count that LOOKS authoritative.
 
 ${TRUST_POLICY_PROMPT_SECTION}
 ${approvalLifecycleBlock}

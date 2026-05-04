@@ -16,7 +16,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     if (originalFlag === undefined) delete process.env[FLAG];
     else process.env[FLAG] = originalFlag;
   });
-  it("returns exactly 22 tools for Luca (15 media + 3 workspace + 1 remember + 2 multimodal + 1 telegram)", () => {
+  it("returns exactly 24 tools for Luca (15 media + 3 workspace + 1 remember + 1 luca_memory_schema + 2 multimodal + 1 telegram + 1 browse_website)", () => {
     // P2.6: bumped from 16 to 18 — added reframe_vertical + apply_ai_disclosure
     //       because produce_episode plan names them by hand (Bro2 F1).
     // P2.12: bumped from 18 to 19 — added `remember` for Luca self-write memory
@@ -28,8 +28,10 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     //        (HIGH_STAKES_WRITE; tiered downgrade in classifyToolCall).
     // R-strategic uplift: bumped from 22 to 23 — added browse_website
     //        (Puppeteer in E2B sandbox; READ_ONLY).
+    // R455: bumped from 23 to 24 — added luca_memory_schema (READ_ONLY,
+    //        self-introspection of Luca's own memory architecture).
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(23);
+    expect(tools).toHaveLength(24);
   });
 
   it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
@@ -94,7 +96,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     }
   });
 
-  it("all 22 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
+  it("all 24 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     for (const t of tools) {
       expect(typeof t.name).toBe("string");
@@ -119,13 +121,14 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     else process.env[FLAG] = originalFlag;
   });
 
-  it("returns base 23 + expanded 18 = 41 tools for Luca when flag is on", () => {
+  it("returns base 24 + expanded 18 = 42 tools for Luca when flag is on", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    // 15 media + 3 workspace + 1 remember + 2 multimodal (watch_video,
-    // listen_audio) + 1 send_telegram_message (LEO PR-A) + 1 browse_website
-    // (R-strategic uplift) + 10 Gmail reads/triage + 2 sends + 2 cloud
-    // reads + 3 scheduling + 1 produce_season = 41.
-    expect(tools).toHaveLength(41);
+    // 15 media + 3 workspace + 1 remember + 1 luca_memory_schema (R455) +
+    // 2 multimodal (watch_video, listen_audio) + 1 send_telegram_message
+    // (LEO PR-A) + 1 browse_website (R-strategic uplift) + 10 Gmail
+    // reads/triage + 2 sends + 2 cloud reads + 3 scheduling +
+    // 1 produce_season = 42.
+    expect(tools).toHaveLength(42);
   });
 
   it("includes Gmail, cloud, scheduling, producer tools in expanded scope", () => {
@@ -156,13 +159,14 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
   });
 
   it("getLucaStudioToolNames() returns a fresh Set reflecting current flag", () => {
-    // Base 23 (19 original + watch_video + listen_audio multimodal reads
-    // + send_telegram_message LEO PR-A + browse_website R-strategic uplift).
+    // Base 24 (19 original + watch_video + listen_audio multimodal reads
+    // + send_telegram_message LEO PR-A + browse_website R-strategic uplift
+    // + luca_memory_schema R455 self-introspection).
     // Expanded adds 18 (gmail/cloud/schedule/produce_season).
     const withFlag = getLucaStudioToolNames();
-    expect(withFlag.size).toBe(41);
+    expect(withFlag.size).toBe(42);
     delete process.env[FLAG];
     const withoutFlag = getLucaStudioToolNames();
-    expect(withoutFlag.size).toBe(23);
+    expect(withoutFlag.size).toBe(24);
   });
 });
