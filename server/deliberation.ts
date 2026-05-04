@@ -1647,7 +1647,15 @@ export async function executePartnerTool(
   // uses a mock pyodide runner (Day 1 scaffold) with no real per-turn state
   // reuse. When Day 6 integration lands properly, meetingId/turnId will be
   // threaded through and sandboxKeyForTurn() will be used instead.
-  if (toolName.startsWith("luca_")) {
+  //
+  // R457 hot-fix: `luca_memory_schema` (R455) lives in the main switch
+  // (case at :5711) because its handler needs the deliberation-scoped pool
+  // and rate-limiter, not the V1a registry context. Without this exemption
+  // the early-route swallows it into dispatchLucaTool() which throws
+  // `luca_tool_not_found` — the exact symptom Luca reported when Boss
+  // asked her to introspect.
+  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema"]);
+  if (toolName.startsWith("luca_") && !ROUTES_THROUGH_MAIN_SWITCH.has(toolName)) {
     const ctxKey = toSandboxKey(`m_ad_hoc_${randomUUID().replace(/-/g, "").slice(0, 24)}_t_${Date.now().toString(36)}`);
     // Honesty Layer fix: V1a tools were invisible in tool_activity_log because
     // they returned before recordToolActivityStart below. Now we log start+end
