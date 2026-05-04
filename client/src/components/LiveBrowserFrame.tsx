@@ -16,8 +16,14 @@
  *     activity row) and the parent unmounts us — local state is GC'd.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Globe, Hand } from "lucide-react";
+
+import { useAuth } from "../App";
+import {
+  useKiokuWebSocket,
+  type KiokuWsMessage,
+} from "@/hooks/useKiokuWebSocket";
 
 interface Props {
   /** Browserbase `debuggerFullscreenUrl`. */
@@ -52,14 +58,14 @@ function useVisibility(): boolean {
 
 /**
  * Phase 5 PR-B — connect to the room WS to send takeover messages and
- * react to server-broadcast state. We piggyback on the existing room WS
- * (`/ws`); no new connection. The hook returns the active state (so the
- * iframe can flip pointerEvents) and a `request(mode)` helper.
+ * react to server-broadcast state.
  *
- * The room subscription is owned by the parent (ActivityTimeline already
- * subscribes); here we open a thin sender-only WS for outbound messages.
- * That keeps coupling minimal — broadcast events route through the
- * existing WsBroadcast pipe (window event below).
+ * Phase 6 PR-C (R-luca-computer-ui) — routes through the shared
+ * `useKiokuWebSocket()` hook so this component piggybacks on the
+ * partner-chat room connection instead of opening a second WS. The hook
+ * owns reconnect (R418 backoff), dual subscribe (room + user topic), and
+ * refcounted close — LiveBrowserFrame only filters for the three
+ * takeover message types and exposes `request(mode)`.
  */
 function useTakeover(roomId: number | undefined, stepId: string | undefined) {
   const [active, setActive] = useState(false);
@@ -71,20 +77,29 @@ function useTakeover(roomId: number | undefined, stepId: string | undefined) {
    * timer so the UI flips back to “inactive” slightly BEFORE the server
    * eviction — prevents the user from clicking through a stale lock.
    */
-  const wsRef = useRef<WebSocket | null>(null);
   const expireTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function clearLocalExpireTimer() {
+  const { sessionToken } = useAuth();
+  const ws = useKiokuWebSocket({
+    roomId: roomId ?? null,
+    sessionToken: sessionToken ?? null,
+    enabled: Boolean(roomId && stepId),
+  });
+
+  const clearLocalExpireTimer = useCallback(() => {
     if (expireTimerRef.current !== null) {
       clearTimeout(expireTimerRef.current);
       expireTimerRef.current = null;
     }
-  }
+  }, []);
 
-  function armLocalExpireTimer(expiresAt: number | undefined) {
-    clearLocalExpireTimer();
+  const armLocalExpireTimer = useCallback((expiresAt: number | undefined) => {
+    if (expireTimerRef.current !== null) {
+      clearTimeout(expireTimerRef.current);
+      expireTimerRef.current = null;
+    }
     if (typeof expiresAt !== "number") return;
-    // Fire 1s before server TTL so the UI feels “snappy” — server is still
+    // Fire 1s before server TTL so the UI feels "snappy" — server is still
     // authoritative; this is a UX hint only.
     const ms = Math.max(0, expiresAt - Date.now() - 1000);
     expireTimerRef.current = setTimeout(() => {
@@ -93,67 +108,56 @@ function useTakeover(roomId: number | undefined, stepId: string | undefined) {
       setError("TTL_EXPIRED");
       expireTimerRef.current = null;
     }, ms);
-  }
+  }, []);
+
+  const handleTakeoverMessage = useCallback((raw: KiokuWsMessage) => {
+    if (!roomId || !stepId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const msg: any = raw;
+    if (msg.type === "liveFrameTakeoverState" && msg.stepId === stepId) {
+      const nextActive = Boolean(msg.active && msg.mode === "interactive");
+      setActive(nextActive);
+      if (!msg.active) {
+        setHolderIsMe(false);
+        clearLocalExpireTimer();
+      } else if (typeof msg.expiresAt === "number") {
+        armLocalExpireTimer(msg.expiresAt);
+      }
+    }
+    if (msg.type === "liveFrameTakeoverAck" && msg.stepId === stepId) {
+      setError(null);
+      if (msg.mode === "interactive" || msg.mode === "passive") {
+        setHolderIsMe(true);
+        armLocalExpireTimer(msg.expiresAt);
+      } else if (msg.mode === "release") {
+        setHolderIsMe(false);
+        clearLocalExpireTimer();
+      }
+    }
+    if (msg.type === "liveFrameTakeoverError" && msg.stepId === stepId) {
+      setError(String(msg.code || "unknown"));
+    }
+  }, [roomId, stepId, armLocalExpireTimer, clearLocalExpireTimer]);
 
   useEffect(() => {
     if (!roomId || !stepId) return;
-    if (typeof window === "undefined") return;
-
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
-    wsRef.current = ws;
-
-    ws.addEventListener("open", () => {
-      ws.send(JSON.stringify({ type: "subscribe", roomId }));
-    });
-    ws.addEventListener("message", (ev) => {
-      try {
-        const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-        if (msg.type === "liveFrameTakeoverState" && msg.stepId === stepId) {
-          const nextActive = Boolean(msg.active && msg.mode === "interactive");
-          setActive(nextActive);
-          // We don't have a reliable connection-id echo client-side; treat
-          // the holder as "me" while our last ack was an acquire and
-          // server-state is still active. The optimistic flag flips back
-          // off whenever an `active:false` lands.
-          if (!msg.active) {
-            setHolderIsMe(false);
-            clearLocalExpireTimer();
-          } else if (typeof msg.expiresAt === "number") {
-            armLocalExpireTimer(msg.expiresAt);
-          }
-        }
-        if (msg.type === "liveFrameTakeoverAck" && msg.stepId === stepId) {
-          setError(null);
-          if (msg.mode === "interactive" || msg.mode === "passive") {
-            setHolderIsMe(true);
-            armLocalExpireTimer(msg.expiresAt);
-          } else if (msg.mode === "release") {
-            setHolderIsMe(false);
-            clearLocalExpireTimer();
-          }
-        }
-        if (msg.type === "liveFrameTakeoverError" && msg.stepId === stepId) {
-          setError(String(msg.code || "unknown"));
-        }
-      } catch { /* best-effort */ }
-    });
-    ws.addEventListener("close", () => { wsRef.current = null; });
-
+    const unsub = ws.subscribe(handleTakeoverMessage);
     return () => {
+      unsub();
       clearLocalExpireTimer();
-      try { ws.close(); } catch { /* noop */ }
-      wsRef.current = null;
     };
-  }, [roomId, stepId]);
+  }, [roomId, stepId, ws, handleTakeoverMessage, clearLocalExpireTimer]);
 
-  function request(mode: "interactive" | "release") {
-    if (!roomId || !stepId) return;
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    setError(null);
-    ws.send(JSON.stringify({ type: "liveFrameTakeover", roomId, stepId, mode }));
-  }
+  const request = useCallback(
+    (mode: "interactive" | "release") => {
+      if (!roomId || !stepId) return;
+      setError(null);
+      // Shared hook returns false if not OPEN (Q-A strict-fail). We keep
+      // the existing UX — no retry, no queue — so the user can click again.
+      ws.send({ type: "liveFrameTakeover", roomId, stepId, mode });
+    },
+    [roomId, stepId, ws],
+  );
 
   return { active, holderIsMe, error, request };
 }
