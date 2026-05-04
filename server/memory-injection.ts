@@ -450,6 +450,54 @@ export async function fetchRelevantMemories(
     identityCharUsed += content.length;
   }
 
+  // R462 — Always-inject Boss profile: top-K relational/aesthetic/procedural
+  // memories that mention Boss ("Котэ", "Кот", "Kote", "Boss"). Reason: when
+  // user sends a short message ("привет"), semantic retrieval finds nothing,
+  // and Luca answers without knowing who Boss is. This pins a Boss-profile
+  // slice into context regardless of query semantic match. Char cap separate
+  // from identity cap so neither starves the other.
+  //
+  // Sorting: importance DESC, then recency DESC. Same shape as identity loop.
+  // Filter: type ∈ {relational, aesthetic, procedural} AND content matches
+  // Boss-name regex (case-insensitive). De-dupe vs identity by id.
+  const BOSS_PROFILE_CHAR_CAP = 4000; // ~1000 tokens
+  const BOSS_NAME_RE = /\b(котэ|кот[аеуыя]?\b|kote|boss|босс)/i;
+  const BOSS_PROFILE_TYPES = new Set(["relational", "aesthetic", "procedural"]);
+  const alwaysInjectIds = new Set(alwaysInject.map((m) => m.id));
+  const bossProfileCandidates = candidateMemories
+    .filter((m: any) => {
+      if (alwaysInjectIds.has(m.id)) return false;
+      if (!BOSS_PROFILE_TYPES.has(m.type)) return false;
+      const c = (m.content ?? "") as string;
+      return BOSS_NAME_RE.test(c);
+    })
+    .sort((a: any, b: any) => {
+      const impA = typeof a.importance === "number" ? a.importance : 0.5;
+      const impB = typeof b.importance === "number" ? b.importance : 0.5;
+      if (impA !== impB) return impB - impA;
+      const tsA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tsB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tsB - tsA;
+    });
+
+  let bossCharUsed = 0;
+  for (const m of bossProfileCandidates) {
+    const content = ((m as any).content ?? "") as string;
+    if (bossCharUsed + content.length > BOSS_PROFILE_CHAR_CAP) break;
+    alwaysInject.push({
+      id: m.id,
+      content,
+      type: (m as any).type,
+      confidence: typeof (m as any).confidence === "number" ? (m as any).confidence : 1.0,
+      expiresAt: (m as any).expiresAt,
+      emotionVector: (m as any).emotionVector ?? null,
+      namespace: (m as any).namespace ?? null,
+      provenance: (m as any).provenance ?? null,
+    });
+    bossCharUsed += content.length;
+    alwaysInjectIds.add(m.id);
+  }
+
   // Always-inject: 3 most recent episode summaries regardless of keyword match
   const episodeSummaries: InjectedMemory[] = candidateMemories
     .filter((m: any) => m.namespace === '_episode_summaries')
