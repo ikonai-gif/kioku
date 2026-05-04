@@ -21,6 +21,12 @@ import { FileLightbox, IconForContentType } from "./FileLightbox";
 import { LiveBrowserFrame } from "./LiveBrowserFrame";
 import { PinnedArtifactsStrip, pinArtifactClient, type PinnedArtifactItem } from "./PinnedArtifacts";
 import { Pin } from "lucide-react";
+import { useLucaCanvas } from "./LucaCanvas";
+import {
+  resolveActivityVariant,
+  selectActiveLiveFrame,
+  type ActivityTimelineVariant,
+} from "@/lib/activity-timeline-variant";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -64,6 +70,15 @@ interface Props {
   show: boolean;
   onClose: () => void;
   isMobile: boolean;
+  /**
+   * Phase 6 PR-B (R-luca-computer-ui): layout variant.
+   * - 'sidebar' (default-effective for chat mode): existing right-side panel.
+   * - 'canvas': promoted live_frame hero on top, activity list below.
+   * - 'auto': follow `useLucaCanvas().mode` (canvas iff computer mode).
+   * Default is 'auto' so existing call sites remain backward-compatible
+   * (they'll behave as 'sidebar' until the user enters computer mode).
+   */
+  variant?: ActivityTimelineVariant;
 }
 
 // ── Russian labels (mirrors ToolActivityTrail map in partner-chat) ────
@@ -112,7 +127,9 @@ function formatTime(ms: number): string {
 
 // ── Component ────────────────────────────────────────────────────────
 
-export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
+export function ActivityTimeline({ roomId, show, onClose, isMobile, variant = "auto" }: Props) {
+  const canvas = useLucaCanvas();
+  const resolvedVariant = resolveActivityVariant(variant, canvas?.mode);
   const [rows, setRows] = useState<ActivityRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<ActivityMedia | null>(null);
@@ -210,6 +227,14 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
     return Array.from(byStep.values()).sort((a, b) => a.startedAt - b.startedAt);
   }, [rows]);
 
+  // Phase 6 PR-B: in canvas variant, promote the active live_frame to a hero
+  // panel above the activity list so the user can watch Luca browse without
+  // hunting for the iframe inside a step card.
+  const heroLiveFrame = useMemo(() => {
+    if (resolvedVariant !== "canvas") return null;
+    return selectActiveLiveFrame(grouped);
+  }, [resolvedVariant, grouped]);
+
   const panelContent = (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -241,6 +266,44 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile }: Props) {
       {/* Phase 5 (R-luca-computer-ui): pinned artifacts strip. */}
       {roomId != null && (
         <PinnedArtifactsStrip roomId={roomId} onClickPin={onClickPin} refreshKey={pinRefresh} />
+      )}
+
+      {/* Phase 6 PR-B: canvas hero — promoted live_frame iframe. */}
+      {resolvedVariant === "canvas" && heroLiveFrame && (
+        <div
+          className="flex-shrink-0 px-3 pt-3"
+          data-testid="activity-canvas-hero"
+        >
+          <div
+            className="rounded-lg overflow-hidden"
+            style={{
+              border: "1px solid rgba(201,163,64,0.2)",
+              background: "rgba(0,0,0,0.4)",
+            }}
+          >
+            <LiveBrowserFrame
+              src={heroLiveFrame.signedUrl}
+              replayUrl={heroLiveFrame.sourceUrl}
+              roomId={roomId ?? undefined}
+              stepId={heroLiveFrame.stepId}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Phase 6 PR-B: canvas placeholder when no live_frame is active. */}
+      {resolvedVariant === "canvas" && !heroLiveFrame && (
+        <div
+          className="flex-shrink-0 mx-3 mt-3 rounded-lg flex items-center justify-center text-[11px] text-muted-foreground/40"
+          style={{
+            height: 220,
+            border: "1px dashed rgba(201,163,64,0.15)",
+            background: "rgba(0,0,0,0.25)",
+          }}
+          data-testid="activity-canvas-placeholder"
+        >
+          Лука пока не открыл браузер
+        </div>
       )}
 
       {/* List */}
