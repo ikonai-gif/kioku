@@ -90,6 +90,8 @@ export type LucaAdmissibleTool =
   | "remember"
   // R455 — Self-introspection memory schema (READ_ONLY)
   | "luca_memory_schema"
+  // R462 — Ad-hoc free-text search over Luca's own memory (READ_ONLY)
+  | "luca_recall_self"
   // ── Day 6 scope expansion (gated behind LUCA_EXPANDED_SCOPE_ENABLED) ──
   // Gmail reads + triage
   | "gmail_search"
@@ -209,6 +211,10 @@ export const TOOL_WRITE_CLASS = {
   // R455 — read-only introspection (live SQL snapshot of own memory
   // architecture). No side-effects. Per-agent rate-limited 10/h + 3/min.
   luca_memory_schema:       "READ_ONLY",
+  // R462 — read-only ad-hoc search over Luca's own memory (vector +
+  // ILIKE fallback). Closure-scoped to (userId, agentId). No writes.
+  // Rate-limited 30/min per agent.
+  luca_recall_self:         "READ_ONLY",
 
   // ─── Gmail reads (content is UNTRUSTED — trust-policy handles that) ─
   gmail_search:             "READ_ONLY",
