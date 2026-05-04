@@ -200,9 +200,25 @@ export interface MemorySchemaNamespaceRow extends NamespaceMetadata {
   count: number;
 }
 
+// R463 — row shape for namespaces present in DB but NOT in NAMESPACE_METADATA
+// ("orphaned" namespaces). Same fields as a regular namespace row minus
+// alias_of/description (we don't have metadata for them by definition).
+export interface MemorySchemaUnknownNamespaceRow {
+  name: string;
+  count: number;
+}
+
 export interface MemorySchemaResult {
   types: MemorySchemaTypeRow[];
   namespaces: MemorySchemaNamespaceRow[];
+  /**
+   * R463 — namespaces that exist in the `memories` table for this
+   * (user_id, agent_id) but are NOT in the curated NAMESPACE_METADATA
+   * whitelist. Helps Luca/Boss see the full picture instead of the
+   * 15-row subset. Sorted by count DESC, then name ASC. Excluded:
+   * NULL/empty namespace.
+   */
+  unknown_namespaces: MemorySchemaUnknownNamespaceRow[];
   special_rules: {
     identity: string;
     commitment: string;
@@ -256,7 +272,11 @@ export async function getMemorySchemaSnapshot(
 ): Promise<MemorySchemaResult> {
   const knownTypeArr = Array.from(KNOWN_TYPES);
 
-  const [typesRes, namespacesRes, excerptsRes, totalsRes] = await Promise.all([
+  // R463 — named-namespace whitelist used by query (5) below to identify
+  // "unknown" namespaces (present in DB, not in NAMESPACE_METADATA).
+  const knownNamespaceArr = NAMESPACE_METADATA.map((n) => n.name);
+
+  const [typesRes, namespacesRes, excerptsRes, totalsRes, unknownNsRes] = await Promise.all([
     // (1) types aggregate — only 11 known types
     pool.query<{ type: string; count: string }>(
       `SELECT type, COUNT(*)::text AS count
@@ -313,6 +333,20 @@ export async function getMemorySchemaSnapshot(
           WHERE user_id = $1 AND agent_id = $2) AS oldest_memory_at`,
       [userId, agentId, knownTypeArr],
     ),
+    // (5) R463 — namespaces present in DB but NOT in the whitelist. Read-only,
+    //     no joins beyond memories. NULL/empty namespace excluded so Luca
+    //     sees real namespaces only. Hard cap LIMIT 50 to bound payload.
+    pool.query<{ name: string; count: string }>(
+      `SELECT namespace AS name, COUNT(*)::text AS count
+       FROM memories
+       WHERE user_id = $1 AND agent_id = $2
+         AND namespace IS NOT NULL AND namespace <> ''
+         AND NOT (namespace = ANY($3::text[]))
+       GROUP BY namespace
+       ORDER BY COUNT(*) DESC, namespace ASC
+       LIMIT 50`,
+      [userId, agentId, knownNamespaceArr],
+    ),
   ]);
 
   // Build type rows in metadata order (identity, commitment, then by weight)
@@ -344,9 +378,16 @@ export async function getMemorySchemaSnapshot(
     return new Date(n).toISOString();
   };
 
+  // R463 — unknown namespaces (DB ∩ ¬whitelist), already sorted by SQL.
+  const unknownNamespaces: MemorySchemaUnknownNamespaceRow[] = unknownNsRes.rows.map((r) => ({
+    name: r.name,
+    count: parseInt(r.count, 10),
+  }));
+
   return {
     types,
     namespaces,
+    unknown_namespaces: unknownNamespaces,
     special_rules: SPECIAL_RULES,
     totals: {
       total_memories: parseInt(totalsRow.total_memories, 10) || 0,
