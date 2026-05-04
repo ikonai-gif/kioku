@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { nextBackoffMs } from "@/lib/ws-reconnect";
+import { useKiokuWebSocket, type KiokuWsMessage } from "@/hooks/useKiokuWebSocket";
 import { useAuth } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
@@ -29,7 +29,8 @@ import { VoiceOutput } from "@/components/voice/VoiceOutput";
 import { CameraCapture } from "@/components/vision/CameraCapture";
 import { VisionResult } from "@/components/vision/VisionResult";
 import { EmailConfirmModal, type EmailConfirmPayload } from "@/components/EmailConfirmModal";
-import { LucaCanvasProvider, LucaCanvasToggle } from "@/components/LucaCanvas";
+import { LucaCanvasProvider, LucaCanvasToggle, useLucaCanvas } from "@/components/LucaCanvas";
+import { ChatDock } from "@/components/ChatDock";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -2110,32 +2111,28 @@ export default function PartnerChat() {
   }, [showActionPanel, parsedArtifacts.length]);
 
   // ── WebSocket for real-time updates ───────────────────────────
+  // Phase 6 PR-C — use shared `useKiokuWebSocket()` instead of opening our
+  // own connection. The hook handles auth, R418 backoff reconnect, dual
+  // subscribe (room + user-topic), refcounted teardown, and roomId
+  // defence-in-depth filtering.
   const { sessionToken } = useAuth();
+  const kiokuWs = useKiokuWebSocket({
+    roomId: partnerRoomId,
+    sessionToken: sessionToken ?? null,
+  });
   useEffect(() => {
+    setWsConnected(kiokuWs.connected);
+  }, [kiokuWs.connected]);
+
+  const handleKiokuMessage = useCallback((rawData: KiokuWsMessage) => {
     if (!partnerRoomId) return;
-
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const tokenParam = sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : "";
-    const wsUrl = `${protocol}://${window.location.host}/ws${tokenParam}`;
-    let ws: WebSocket;
-    let reconnectTimer: ReturnType<typeof setTimeout>;
-    let unmounted = false;
-    // R418 — exponential backoff + jitter; reset on successful open
-    let reconnectAttempt = 0;
-
-    function connect() {
-      ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        if (unmounted) { ws.close(); return; }
-        setWsConnected(true);
-        reconnectAttempt = 0;
-        ws.send(JSON.stringify({ type: "subscribe", roomId: partnerRoomId }));
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
+    // Existing branch logic (14 data.type cases) was written against an
+    // implicit `any` from JSON.parse. The shared hook types data as a
+    // structurally-strict `KiokuWsMessage`, so cast back here to keep the
+    // 230-line switch byte-identical and avoid a giant prop-typing PR.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = rawData;
+    try {
           if (data.type === "message") {
             setIsThinking(false); setThinkingStart(null);
             setToolSteps([]);
@@ -2312,32 +2309,19 @@ export default function PartnerChat() {
           } else if (data.type === "email_confirm_required") {
             // Luca prepared a send_new_email or send_email_reply — show confirm-modal.
             setEmailConfirmPayload({
-              token: data.token,
-              expiresAt: data.expiresAt,
-              preview: data.preview,
+              token: data.token as string,
+              expiresAt: data.expiresAt as number,
+              preview: data.preview as any,
             });
           }
-        } catch {}
-      };
+    } catch {}
+  }, [partnerRoomId]);
 
-      ws.onclose = () => {
-        setWsConnected(false);
-        if (!unmounted) {
-          const delay = nextBackoffMs(reconnectAttempt++);
-          reconnectTimer = setTimeout(connect, delay);
-        }
-      };
-
-      ws.onerror = () => ws.close();
-    }
-
-    connect();
-    return () => {
-      unmounted = true;
-      clearTimeout(reconnectTimer);
-      ws?.close();
-    };
-  }, [partnerRoomId, sessionToken]);
+  useEffect(() => {
+    if (!partnerRoomId) return;
+    const unsub = kiokuWs.subscribe(handleKiokuMessage);
+    return unsub;
+  }, [partnerRoomId, kiokuWs, handleKiokuMessage]);
 
   // ── Auto-scroll on new messages ───────────────────────────────
   const hasScrolledInitial = useRef(false);
@@ -3144,13 +3128,10 @@ export default function PartnerChat() {
       className="flex h-[100dvh] w-full overflow-hidden"
       style={{ background: "linear-gradient(180deg, #0a0f1e 0%, #0F1B3D 50%, #0a0f1e 100%)" }}
     >
-    {/* ── Left: Chat column ─────────────────────────────────── */}
-    <div
-      className="flex flex-col h-full overflow-hidden transition-all duration-300"
-      style={{
-        width: !isMobile && (showActionPanel || showInboxPanel || showWorkPanel || showActivityTimeline) ? "55%" : "100%",
-        minWidth: 0,
-      }}
+    {/* ── Left: Chat column (Phase 6 PR-C: ChatDock when mode==='computer') ── */}
+    <ChatColumnShell
+      isMobile={isMobile}
+      anyDesktopPanelOpen={!isMobile && (showActionPanel || showInboxPanel || showWorkPanel || showActivityTimeline)}
     >
       {/* ── Top Bar ──────────────────────────────────────────── */}
       <header
@@ -3923,7 +3904,7 @@ export default function PartnerChat() {
         selectedArtifact={selectedArtifact}
         onSelectArtifact={setSelectedArtifact}
       />
-    </div>{/* end chat column */}
+    </ChatColumnShell>{/* end chat column */}
 
     {/* ── Right: Action Panel (desktop inline) ──────────────── */}
     {!isMobile && showActionPanel && (
@@ -4070,5 +4051,48 @@ export default function PartnerChat() {
     />
     </div>
     </LucaCanvasProvider>
+  );
+}
+
+/**
+ * Phase 6 PR-C (R-luca-computer-ui) — picks between the legacy chat-column
+ * wrapper and the new `<ChatDock>` based on LucaCanvas mode.
+ *
+ * In `chat` mode (default, mobile, or no active computer step) we render
+ * the existing chat column `<div>` verbatim — zero behaviour change vs
+ * pre-PR-C. In `computer` mode (desktop ≥ 900px AND `hasComputerStep`)
+ * we render the same children inside `<ChatDock>` for the Atlas-style
+ * narrow dock right of the canvas.
+ *
+ * Below `VIEWPORT_MIN_PX = 900` the mode router (PR-A) already forces
+ * chat mode, so the dock is never selected on mobile.
+ */
+function ChatColumnShell({
+  isMobile,
+  anyDesktopPanelOpen,
+  children,
+}: {
+  isMobile: boolean;
+  anyDesktopPanelOpen: boolean;
+  children: React.ReactNode;
+}) {
+  const { mode } = useLucaCanvas();
+  const dockMode = mode === "computer" && !isMobile;
+  if (dockMode) {
+    return <ChatDock>{children}</ChatDock>;
+  }
+  // Legacy chat-column — width shrinks to 55% when any desktop panel is
+  // open, otherwise full width. Identical to pre-PR-C behaviour.
+  return (
+    <div
+      className="flex flex-col h-full overflow-hidden transition-all duration-300"
+      style={{
+        width: anyDesktopPanelOpen ? "55%" : "100%",
+        minWidth: 0,
+      }}
+      data-testid="partner-chat-column"
+    >
+      {children}
+    </div>
   );
 }

@@ -173,6 +173,23 @@ export default function App() {
     });
   }, []);
 
+  // Phase 6 PR-C (R448 BLOCKER-C2) — the shared `useKiokuWebSocket` hook
+  // dispatches `kioku-auth-failed` on `window` whenever the server closes
+  // the WS with code 1008 / 4001..4099. Treat that as authoritative
+  // "session is dead" signal: clear local auth state so React re-renders
+  // into the login screen instead of letting the page silently drift
+  // (and instead of the hook entering a retry storm with a bad token).
+  useEffect(() => {
+    function onAuthFailed() {
+      setUser(null);
+      setToken(null);
+      setSessionToken(null);
+      queryClient.clear();
+    }
+    window.addEventListener("kioku-auth-failed", onAuthFailed);
+    return () => window.removeEventListener("kioku-auth-failed", onAuthFailed);
+  }, []);
+
   // Auto-restore session from httpOnly cookie on page load/refresh
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
