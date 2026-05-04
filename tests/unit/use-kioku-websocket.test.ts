@@ -61,10 +61,10 @@ class FakeWebSocket {
     this.onmessage?.({ data });
   }
 
-  close() {
+  close(code?: number, reason?: string) {
     if (this.readyState === READY_CLOSED) return;
     this.readyState = READY_CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code: code ?? 1000, reason: reason ?? "" });
   }
 
   errorClose() {
@@ -315,5 +315,95 @@ describe("useKiokuWebSocket holder — reconnect & destroy", () => {
     expect(sub).toHaveBeenCalledWith(true);
     lastWs().close();
     expect(sub).toHaveBeenCalledWith(false);
+  });
+});
+
+// ── R448 BLOCKER-C2: auth-failure close codes break reconnect loop ──
+
+// jsdom is not in this suite; the hook's `buildWsUrl` reads
+// `window.location.protocol` + `window.location.host` and may dispatch
+// a CustomEvent on `window`. Install a minimal shim ONCE so every test
+// below sees a consistent global surface.
+const __authFailListeners = new Map<string, Set<(e: Event) => void>>();
+if (typeof (globalThis as any).window === "undefined") {
+  (globalThis as any).window = {
+    location: { protocol: "https:", host: "test.kioku.local" },
+    addEventListener: (t: string, fn: (e: Event) => void) => {
+      if (!__authFailListeners.has(t)) __authFailListeners.set(t, new Set());
+      __authFailListeners.get(t)!.add(fn);
+    },
+    removeEventListener: (t: string, fn: (e: Event) => void) => {
+      __authFailListeners.get(t)?.delete(fn);
+    },
+    dispatchEvent: (e: Event) => {
+      for (const fn of __authFailListeners.get(e.type) ?? []) fn(e);
+      return true;
+    },
+  };
+  (globalThis as any).CustomEvent = class CustomEvent<T = unknown> {
+    type: string;
+    detail: T;
+    constructor(type: string, init: { detail: T }) {
+      this.type = type;
+      this.detail = init.detail;
+    }
+  };
+}
+
+describe("useKiokuWebSocket holder — auth-failure close codes (R448 C2)", () => {
+  it("close code 1008 (Policy Violation) destroys holder and dispatches kioku-auth-failed", () => {
+    const events: CustomEvent[] = [];
+    const handler = (e: Event) => events.push(e as CustomEvent);
+    (globalThis as any).window.addEventListener("kioku-auth-failed", handler);
+
+    const h = __testInternals.acquire(42, "tok-bad", {
+      closeGraceMs: 100,
+      wsFactory,
+    });
+    lastWs().open();
+    expect(__testInternals.inspectHolder(h).destroyed).toBe(false);
+
+    // Server closes with 1008 (auth-fail RFC 6455).
+    lastWs().close(1008, "auth");
+
+    expect(__testInternals.inspectHolder(h).destroyed).toBe(true);
+    expect(__testInternals.inspectHolder(h).hasReconnectTimer).toBe(false);
+    // No new WS attempt even after generous backoff window.
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Window event dispatched with the close code.
+    expect(events.length).toBe(1);
+    expect(events[0].type).toBe("kioku-auth-failed");
+    expect((events[0] as any).detail.code).toBe(1008);
+
+    (globalThis as any).window.removeEventListener("kioku-auth-failed", handler);
+  });
+
+  it("close code 4001 (Unauthorized) destroys holder and stops retry storm", () => {
+    const h = __testInternals.acquire(42, "tok-bad", {
+      closeGraceMs: 100,
+      wsFactory,
+    });
+    lastWs().open();
+    // server/ws.ts:122 ws.close(4001, "Unauthorized")
+    lastWs().close(4001, "Unauthorized");
+    expect(__testInternals.inspectHolder(h).destroyed).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("close code 1006 (abnormal) is NOT auth-failure — still reconnects", () => {
+    const h = __testInternals.acquire(42, "tok-A", {
+      closeGraceMs: 100,
+      wsFactory,
+    });
+    lastWs().open();
+    // Network drop — NOT an auth signal. Must still trigger backoff retry.
+    lastWs().close(1006, "abnormal");
+    expect(__testInternals.inspectHolder(h).destroyed).toBe(false);
+    expect(__testInternals.inspectHolder(h).hasReconnectTimer).toBe(true);
+    vi.advanceTimersByTime(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 });

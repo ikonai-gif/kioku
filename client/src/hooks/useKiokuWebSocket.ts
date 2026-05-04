@@ -28,6 +28,27 @@
  *      truth — this is belt-and-suspenders for room-switch race window.
  *   5. No XSS surface added: hook returns plain JS values; rendering is
  *      the consumer's responsibility.
+ *
+ * Auth lifecycle (BRO1 R448 BLOCKER-C2 + MUST-FIX-C1):
+ *   • Consumer contract: `sessionToken` is passed as a prop. When it
+ *     changes (login / logout / rotate), the hook’s effect key changes
+ *     and a brand-new holder is acquired; the OLD holder is released
+ *     synchronously (N1). Consumers therefore MUST re-read the token
+ *     from `useAuth()` (or equivalent) and re-pass it — NOT cache the
+ *     stale value. partner-chat + LiveBrowserFrame do this today via
+ *     `const { sessionToken } = useAuth()`.
+ *   • Server closes the WS with code 4001 "Unauthorized" on auth
+ *     failure (server/ws.ts:122). The 1008 code is also treated as
+ *     auth-failure per RFC 6455 (Policy Violation). On either, the
+ *     holder is destroyed (no retry storm) and a
+ *     `kioku-auth-failed` CustomEvent is dispatched on `window` so
+ *     the host (App.tsx) can force a logout → re-login flow.
+ *   • Normal close codes (1000, 1006, 1012, …) trigger backoff
+ *     reconnect through R418 `nextBackoffMs` as before.
+ *   • Cross-tab token rotation: when another tab logs out, the
+ *     httpOnly cookie is invalidated server-side; the next message
+ *     from this tab's WS triggers a server close → 4001 → our
+ *     auth-failure branch. No client-side storage listener needed.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -182,13 +203,46 @@ function attachWs(h: Holder) {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev: CloseEvent) => {
     if (h.ws === ws) h.ws = null;
     if (h.connected) {
       h.connected = false;
       notifyConnected(h);
     }
     if (h.destroyed) return;
+
+    // BRO1 R448 BLOCKER-C2 — auth-failure reconnect loop break.
+    // Server closes with:
+    //   • 1008 (Policy Violation) — standard auth-failure close code.
+    //   • 4001..4099 (application-defined) — server/ws.ts uses 4001
+    //     "Unauthorized" on `authenticateWsAsync` failure (verified
+    //     server/ws.ts:122).
+    // On those codes, KILL the holder so we stop retry storm with a
+    // permanently-bad token. Consumers observe `connected: false` and
+    // get an `kioku-auth-failed` window event so the host can force
+    // logout / re-login. Normal codes (1000 clean close, 1006 abnormal,
+    // 1012 service restart, etc.) still reconnect through backoff.
+    const code = typeof ev?.code === "number" ? ev.code : 0;
+    const isAuthFail =
+      code === 1008 || (code >= 4000 && code < 4100);
+    if (isAuthFail) {
+      if (typeof window !== "undefined") {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("kioku-auth-failed", {
+              detail: { code, reason: ev?.reason ?? null },
+            }),
+          );
+        } catch { /* env without CustomEvent — ignore */ }
+      }
+      // Mark destroyed so no reconnect fires. Don't delete from registry
+      // here — releaseHolder path owns that. New acquire with a fresh
+      // token will get a DIFFERENT key (per-token holder) and a new
+      // holder entry.
+      destroyHolder(h);
+      return;
+    }
+
     const delay = nextBackoffMs(h.reconnectAttempt++);
     h.reconnectTimer = setTimeout(() => {
       h.reconnectTimer = null;
