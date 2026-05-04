@@ -2045,7 +2045,26 @@ export default function PartnerChat() {
   const emotion = partnerStatus?.emotion ?? "neutral";
 
   // ── Find or create partner room ───────────────────────────────
-  const { data: rooms = [] } = useQuery<any[]>({ queryKey: ["/api/rooms"] });
+  // R458 hot-fix: query MUST disable refetch-on-focus / interval / mount
+  // because the auto-create useEffect below depends on `rooms`. When the
+  // query refetches (window focus, interval, or invalidation race) it
+  // hands back a NEW array reference even if the data is identical — the
+  // effect re-fires — and on a 429 / 401 the create-mutation re-fires too.
+  // The original code (R457 base) had no `enabled` guard either, so a
+  // failing fetch put the page in a tight POST /api/rooms loop that hit
+  // the rate-limit and locked the chat for 5+ min. Boss caught this in
+  // prod with 360+ red 429s in DevTools. Fix is two-line: gate the
+  // mutation by an explicit `creating` ref instead of `isPending`
+  // (which flips back to false after each settled call), and require a
+  // non-loading rooms array so we never act on a refetch error state.
+  const { data: rooms, isLoading: roomsLoading, isError: roomsError } =
+    useQuery<any[]>({
+      queryKey: ["/api/rooms"],
+      refetchOnWindowFocus: false,
+      refetchInterval: false,
+      staleTime: 60_000,
+      retry: false,
+    });
 
   const createRoomMutation = useMutation({
     mutationFn: async () => {
@@ -2062,18 +2081,33 @@ export default function PartnerChat() {
     },
   });
 
+  // R458: hard guard — once we've decided to create OR adopted an existing
+  // room, this ref locks the effect so it cannot retrigger on rooms-array
+  // identity churn, refetch settles, or partnerRoomId state writes.
+  const partnerRoomResolvedRef = useRef(false);
+
   // Auto-find or create partner room
   useEffect(() => {
-    if (!rooms) return;
+    if (partnerRoomResolvedRef.current) return;
+    if (roomsLoading || roomsError) return;
+    if (!Array.isArray(rooms)) return;
     const existing = rooms.find(
       (r: any) => r.name === "Partner" || r.name?.toLowerCase().includes("partner")
     );
     if (existing) {
+      partnerRoomResolvedRef.current = true;
       setPartnerRoomId(existing.id);
-    } else if (!createRoomMutation.isPending) {
+      return;
+    }
+    // Only fire the mutation once. After it settles (success or error)
+    // the ref stays true so we don't retry into a 429 storm. If creation
+    // genuinely fails the user gets the welcome screen + a manual retry
+    // path — better than a runaway loop that locks the whole chat.
+    if (!createRoomMutation.isPending && !createRoomMutation.isSuccess && !createRoomMutation.isError) {
+      partnerRoomResolvedRef.current = true;
       createRoomMutation.mutate();
     }
-  }, [rooms]);
+  }, [rooms, roomsLoading, roomsError, createRoomMutation.isPending, createRoomMutation.isSuccess, createRoomMutation.isError]);
 
   // PR-A.6 — expose partnerRoomId on window for AttachmentBubble.refreshUrl.
   // Cheaper than threading the prop through ChatBubble; cleared on unmount.
