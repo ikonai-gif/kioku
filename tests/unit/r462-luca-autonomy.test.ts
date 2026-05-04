@@ -168,4 +168,16 @@ describe("R462 — luca_recall_self tool (deliberation)", () => {
       /case\s+"luca_recall_self":\s*return\s+`Ищу в своей памяти:/,
     );
   });
+
+  it("R462-fix: classified READ_ONLY in TOOL_WRITE_CLASS (skips approval gate)", async () => {
+    const { TOOL_WRITE_CLASS, classifyToolCall } = await import(
+      "../../server/lib/luca-approvals/classify.js"
+    );
+    expect((TOOL_WRITE_CLASS as any).luca_recall_self).toBe("READ_ONLY");
+    // classifyToolCall must agree (it can downgrade by input but never
+    // upgrade above the table). For a READ_ONLY entry, output must be
+    // READ_ONLY regardless of input shape.
+    expect(classifyToolCall("luca_recall_self", { query: "Котэ" })).toBe("READ_ONLY");
+    expect(classifyToolCall("luca_recall_self", {})).toBe("READ_ONLY");
+  });
 });
