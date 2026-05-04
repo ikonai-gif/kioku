@@ -24,6 +24,7 @@ import { Pin } from "lucide-react";
 import { useLucaCanvas } from "./LucaCanvas";
 import {
   resolveActivityVariant,
+  shouldMountTimelineHero,
   selectActiveLiveFrame,
   type ActivityTimelineVariant,
 } from "@/lib/activity-timeline-variant";
@@ -230,8 +231,11 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile, variant = "a
   // Phase 6 PR-B: in canvas variant, promote the active live_frame to a hero
   // panel above the activity list so the user can watch Luca browse without
   // hunting for the iframe inside a step card.
+  // Phase 6 PR-D (BRO1 R450 N2): in `canvas-with-host` variant we DO NOT
+  // mount the hero — the host page renders <CanvasCenter> for it. We never
+  // even compute the match so there's no chance of a 1-frame double iframe.
   const heroLiveFrame = useMemo(() => {
-    if (resolvedVariant !== "canvas") return null;
+    if (!shouldMountTimelineHero(resolvedVariant)) return null;
     return selectActiveLiveFrame(grouped);
   }, [resolvedVariant, grouped]);
 
@@ -268,7 +272,9 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile, variant = "a
         <PinnedArtifactsStrip roomId={roomId} onClickPin={onClickPin} refreshKey={pinRefresh} />
       )}
 
-      {/* Phase 6 PR-B: canvas hero — promoted live_frame iframe. */}
+      {/* Phase 6 PR-B: canvas hero — promoted live_frame iframe.
+          PR-D (N2): only the standalone `canvas` variant mounts the hero;
+          `canvas-with-host` defers to <CanvasCenter>. */}
       {resolvedVariant === "canvas" && heroLiveFrame && (
         <div
           className="flex-shrink-0 px-3 pt-3"
@@ -291,7 +297,8 @@ export function ActivityTimeline({ roomId, show, onClose, isMobile, variant = "a
         </div>
       )}
 
-      {/* Phase 6 PR-B: canvas placeholder when no live_frame is active. */}
+      {/* Phase 6 PR-B: canvas placeholder when no live_frame is active.
+          PR-D (N2): `canvas-with-host` skips this too — host shows its own. */}
       {resolvedVariant === "canvas" && !heroLiveFrame && (
         <div
           className="flex-shrink-0 mx-3 mt-3 rounded-lg flex items-center justify-center text-[11px] text-muted-foreground/40"

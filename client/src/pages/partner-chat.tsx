@@ -31,6 +31,8 @@ import { VisionResult } from "@/components/vision/VisionResult";
 import { EmailConfirmModal, type EmailConfirmPayload } from "@/components/EmailConfirmModal";
 import { LucaCanvasProvider, LucaCanvasToggle, useLucaCanvas } from "@/components/LucaCanvas";
 import { ChatDock } from "@/components/ChatDock";
+import { CanvasCenter } from "@/components/CanvasCenter";
+import { useActiveLiveFrame } from "@/hooks/useActiveLiveFrame";
 
 // ── Cookie helpers for voice preferences ─────────────────────
 function getCookie(name: string): string | null {
@@ -3906,6 +3908,9 @@ export default function PartnerChat() {
       />
     </ChatColumnShell>{/* end chat column */}
 
+    {/* ── PR-D: Center canvas (visible only in computer mode, desktop) ── */}
+    <CanvasCenterShell roomId={partnerRoomId} isMobile={isMobile} />
+
     {/* ── Right: Action Panel (desktop inline) ──────────────── */}
     {!isMobile && showActionPanel && (
       <motion.div
@@ -3956,21 +3961,10 @@ export default function PartnerChat() {
 
     {/* ── Phase 1: Activity Timeline (desktop inline) ──────── */}
     {!isMobile && showActivityTimeline && (
-      <motion.div
-        initial={{ width: 0, opacity: 0 }}
-        animate={{ width: "45%", opacity: 1 }}
-        exit={{ width: 0, opacity: 0 }}
-        transition={{ duration: 0.3, ease: "easeInOut" }}
-        className="h-full overflow-hidden flex-shrink-0"
-        style={{ maxWidth: "45%", minWidth: 0, borderLeft: "1px solid rgba(255,255,255,0.06)" }}
-      >
-        <ActivityTimeline
-          roomId={partnerRoomId ?? null}
-          show={true}
-          onClose={() => setShowActivityTimeline(false)}
-          isMobile={false}
-        />
-      </motion.div>
+      <ActivityTimelineShell
+        roomId={partnerRoomId ?? null}
+        onClose={() => setShowActivityTimeline(false)}
+      />
     )}
 
     {/* ── Phase 1: Activity Timeline (mobile overlay) ──────── */}
@@ -4094,5 +4088,81 @@ function ChatColumnShell({
     >
       {children}
     </div>
+  );
+}
+
+/**
+ * Phase 6 PR-D (R-luca-computer-ui hot-fix) — page-level center canvas
+ * mount. Visible only when `mode === "computer"` AND not mobile. Subscribes
+ * to `useActiveLiveFrame` (a separate poller of /api/rooms/:id/tool-activity)
+ * to derive the active step's `live_frame` and forwards it to CanvasCenter.
+ *
+ * Why a thin shell here instead of inlining? CanvasCenter is a pure layout
+ * component (no data-fetch, no WS) so it stays trivially testable. The
+ * data-fetching hook lives at the host level and only runs when the hook
+ * is enabled (`enabled = mode === "computer" && !isMobile`).
+ */
+function CanvasCenterShell({
+  roomId,
+  isMobile,
+}: {
+  roomId: number | null | undefined;
+  isMobile: boolean;
+}) {
+  const { mode } = useLucaCanvas();
+  const enabled = mode === "computer" && !isMobile && roomId != null;
+  const { activeLiveFrame, firstPollState } = useActiveLiveFrame({
+    roomId: roomId ?? null,
+    enabled,
+  });
+  if (!enabled) return null;
+  return (
+    <CanvasCenter
+      roomId={roomId ?? null}
+      activeLiveFrame={activeLiveFrame}
+      firstPollState={firstPollState}
+    />
+  );
+}
+
+/**
+ * Phase 6 PR-D — ActivityTimeline wrapper. Width and variant flip based
+ * on Luca canvas mode:
+ *   - chat:      legacy 45% panel, default variant ("auto" → "sidebar")
+ *   - computer:  slim clamp(280, 22vw, 380) right column, variant
+ *                "canvas-with-host" so we don't double-mount the iframe
+ *                (CanvasCenter owns it).
+ */
+function ActivityTimelineShell({
+  roomId,
+  onClose,
+}: {
+  roomId: number | null;
+  onClose: () => void;
+}) {
+  const { mode } = useLucaCanvas();
+  const isComputer = mode === "computer";
+  const widthCss = isComputer ? "clamp(280px, 22vw, 380px)" : "45%";
+  return (
+    <motion.div
+      initial={{ width: 0, opacity: 0 }}
+      animate={{ width: widthCss, opacity: 1 }}
+      exit={{ width: 0, opacity: 0 }}
+      transition={{ duration: 0.3, ease: "easeInOut" }}
+      className="h-full overflow-hidden flex-shrink-0"
+      style={{
+        maxWidth: isComputer ? 380 : "45%",
+        minWidth: 0,
+        borderLeft: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <ActivityTimeline
+        roomId={roomId}
+        show={true}
+        onClose={onClose}
+        isMobile={false}
+        variant={isComputer ? "canvas-with-host" : "auto"}
+      />
+    </motion.div>
   );
 }

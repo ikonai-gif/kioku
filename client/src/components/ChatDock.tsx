@@ -29,8 +29,12 @@ export function ChatDock({
       className="flex flex-col h-full overflow-hidden flex-shrink-0"
       style={{
         width: widthCss,
-        borderLeft: "1px solid rgba(255,255,255,0.06)",
+        borderRight: "1px solid rgba(255,255,255,0.06)",
         background: "rgba(10,15,30,0.85)",
+        // BRO1 R450 Q-D6 — subtle right-edge shadow so ChatDock reads as
+        // a separate column from CanvasCenter even when the canvas shows
+        // its placeholder (no live iframe yet).
+        boxShadow: "2px 0 12px rgba(0,0,0,0.18)",
       }}
     >
       {children}
