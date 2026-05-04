@@ -9,8 +9,22 @@
 
 import type { LucaCanvasMode } from "./luca-canvas-mode";
 
-export type ActivityTimelineVariant = "sidebar" | "canvas" | "auto";
-export type ResolvedActivityTimelineVariant = "sidebar" | "canvas";
+export type ActivityTimelineVariant =
+  | "sidebar"
+  | "canvas"
+  /**
+   * Phase 6 PR-D (BRO1 R450 N2) — when the host page owns the canvas-level
+   * `<CanvasCenter>` and renders the active live_frame there, ActivityTimeline
+   * MUST NOT also mount its own `<LiveBrowserFrame>` hero (would be a double
+   * iframe → BB session collision). Pass this variant explicitly from the
+   * host (partner-chat) when CanvasCenter is mounted.
+   */
+  | "canvas-with-host"
+  | "auto";
+export type ResolvedActivityTimelineVariant =
+  | "sidebar"
+  | "canvas"
+  | "canvas-with-host";
 
 /**
  * Resolve the effective variant given a prop value and the current canvas
@@ -24,8 +38,23 @@ export function resolveActivityVariant(
   const v = prop ?? "auto";
   if (v === "sidebar") return "sidebar";
   if (v === "canvas") return "canvas";
+  if (v === "canvas-with-host") return "canvas-with-host";
   // auto — derive from canvas mode (defensive: chat / null / undefined → sidebar)
   return canvasMode === "computer" ? "canvas" : "sidebar";
+}
+
+/** True iff this resolved variant should render the canvas-style chrome. */
+export function isCanvasResolvedVariant(
+  v: ResolvedActivityTimelineVariant,
+): boolean {
+  return v === "canvas" || v === "canvas-with-host";
+}
+
+/** True iff this variant should mount its OWN LiveBrowserFrame hero. */
+export function shouldMountTimelineHero(
+  v: ResolvedActivityTimelineVariant,
+): boolean {
+  return v === "canvas";
 }
 
 // ── Live-frame promotion ────────────────────────────────────────────────
