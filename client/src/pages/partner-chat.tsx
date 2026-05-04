@@ -1033,7 +1033,10 @@ function AttachmentBubble({ messageId, att }: { messageId: number; att: Attachme
   );
 }
 
-function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { message: any; isUser: boolean; emotion: string; voiceMode: boolean; onTTSDone?: () => void }) {
+// R461 — memoized to stop re-rendering every bubble on each keystroke in <textarea>.
+// Equality: shallow on primitives + stable message reference (parent useMemo on timeline
+// preserves identity across input changes).
+const ChatBubble = React.memo(function ChatBubbleInner({ message, isUser, emotion, voiceMode, onTTSDone }: { message: any; isUser: boolean; emotion: string; voiceMode: boolean; onTTSDone?: () => void }) {
   const glowColor = getGlowColor(emotion);
   const autoPlayedRef = useRef(false);
   const mountTimeRef = useRef(Date.now());
@@ -1137,7 +1140,7 @@ function ChatBubble({ message, isUser, emotion, voiceMode, onTTSDone }: { messag
       </div>
     </motion.div>
   );
-}
+});
 
 // ── Tool activity trail — история шагов Луки под сообщением ──────────────
 function ToolActivityTrail({ messageId }: { messageId: number }) {
@@ -1273,7 +1276,8 @@ const CREATIVE_TYPE_BADGES: Record<string, { label: string; color: string }> = {
 };
 
 // ── Creative Response Card in Chat ─────────────────────────────
-function CreativeChatCard({ message }: { message: any }) {
+// R461 — memoized for the same reason as ChatBubble.
+const CreativeChatCard = React.memo(function CreativeChatCardInner({ message }: { message: any }) {
   const { toast } = useToast();
   const meta = message.creativeMeta;
   if (!meta) return null;
@@ -1368,7 +1372,7 @@ function CreativeChatCard({ message }: { message: any }) {
       </div>
     </motion.div>
   );
-}
+});
 
 // ── Creative Menu (bottom sheet) ────────────────────────────────
 const WRITE_TYPES = [
@@ -2501,9 +2505,9 @@ export default function PartnerChat() {
     }
   };
 
-  const isUser = (msg: any) => {
-    return msg.agentName === user?.name || msg.agentName === "You" || (!msg.agentId && msg.agentName === (user?.name || "You"));
-  };
+  // R461: alias to the stable useCallback version above so renderedTimeline
+  // memo dep stays stable across keystrokes (was an inline fn — new ref every render).
+  const isUser = isUserFn;
 
   // ── Auto-send a prompt from capability cards ──────────────────
   const sendCapabilityPrompt = useCallback((prompt: string) => {
@@ -3125,6 +3129,47 @@ export default function PartnerChat() {
     });
   }, []);
 
+  // ── R461: memoized merged timeline — do NOT recompute per keystroke ──
+  // Was inlined inside JSX, allocating new objects + arrays every render.
+  // Each <textarea> onChange triggered O(N) bubble re-renders. Memo deps:
+  // messages identity (react-query stable across keystrokes), creativeResults,
+  // emotion, voiceMode, user.name. Input state is NOT a dep — typing won't recompute.
+  const renderedTimeline = useMemo(() => {
+    return [
+      ...messages.map((m: any) => ({ ...m, _type: "msg" as const })),
+      ...creativeResults.map((cr: any) => ({ ...cr, _type: "creative" as const })),
+    ]
+      .sort((a, b) => {
+        const ta = Number(a.createdAt) || a.id || 0;
+        const tb = Number(b.createdAt) || b.id || 0;
+        return ta - tb;
+      })
+      .map((item: any, idx: number, _arr: any[]) =>
+        item._type === "creative" ? (
+          <CreativeChatCard key={`cr-${item.id}`} message={item} />
+        ) : isDailyBriefMessage(item, idx, user?.name) ? (
+          <DailyBriefCard
+            key={`brief-${item.id}`}
+            message={item}
+            userName={user?.name}
+            emotion={emotion}
+            onRefresh={refreshDailyBrief}
+          />
+        ) : (
+          <ChatBubble
+            key={item.id}
+            message={item}
+            isUser={isUserFn(item)}
+            emotion={emotion}
+            voiceMode={voiceMode}
+            onTTSDone={undefined}
+          />
+        )
+      );
+    // refreshDailyBrief intentionally omitted — unstable ref but only fires on click.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, creativeResults, emotion, voiceMode, user?.name, isUserFn]);
+
   // ── Deliberation content for Action Panel ────────────────────
   const deliberationContent = useMemo(() => {
     if (deliberationTopic && partnerRoomId) {
@@ -3417,36 +3462,7 @@ export default function PartnerChat() {
             <CapabilityCards onSelectPrompt={sendCapabilityPrompt} />
           </div>
         ) : (
-          // Merge messages + creative results into one timeline
-          [...messages.map((m: any) => ({ ...m, _type: "msg" as const })),
-           ...creativeResults.map((cr: any) => ({ ...cr, _type: "creative" as const }))]
-            .sort((a, b) => {
-              const ta = Number(a.createdAt) || a.id || 0;
-              const tb = Number(b.createdAt) || b.id || 0;
-              return ta - tb;
-            })
-            .map((item: any, idx: number, arr: any[]) =>
-              item._type === "creative" ? (
-                <CreativeChatCard key={`cr-${item.id}`} message={item} />
-              ) : isDailyBriefMessage(item, idx, user?.name) ? (
-                <DailyBriefCard
-                  key={`brief-${item.id}`}
-                  message={item}
-                  userName={user?.name}
-                  emotion={emotion}
-                  onRefresh={refreshDailyBrief}
-                />
-              ) : (
-                <ChatBubble
-                  key={item.id}
-                  message={item}
-                  isUser={isUser(item)}
-                  emotion={emotion}
-                  voiceMode={voiceMode}
-                  onTTSDone={undefined}
-                />
-              )
-            )
+          renderedTimeline
         )}
 
         <AnimatePresence>
