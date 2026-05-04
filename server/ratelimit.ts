@@ -152,9 +152,19 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
     return next();
   }
 
-  // Resolve identity key (API key or session token)
+  // Resolve identity key (API key, session token, or httpOnly cookie).
+  // R460 — previously only x-api-key and x-session-token headers counted as
+  // "authenticated". Cookie-only browser sessions (the default after
+  // /api/auth/me auto-restore) were treated as unauthenticated and hit the
+  // shared-IP 100 req/min bucket, instantly locking the owner out of their
+  // own product with 429s on /api/rooms, /api/luca/status, /api/luca/approvals,
+  // /api/gallery, etc. cookieParser runs earlier in the middleware chain
+  // (server/index.ts:81) so req.cookies is always populated when the cookie
+  // is present.
   const apiKey = req.headers["x-api-key"] as string | undefined;
-  const sessionToken = req.headers["x-session-token"] as string | undefined;
+  const headerSessionToken = req.headers["x-session-token"] as string | undefined;
+  const cookieSessionToken = (req as any).cookies?.["kioku_session"] as string | undefined;
+  const sessionToken = headerSessionToken || cookieSessionToken;
   const clientIp = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.ip || "unknown";
 
   const isAuthenticated = !!(apiKey || sessionToken);
