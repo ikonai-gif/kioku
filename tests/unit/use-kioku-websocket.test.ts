@@ -407,3 +407,24 @@ describe("useKiokuWebSocket holder — auth-failure close codes (R448 C2)", () =
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 });
+
+describe("useKiokuWebSocket holder — cookie-only auth (R459)", () => {
+  it("empty token opens WS without ?token= query so cookie auth takes over", () => {
+    // R459 — cookie-only session (App.tsx restores user via /api/auth/me
+    // but leaves React-state sessionToken null). Must still open the WS;
+    // server/ws.ts authenticateWs reads the httpOnly kioku_session cookie.
+    const h = __testInternals.acquire(42, "", { closeGraceMs: 100, wsFactory });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(lastWs().url).not.toContain("token=");
+    expect(lastWs().url).toMatch(/\/ws$/);
+    expect(__testInternals.inspectHolder(h).refs).toBe(1);
+  });
+
+  it("empty-token holder is isolated from a later real-token holder", () => {
+    const a = __testInternals.acquire(42, "", { closeGraceMs: 100, wsFactory });
+    const b = __testInternals.acquire(42, "tok-A", { closeGraceMs: 100, wsFactory });
+    expect(b).not.toBe(a);
+    expect(__getKiokuWsRegistrySizeForTests()).toBe(2);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+});

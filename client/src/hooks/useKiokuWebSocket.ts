@@ -148,15 +148,23 @@ function getRegistry(): Map<string, Holder> {
 function makeKey(roomId: number, token: string): string {
   // We hash neither — we just keep them in closure scope on the holder.
   // The Map key is opaque to callers and never leaves this module.
+  // R459 — token may be empty when auth is cookie-only (auto-restore from
+  // httpOnly kioku_session). The Map key still uniquely identifies the
+  // room since cookies are scoped per-origin.
   return `${roomId}::${token}`;
 }
 
 function buildWsUrl(token: string): string {
+  // R459 — when token is empty, omit ?token= so the server falls back
+  // to httpOnly cookie auth (server/ws.ts authenticateWs reads
+  // kioku_session cookie). Cookies are sent automatically on same-origin
+  // WebSocket upgrade requests.
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
   if (typeof window === "undefined") {
-    return `ws://localhost/ws?token=${encodeURIComponent(token)}`;
+    return `ws://localhost/ws${qs}`;
   }
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+  return `${proto}//${window.location.host}/ws${qs}`;
 }
 
 function notifyConnected(h: Holder) {
@@ -351,8 +359,15 @@ export function useKiokuWebSocket(
     wsFactory,
   } = opts;
 
-  const active = enabled && typeof roomId === "number" && !!sessionToken;
-  const key = active ? makeKey(roomId as number, sessionToken as string) : null;
+  // R459 — sessionToken is optional. When the user restored a session from
+  // an httpOnly cookie (App.tsx /api/auth/me path), `sessionToken` in
+  // React state is null but the cookie authorises us anyway. Previous
+  // behaviour gated active on `!!sessionToken` which left WS forever in
+  // "Reconnecting..." for cookie-only sessions and broke partner-chat
+  // real-time updates. Now active only requires a roomId; the WS upgrade
+  // request carries the cookie automatically.
+  const active = enabled && typeof roomId === "number";
+  const key = active ? makeKey(roomId as number, sessionToken ?? "") : null;
 
   const holderRef = useRef<Holder | null>(null);
   const [connected, setConnected] = useState<boolean>(false);
@@ -367,7 +382,7 @@ export function useKiokuWebSocket(
       registry,
       key,
       roomId as number,
-      sessionToken as string,
+      sessionToken ?? "",
       { closeGraceMs, wsFactory },
     );
     holderRef.current = h;
