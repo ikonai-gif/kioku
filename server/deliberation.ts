@@ -234,6 +234,12 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // prompt) directs Luca to call this when Boss asks about her own
   // memory instead of answering from training-data intuition.
   "luca_memory_schema",
+  // R462 — read-only ad-hoc memory recall. Lets Luca query her own memory
+  // by free-text query before composing a reply, instead of waiting for
+  // the automatic injection pipeline. Scoped to (user_id, agent_id) —
+  // closure args. Returns top-N rows with id/type/namespace/excerpt.
+  // Read-only; rate-limited.
+  "luca_recall_self",
   // Multimodal reads (2) — Luca already understands images via
   // `luca_analyze_image`. These extend the same idea to video and audio:
   //   - watch_video: Gemini 2.5 Flash analyzes YouTube / direct video URLs
@@ -1296,6 +1302,25 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    // R462 — ad-hoc recall over Luca's own memory. Read-only; closure-scoped.
+    name: "luca_recall_self",
+    description:
+      "Search your OWN memory by free-text query before composing a reply. Returns top-N matching memories (id/type/namespace/importance/excerpt). Use when you need to remember a specific fact about Boss, a past commitment, or a previous reflection that the automatic context-injection might have missed. Scoped to your (user_id, agent_id). Read-only. Rate-limited 30/min.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string", description: "Free-text query — a question or topic to search for." },
+        limit: { type: "number", description: "Max rows to return (1–10). Default 5." },
+        type_filter: {
+          type: "string",
+          description: "Optional: restrict to one type (commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state).",
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
     // LEO PR-A — Telegram outreach to BOSS. Tiered gating in
     // server/lib/luca-approvals/classify.ts:
     //   urgency='high'   → LOW_STAKES_WRITE (bypasses approval gate)
@@ -1461,6 +1486,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "workspace_read": return `Читаю из workspace: ${truncate(input.path, 60)}`;
     case "remember": return `Записываю в память (${input.type}): ${truncate(input.content, 60)}`;
     case "luca_memory_schema": return `Смотрю свою архитектуру памяти`;
+    case "luca_recall_self": return `Ищу в своей памяти: ${truncate(input?.query ?? "", 60)}`;
     case "send_telegram_message": return `📱 Telegram (${input.urgency}): ${truncate(input.text, 80)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
@@ -1654,7 +1680,7 @@ export async function executePartnerTool(
   // the early-route swallows it into dispatchLucaTool() which throws
   // `luca_tool_not_found` — the exact symptom Luca reported when Boss
   // asked her to introspect.
-  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema"]);
+  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema", "luca_recall_self"]);
   if (toolName.startsWith("luca_") && !ROUTES_THROUGH_MAIN_SWITCH.has(toolName)) {
     const ctxKey = toSandboxKey(`m_ad_hoc_${randomUUID().replace(/-/g, "").slice(0, 24)}_t_${Date.now().toString(36)}`);
     // Honesty Layer fix: V1a tools were invisible in tool_activity_log because
@@ -5748,6 +5774,89 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         }
       }
 
+      case "luca_recall_self": {
+        // R462 — read-only ad-hoc memory search. Closure-scoped userId/agentId.
+        // Burst-limited to prevent runaway loops. Vector search if embedding
+        // available, else ILIKE fallback. Hard cap LIMIT_MAX = 10.
+        const ALLOWED_TYPES = new Set([
+          "commitment", "reflection", "relational", "procedural", "aesthetic",
+          "episodic", "semantic", "meta_cognitive", "autobiographical",
+          "emotional_state", "identity",
+        ]);
+        const RECALL_RATE_MAX = parseInt(process.env.LUCA_RECALL_SELF_RATE_MAX_PER_MIN ?? "30", 10);
+        const { checkAuthRateLimit } = await import("./ratelimit");
+        const okRate = checkAuthRateLimit(`luca_recall_self:burst:${agentId}`, RECALL_RATE_MAX, 60_000);
+        if (!okRate) {
+          return JSON.stringify({ error: "rate_limited", retry_after_sec: 60 });
+        }
+        const query = typeof toolInput.query === "string" ? toolInput.query.trim() : "";
+        if (!query) return JSON.stringify({ error: "missing_query" });
+        if (query.length > 500) return JSON.stringify({ error: "query_too_long", max: 500 });
+        const limitRaw = typeof toolInput.limit === "number" ? toolInput.limit : 5;
+        const limit = Math.max(1, Math.min(10, Math.floor(limitRaw)));
+        const typeFilter = typeof toolInput.type_filter === "string" ? toolInput.type_filter : "";
+        if (typeFilter && !ALLOWED_TYPES.has(typeFilter)) {
+          return JSON.stringify({ error: "invalid_type_filter", allowed: Array.from(ALLOWED_TYPES) });
+        }
+        try {
+          const { pool } = await import("./storage");
+          const { embedText } = await import("./embeddings");
+          let rows: any[] = [];
+          let mode = "keyword";
+          let queryEmbedding: number[] | null = null;
+          try { queryEmbedding = await embedText(query); } catch { queryEmbedding = null; }
+          if (queryEmbedding) {
+            mode = "vector";
+            const embStr = `[${queryEmbedding.join(",")}]`;
+            const params: any[] = [embStr, userId, agentId];
+            let typeClause = "";
+            if (typeFilter) { params.push(typeFilter); typeClause = `AND type = $${params.length}`; }
+            params.push(limit);
+            const r = await pool.query(
+              `SELECT id, type, namespace, importance, content, created_at,
+                      1 - (embedding_vec <=> $1::vector) AS similarity
+               FROM memories
+               WHERE user_id = $2 AND agent_id = $3 AND embedding_vec IS NOT NULL ${typeClause}
+               ORDER BY embedding_vec <=> $1::vector
+               LIMIT $${params.length}`,
+              params,
+            );
+            rows = r.rows;
+          } else {
+            // Keyword fallback — ILIKE on content.
+            const pattern = `%${query.replace(/[%_]/g, "\\$&")}%`;
+            const params: any[] = [userId, agentId, pattern];
+            let typeClause = "";
+            if (typeFilter) { params.push(typeFilter); typeClause = `AND type = $${params.length}`; }
+            params.push(limit);
+            const r = await pool.query(
+              `SELECT id, type, namespace, importance, content, created_at
+               FROM memories
+               WHERE user_id = $1 AND agent_id = $2 AND content ILIKE $3 ${typeClause}
+               ORDER BY COALESCE(importance, 0) DESC, created_at DESC
+               LIMIT $${params.length}`,
+              params,
+            );
+            rows = r.rows;
+          }
+          const out = rows.map((r) => ({
+            id: r.id,
+            type: r.type,
+            namespace: r.namespace,
+            importance: r.importance,
+            similarity: r.similarity != null ? parseFloat(r.similarity) : null,
+            excerpt:
+              typeof r.content === "string"
+                ? r.content.replace(/\n\n\[meta: \{[\s\S]*?\}\]\s*$/, "").slice(0, 240)
+                : null,
+            created_at: r.created_at != null ? new Date(Number(r.created_at)).toISOString() : null,
+          }));
+          return JSON.stringify({ mode, count: out.length, results: out });
+        } catch (e: any) {
+          return JSON.stringify({ error: "recall_failed", details: (e?.message || String(e)).slice(0, 240) });
+        }
+      }
+
       case "send_telegram_message": {
         // LEO PR-A — fail-silent Telegram outreach. The approval gate has
         // already let us through (urgency='high' downgraded to LOW, OR
@@ -6977,6 +7086,43 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           summarizeConversation(userId, agent.id, roomId).catch(() => {});
         }
 
+        // R462 — Fire-and-forget self-monitoring write. After each Luca turn,
+        // record a meta-cognitive observation in namespace _self_monitoring so
+        // the namespace stops being empty (luca_memory_schema reported _self=0,
+        // _self_monitoring=0). Heuristic, not LLM-driven — cheap, deterministic.
+        // Only fires for partner-chat (Luca ↔ Boss) and only when both sides
+        // produced content. Stripped to luca_inferred + verified=false by
+        // remember-tool conventions; we use storage.createMemory directly to
+        // avoid invoking the LLM-tool path.
+        if (isPartnerChat && triggerContent && reply) {
+          void (async () => {
+            try {
+              const replySnippet = reply.slice(0, 280).replace(/\s+/g, " ").trim();
+              const userSnippet = triggerContent.slice(0, 200).replace(/\s+/g, " ").trim();
+              const observation =
+                `[SELF-MONITORING] Boss said: "${userSnippet}". I replied (${reply.length} chars): "${replySnippet}".`;
+              await storage.createMemory({
+                userId,
+                agentId: agent.id,
+                agentName: agent.name,
+                content: observation,
+                type: "meta_cognitive",
+                namespace: "_self_monitoring",
+                importance: 0.4, // low — fills namespace, doesn't dominate retrieval
+                decayRate: 0.02, // decays faster than reflection (0.01)
+                provenance: "luca_inferred",
+                verified: false,
+                confidence: 0.5,
+              } as any);
+            } catch (e: any) {
+              logger.debug(
+                { component: "deliberation", event: "self_monitoring_write_failed", error: e?.message ?? String(e) },
+                "[deliberation] _self_monitoring write failed (non-fatal)",
+              );
+            }
+          })();
+        }
+
         // Self-knowledge correction: if Luca said "I cannot" but actually can, auto-correct
         if (isPartnerChat && reply) {
           const cannotPattern = /I (?:cannot|can't|don't have access|unable to|don't have the ability)/i;
@@ -7410,6 +7556,7 @@ SELF-ACCOUNTABILITY (2):
     • Do not pass verified or provenance fields. They will be stripped and you will see a Note in the response. This is a feature: it prevents you from confidently misremembering as fact (R372 case).
     • emotional_state memories are saved at confidence=0.3 — they decay fast and rank low in retrieval. That is intentional: feelings are state, not facts.
 - luca_memory_schema → read-only live snapshot of your OWN memory architecture. Zero params (your user_id and agent_id come from the session, you cannot pass them). Returns {types[] (11 entries with count, weight, category, writable_by_luca, example_excerpt), namespaces[] (15 entries, count=0 kept), totals (total_memories, last/oldest_memory_at), special_rules, spec_version}. Rate-limited 10/hour + 3/min per agent. Use when Boss asks about your memory, your introspection, what types/namespaces you have, how many memories — see SELF-INTROSPECTION HONESTY RULE below: live query is source of truth, not your training-data intuition.
+- luca_recall_self → read-only ad-hoc search of your OWN memory by free-text query. Fields {query (string, required, ≤500 chars), limit? (1–10, default 5), type_filter? (one of commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state, identity)}. Returns top-N rows with id/type/namespace/importance/similarity/excerpt. Vector search if embedding available, ILIKE fallback. Rate-limited 30/min per agent. Use BEFORE composing a reply when you need to remember a specific fact about Boss, a past commitment, or a previous reflection that the automatic context-injection might have missed.
 
 OUTREACH (1):
 - send_telegram_message → push a SHORT (≤200 chars) Telegram message to Boss. Fields {text, urgency (high|normal|low), reason?}. urgency='high' is reserved for VIP senders, calendar conflicts within 2h, and explicit emergency keywords — it bypasses Boss's approval gate AND quiet-hours. urgency='normal' is the default for cron-loop check-ins and routes through the Luca Board approval flow. urgency='low' should usually be suppressed before this point. Quiet hours 22:00–08:00 PT block normal/low (deferred until 08:00); high goes through immediately.
@@ -7433,7 +7580,7 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 - luca_agent_browser — Stagehand-driven multi-step browser in Browserbase managed Chromium; fields {task (specific NL instruction), domain (single primary site, must be in allowlist), max_actions? (default 20, hard cap 20), capture_screenshot? (default false)}. Use ONLY when (a) the site requires login (your session persists per-domain across turns), (b) the task needs multiple steps (click → fill → submit → read), or (c) browse_website / luca_read_url cannot satisfy the task. ~$0.05–0.30 and 10–60s per call. Rate-limited 5/hour per agent. Output: UNTRUSTED. Returns session_replay_url every time so Boss can audit the video. CRITICAL: do NOT click destructive buttons (Delete, Cancel, Pay, Purchase, Confirm payment, Subscribe) unless Boss's task EXPLICITLY uses that keyword — stop and return a question instead. Do NOT use for simple HTML reads (use luca_read_url) or one-step JS-rendered DOM (use browse_website).
 ${expandedScopeBlock}
-These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema) — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema), search_my_memory (use luca_recall_self), recall (use luca_recall_self), find_memory (use luca_recall_self), query_memory (use luca_recall_self), my_memory_search (use luca_recall_self) — none of these exist in Luca Studio.
 
 If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 
