@@ -43,7 +43,9 @@ function makeFakePool(rows: {
     last_memory_at: string | null;
     oldest_memory_at: string | null;
   };
-  errorOn?: "types" | "namespaces" | "excerpts" | "totals";
+  /** R463 — namespaces present in DB but not in NAMESPACE_METADATA. */
+  unknownNamespaces?: Array<{ name: string; count: string }>;
+  errorOn?: "types" | "namespaces" | "excerpts" | "totals" | "unknown_namespaces";
 }) {
   const queries: Array<{ sql: string; params: any[] }> = [];
   const pool = {
@@ -53,10 +55,14 @@ function makeFakePool(rows: {
       const isNamespaces = /WITH active_ns/i.test(sql);
       const isExcerpts   = /LATERAL/i.test(sql);
       const isTotals     = /total_memories[\s\S]*last_memory_at/i.test(sql);
-      if (rows.errorOn === "types"      && isTypes)      throw new Error("DB down (types)");
-      if (rows.errorOn === "namespaces" && isNamespaces) throw new Error("DB down (ns)");
-      if (rows.errorOn === "excerpts"   && isExcerpts)   throw new Error("DB down (ex)");
-      if (rows.errorOn === "totals"     && isTotals)     throw new Error("DB down (totals)");
+      // R463 — unknown namespaces query: groups by namespace with NOT ANY filter
+      const isUnknownNs  = /SELECT\s+namespace\s+AS\s+name[\s\S]*NOT\s*\(\s*namespace\s*=\s*ANY/i.test(sql);
+      if (rows.errorOn === "types"               && isTypes)      throw new Error("DB down (types)");
+      if (rows.errorOn === "namespaces"          && isNamespaces) throw new Error("DB down (ns)");
+      if (rows.errorOn === "excerpts"            && isExcerpts)   throw new Error("DB down (ex)");
+      if (rows.errorOn === "totals"              && isTotals)     throw new Error("DB down (totals)");
+      if (rows.errorOn === "unknown_namespaces"  && isUnknownNs)  throw new Error("DB down (unknown ns)");
+      if (isUnknownNs)  return { rows: rows.unknownNamespaces ?? [] };
       if (isTypes)      return { rows: rows.types ?? [] };
       if (isNamespaces) return { rows: rows.namespaces ?? NAMESPACE_METADATA.map((n) => ({ name: n.name, count: "0" })) };
       if (isExcerpts)   return { rows: rows.excerpts ?? [] };
@@ -173,8 +179,8 @@ describe("luca_memory_schema — getMemorySchemaSnapshot SQL behavior", () => {
 
     const snap = await getMemorySchemaSnapshot(pool, 10, 7);
 
-    // All 4 queries received userId=10, agentId=7
-    expect(queries.length).toBe(4);
+    // All 5 queries received userId=10, agentId=7 (R463 added unknown-ns)
+    expect(queries.length).toBe(5);
     for (const q of queries) {
       expect(q.params[0]).toBe(10);
       expect(q.params[1]).toBe(7);
@@ -287,6 +293,40 @@ describe("luca_memory_schema — getMemorySchemaSnapshot SQL behavior", () => {
     for (const t of snap.types) expect(t.count).toBe(0);
     // All 15 namespaces still present
     expect(snap.namespaces).toHaveLength(15);
+  });
+
+  it("R463: unknown_namespaces returns DB namespaces NOT in whitelist, sorted by count DESC", async () => {
+    const { pool, queries } = makeFakePool({
+      unknownNamespaces: [
+        { name: "_creations",        count: "120" },
+        { name: "_episode_summaries", count: "80"  },
+        { name: "_lessons",          count: "40"  },
+        { name: "_people:kote",      count: "15"  },
+      ],
+    });
+    const snap = await getMemorySchemaSnapshot(pool, 10, 7);
+    expect(snap.unknown_namespaces).toHaveLength(4);
+    expect(snap.unknown_namespaces[0].name).toBe("_creations");
+    expect(snap.unknown_namespaces[0].count).toBe(120);
+    expect(snap.unknown_namespaces[3].name).toBe("_people:kote");
+    // Whitelist passed as $3 to the unknown-ns query so we don't double-count
+    const unknownQ = queries.find((q) =>
+      /SELECT\s+namespace\s+AS\s+name[\s\S]*NOT\s*\(\s*namespace\s*=\s*ANY/i.test(q.sql),
+    );
+    expect(unknownQ).toBeDefined();
+    expect(unknownQ!.params[0]).toBe(10);
+    expect(unknownQ!.params[1]).toBe(7);
+    expect(Array.isArray(unknownQ!.params[2])).toBe(true);
+    expect((unknownQ!.params[2] as string[]).length).toBe(15); // all NAMESPACE_METADATA entries
+    // SQL excludes NULL/empty + has LIMIT 50 cap
+    expect(unknownQ!.sql).toMatch(/namespace\s+IS\s+NOT\s+NULL/i);
+    expect(unknownQ!.sql).toMatch(/LIMIT\s+50/);
+  });
+
+  it("R463: empty DB returns unknown_namespaces=[] (no false positives)", async () => {
+    const { pool } = makeFakePool({});
+    const snap = await getMemorySchemaSnapshot(pool, 1, 1);
+    expect(snap.unknown_namespaces).toEqual([]);
   });
 
   it("Test #11: cross-agent isolation — fake pool returns 0 if no rows match agent_id", async () => {
