@@ -32,7 +32,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -41,35 +40,13 @@ import { Layout, Maximize2, MessageSquare } from "lucide-react";
 
 import { useLucaActiveStep } from "@/hooks/useLucaActiveStep";
 import {
-  decideStaleOverrideAction,
   type LucaCanvasMode,
   type LucaCanvasOverride,
   nextOverrideForToggle,
   readStoredOverride,
   resolveMode,
-  shouldFireEnterComputer,
   writeStoredOverride,
 } from "@/lib/luca-canvas-mode";
-
-/**
- * BRO1 R450 N1 — synchronous hydration must be SSR-safe. We wrap the
- * read in a try/catch so that if `window` / `localStorage` is unavailable
- * (SSR snapshot, private browsing) we fall back to "auto" without
- * throwing during the very first render.
- */
-function safeReadStoredOverride(
-  roomId: number | null | undefined,
-): LucaCanvasOverride {
-  if (roomId == null) return "auto";
-  if (typeof window === "undefined") return "auto";
-  try {
-    return readStoredOverride(roomId);
-  } catch {
-    return "auto";
-  }
-}
-
-
 
 // ── Context ──────────────────────────────────────────────────────────
 
@@ -109,45 +86,19 @@ export function LucaCanvasProvider({
   pollingEnabled = true,
   children,
 }: LucaCanvasProviderProps) {
-  // BRO1 R450 N1 — synchronous initial hydration removes the chat→computer
-  // first-frame flicker. The room-change effect below re-reads when roomId
-  // changes mid-mount (room switcher, deep link).
-  const [override, setOverrideState] = useState<LucaCanvasOverride>(() =>
-    safeReadStoredOverride(roomId),
-  );
+  const [override, setOverrideState] = useState<LucaCanvasOverride>("auto");
   const [viewportWidth, setViewportWidth] = useState<number>(() => {
     if (typeof window === "undefined") return 1280;
     return window.innerWidth;
   });
 
-  /**
-   * Tracks the last roomId we hydrated for, so the room-change effect
-   * doesn't fire on initial mount (already covered by lazy useState).
-   */
-  const hydratedRoomIdRef = useRef<number | null | undefined>(roomId);
-  /**
-   * BRO1 R450 Q-D5 — when the user clicks the toggle pill we record
-   * timestamp + chosen mode so the stale-override guard refuses to
-   * downgrade their explicit choice for USER_OVERRIDE_GUARD_MS.
-   */
-  const userOverrodeAtMsRef = useRef<number | null>(null);
-  const userOverrodeModeRef = useRef<LucaCanvasOverride | null>(null);
-  /**
-   * One-shot guard: only run the stale-override downgrade once per room
-   * hydration. This way completing a step at runtime (running → done)
-   * doesn't fight a user who manually forced computer mode (BRO1 N3).
-   */
-  const staleDowngradeArmedRef = useRef<boolean>(true);
-
-  // Hydrate stored override on roomId CHANGES (initial value already set).
+  // Hydrate stored override per-room.
   useEffect(() => {
-    if (hydratedRoomIdRef.current === roomId) return;
-    hydratedRoomIdRef.current = roomId;
-    setOverrideState(safeReadStoredOverride(roomId));
-    // Re-arm the stale downgrade guard for the new room.
-    staleDowngradeArmedRef.current = true;
-    userOverrodeAtMsRef.current = null;
-    userOverrodeModeRef.current = null;
+    if (roomId == null) {
+      setOverrideState("auto");
+      return;
+    }
+    setOverrideState(readStoredOverride(roomId));
   }, [roomId]);
 
   // Keep viewportWidth fresh so the breakpoint guard reacts to resize.
@@ -170,99 +121,23 @@ export function LucaCanvasProvider({
     [override, hasComputerStep, viewportWidth],
   );
 
-  /**
-   * BRO1 R450 — transition-ref guard for `onEnterComputerMode`. Fires when
-   * we LAND on computer mode for the first time (covers initial mount
-   * with persisted=computer AND chat→computer transitions). Doesn't
-   * fire on re-renders that stay in computer mode.
-   */
-  const prevModeRef = useRef<LucaCanvasMode | null>(null);
+  // Fire onEnterComputerMode exactly when we transition chat → computer.
+  // We track the previous resolved mode in a ref-style state so the host
+  // page can react idempotently (it'll typically just open ActivityTimeline).
   useEffect(() => {
-    const prev = prevModeRef.current;
-    prevModeRef.current = mode;
-    if (shouldFireEnterComputer(prev, mode) && onEnterComputerMode) {
+    if (mode === "computer" && onEnterComputerMode) {
       onEnterComputerMode();
     }
-    // We intentionally DON'T fire on transitions back to chat — host
-    // owns sidebar collapse policy.
+    // We intentionally DON'T fire on transitions back to chat — host can
+    // decide for itself whether to collapse the sidebar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
-
-  /**
-   * BRO1 R450 N3 + Q-D5 — stale-override downgrade.
-   *
-   * Scenario: user (or a previous tab) left a `computer` override persisted
-   * in localStorage. On a fresh page load with NO running step, that lock
-   * tunnels them straight into the canvas layout with no live frame —
-   * which is the «dark void» BOSS reported.
-   *
-   * Rules:
-   *   1. One-shot per room hydration (`staleDowngradeArmedRef`). Completing
-   *      a step at runtime should NOT fight the user.
-   *   2. Wait until the activity poller has had a chance to settle. We
-   *      detect this via `hasComputerStep` toggling true OR via a 5s
-   *      grace timer that arms the downgrade after first paint. We can't
-   *      directly observe "first poll resolved" from this layer, so the
-   *      timer doubles as a network-error fallback (BRO1 Q-D2 NICE).
-   *   3. Honour user explicit toggle within USER_OVERRIDE_GUARD_MS.
-   *   4. Only downgrade `computer`. `chat` and `auto` are no-ops.
-   */
-  useEffect(() => {
-    if (!staleDowngradeArmedRef.current) return;
-    const decisionNow = decideStaleOverrideAction({
-      armed: staleDowngradeArmedRef.current,
-      override,
-      hasComputerStep,
-      userOverrodeAtMs: userOverrodeAtMsRef.current,
-      userOverrodeMode: userOverrodeModeRef.current,
-      nowMs: Date.now(),
-    });
-    if (decisionNow === "disarm") {
-      staleDowngradeArmedRef.current = false;
-      return;
-    }
-    if (decisionNow !== "downgrade") return;
-
-    // BRO1 Q-D2 — short grace timer so an in-flight first poll can flip
-    // hasComputerStep before we touch the user's storage. Re-evaluate the
-    // decision inside the timer; the user might toggle while we wait.
-    const timer = setTimeout(() => {
-      const decisionLater = decideStaleOverrideAction({
-        armed: staleDowngradeArmedRef.current,
-        override,
-        hasComputerStep,
-        userOverrodeAtMs: userOverrodeAtMsRef.current,
-        userOverrodeMode: userOverrodeModeRef.current,
-        nowMs: Date.now(),
-      });
-      if (decisionLater === "disarm") {
-        staleDowngradeArmedRef.current = false;
-        return;
-      }
-      if (decisionLater !== "downgrade") return;
-      staleDowngradeArmedRef.current = false;
-      if (roomId != null) {
-        setOverrideState("auto");
-        try {
-          writeStoredOverride(roomId, "auto");
-        } catch {
-          /* best-effort */
-        }
-      }
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [override, hasComputerStep, roomId]);
 
   const setOverride = useCallback(
     (next: LucaCanvasOverride) => {
       if (roomId == null) return;
       setOverrideState(next);
       writeStoredOverride(roomId, next);
-      // Any explicit setOverride (user click) disarms the stale guard so
-      // the user's choice survives runtime step completion.
-      staleDowngradeArmedRef.current = false;
-      userOverrodeAtMsRef.current = Date.now();
-      userOverrodeModeRef.current = next;
     },
     [roomId],
   );
