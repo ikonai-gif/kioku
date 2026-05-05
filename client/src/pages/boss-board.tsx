@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { cn } from "@/lib/utils";
+import { LucaProposalsPanel } from "@/components/luca-proposals-panel";
 
 function StatusDot({ status }: { status: string }) {
   const color = status === "ok" || status === "connected"
@@ -391,6 +392,11 @@ export default function BossBoardPage() {
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Luca Proposals (R468) */}
+      <div className="mb-8">
+        <LucaProposalsPanel />
       </div>
 
       {/* Footer */}
