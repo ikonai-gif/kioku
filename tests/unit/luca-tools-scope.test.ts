@@ -16,7 +16,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     if (originalFlag === undefined) delete process.env[FLAG];
     else process.env[FLAG] = originalFlag;
   });
-  it("returns exactly 26 tools for Luca (15 media + 3 workspace + 1 remember + 1 luca_memory_schema + 1 luca_recall_self + 1 luca_self_config + 2 multimodal + 1 telegram + 1 browse_website)", () => {
+  it("returns exactly 27 tools for Luca (15 media + 3 workspace + 1 remember + 1 luca_memory_schema + 1 luca_recall_self + 1 luca_self_config + 1 luca_read_repo + 2 multimodal + 1 telegram + 1 browse_website)", () => {
     // P2.6: bumped from 16 to 18 — added reframe_vertical + apply_ai_disclosure
     //       because produce_episode plan names them by hand (Bro2 F1).
     // P2.12: bumped from 18 to 19 — added `remember` for Luca self-write memory
@@ -35,8 +35,11 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     // R464: bumped from 25 to 26 — added luca_self_config (READ_ONLY,
     //        runtime self-config snapshot — flags / secrets-presence /
     //        effective tool list, no DB / no network).
+    // R466: bumped from 26 to 27 — added luca_read_repo (READ_ONLY,
+    //        single-file fetch from KIOKU GitHub repo, allowlisted paths,
+    //        owner/repo env-locked, 256 KiB cap).
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(26);
+    expect(tools).toHaveLength(27);
   });
 
   it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
@@ -101,7 +104,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     }
   });
 
-  it("all 26 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
+  it("all 27 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     for (const t of tools) {
       expect(typeof t.name).toBe("string");
@@ -126,14 +129,14 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     else process.env[FLAG] = originalFlag;
   });
 
-  it("returns base 26 + expanded 18 = 44 tools for Luca when flag is on", () => {
+  it("returns base 27 + expanded 18 = 45 tools for Luca when flag is on", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     // 15 media + 3 workspace + 1 remember + 1 luca_memory_schema (R455) +
-    // 1 luca_recall_self (R462) + 1 luca_self_config (R464) + 2 multimodal
-    // (watch_video, listen_audio) + 1 send_telegram_message (LEO PR-A)
-    // + 1 browse_website (R-strategic uplift) + 10 Gmail reads/triage
-    // + 2 sends + 2 cloud reads + 3 scheduling + 1 produce_season = 44.
-    expect(tools).toHaveLength(44);
+    // 1 luca_recall_self (R462) + 1 luca_self_config (R464) + 1 luca_read_repo
+    // (R466) + 2 multimodal (watch_video, listen_audio) + 1 send_telegram_message
+    // (LEO PR-A) + 1 browse_website (R-strategic uplift) + 10 Gmail reads/triage
+    // + 2 sends + 2 cloud reads + 3 scheduling + 1 produce_season = 45.
+    expect(tools).toHaveLength(45);
   });
 
   it("includes Gmail, cloud, scheduling, producer tools in expanded scope", () => {
@@ -164,15 +167,16 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
   });
 
   it("getLucaStudioToolNames() returns a fresh Set reflecting current flag", () => {
-    // Base 26 (19 original + watch_video + listen_audio multimodal reads
+    // Base 27 (19 original + watch_video + listen_audio multimodal reads
     // + send_telegram_message LEO PR-A + browse_website R-strategic uplift
     // + luca_memory_schema R455 self-introspection + luca_recall_self R462
-    // + luca_self_config R464 runtime self-config).
+    // + luca_self_config R464 runtime self-config + luca_read_repo R466
+    // GitHub read).
     // Expanded adds 18 (gmail/cloud/schedule/produce_season).
     const withFlag = getLucaStudioToolNames();
-    expect(withFlag.size).toBe(44);
+    expect(withFlag.size).toBe(45);
     delete process.env[FLAG];
     const withoutFlag = getLucaStudioToolNames();
-    expect(withoutFlag.size).toBe(26);
+    expect(withoutFlag.size).toBe(27);
   });
 });

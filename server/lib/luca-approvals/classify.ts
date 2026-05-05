@@ -94,6 +94,8 @@ export type LucaAdmissibleTool =
   | "luca_recall_self"
   // R464 — Read-only snapshot of Luca's own runtime config / flags / tools (READ_ONLY)
   | "luca_self_config"
+  // R466 — Read-only single-file fetch from KIOKU repo via GitHub Contents API (READ_ONLY)
+  | "luca_read_repo"
   // ── Day 6 scope expansion (gated behind LUCA_EXPANDED_SCOPE_ENABLED) ──
   // Gmail reads + triage
   | "gmail_search"
@@ -222,6 +224,14 @@ export const TOOL_WRITE_CLASS = {
   // PRESENCE only (never values), and effective Studio tool name list.
   // No DB, no network. Rate-limited 20/h + 5/min per agent.
   luca_self_config:         "READ_ONLY",
+  // R466 — read-only single-file fetch from the KIOKU repo via GitHub
+  // Contents API. Path allowlist (server/, shared/, tests/, migrations/,
+  // README.md, package.json, ...) + hard deny on .env / secrets / credentials
+  // / .npmrc / id_rsa. File-size cap 256 KiB. Owner+repo are env-locked
+  // (LUCA_READ_REPO_OWNER + LUCA_READ_REPO_REPO); Luca cannot pivot. Token
+  // is a granular fine-grained PAT (Contents:read on KIOKU only). Rate-
+  // limited 20/h + 10/min per agent.
+  luca_read_repo:           "READ_ONLY",
 
   // ─── Gmail reads (content is UNTRUSTED — trust-policy handles that) ─
   gmail_search:             "READ_ONLY",
