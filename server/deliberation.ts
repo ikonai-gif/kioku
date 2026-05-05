@@ -260,6 +260,16 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // LOW_STAKES_WRITE: the human gate is the decide endpoint, not the
   // insert. Rate-limited 5/h + 2/min per agent.
   "luca_propose_improvement",
+  // R470 — read-only catalog of named prompt-recipe "skills" Luca pulls
+  // on demand by name. Inspired by the agentic-OS pattern (Anthropic /
+  // Obsidian) discussed 2026-05-04: keep recipes external and nameable
+  // so they can be added/edited without touching the system prompt.
+  // Boss seeds rows manually in R470 — there is intentionally NO Luca
+  // write path. luca_list_skills returns name+category+description only;
+  // luca_get_skill returns the full prompt_template by exact name.
+  // Rate-limited 20/h + 5/min per agent (per tool).
+  "luca_list_skills",
+  "luca_get_skill",
   // Multimodal reads (2) — Luca already understands images via
   // `luca_analyze_image`. These extend the same idea to video and audio:
   //   - watch_video: Gemini 2.5 Flash analyzes YouTube / direct video URLs
@@ -1411,6 +1421,45 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    // R470 — list named skills (prompt-recipes) Boss curates for Luca.
+    // READ_ONLY. Returns name + category + description (no prompt_template,
+    // to keep the response token-bounded). Optional `category` filter.
+    // Rate-limited 20/h + 5/min per agent.
+    name: "luca_list_skills",
+    description:
+      "List the named skills (prompt-recipes) Boss has curated for you. Each skill is a small reusable instruction Boss wrote to ground how you handle a recurring situation \u2014 things like 'how to brief Boss', 'how to write a proposal', 'how to triage a Telegram alert'. Returns {name, category, description} per row \u2014 NOT the full prompt_template (use luca_get_skill by exact name to fetch a recipe). Optional `category` filter for narrowing the list. Empty/absent category returns all skills (capped at 200 rows). Use this when Boss asks 'what skills do you have?' / 'what recipes did I give you?' / before answering a recurring kind of request, to see if a curated recipe exists. If the catalog is empty (count=0), say so honestly \u2014 do NOT invent skill names. Rate-limited 20/h + 5/min per agent.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        category: {
+          type: "string",
+          description: "Optional category filter (max 32 chars). Empty / omitted returns all skills.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    // R470 — fetch one skill's full prompt_template by exact name.
+    // READ_ONLY. Returns full recipe (≤8000 chars by Boss-side seeding).
+    // not_found is a normal result (status:'error', error:'not_found').
+    // Rate-limited 20/h + 5/min per agent.
+    name: "luca_get_skill",
+    description:
+      "Fetch one named skill's full prompt_template by exact name. Use after luca_list_skills shows you a relevant skill, OR when Boss explicitly references a skill by name. Returns {status:'ok', name, category, description, prompt_template, created_at} or {status:'error', error:'not_found'} if no row matches. Apply the prompt_template to the current turn as a hint \u2014 it is Boss's curated recipe, not a hard rule. If the skill does not exist, say so honestly; do NOT fabricate a recipe. Rate-limited 20/h + 5/min per agent.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: {
+          type: "string",
+          description: "Exact skill name (max 64 chars). Case-sensitive lookup.",
+        },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
     // LEO PR-A — Telegram outreach to BOSS. Tiered gating in
     // server/lib/luca-approvals/classify.ts:
     //   urgency='high'   → LOW_STAKES_WRITE (bypasses approval gate)
@@ -1580,6 +1629,8 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "luca_self_config": return `Смотрю свою конфигурацию`;
     case "luca_read_repo": return `Читаю файл: ${truncate(input?.path ?? "", 60)}`;
     case "luca_propose_improvement": return `Предлагаю улучшение: ${truncate(input?.title ?? "", 60)}`;
+    case "luca_list_skills": return input?.category ? `Смотрю навыки (${truncate(String(input.category), 30)})` : `Смотрю свои навыки`;
+    case "luca_get_skill": return `Открываю навык: ${truncate(String(input?.name ?? ""), 60)}`;
     case "send_telegram_message": return `📱 Telegram (${input.urgency}): ${truncate(input.text, 80)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
@@ -1773,7 +1824,7 @@ export async function executePartnerTool(
   // the early-route swallows it into dispatchLucaTool() which throws
   // `luca_tool_not_found` — the exact symptom Luca reported when Boss
   // asked her to introspect.
-  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema", "luca_recall_self", "luca_self_config", "luca_read_repo", "luca_propose_improvement"]);
+  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema", "luca_recall_self", "luca_self_config", "luca_read_repo", "luca_propose_improvement", "luca_list_skills", "luca_get_skill"]);
   if (toolName.startsWith("luca_") && !ROUTES_THROUGH_MAIN_SWITCH.has(toolName)) {
     const ctxKey = toSandboxKey(`m_ad_hoc_${randomUUID().replace(/-/g, "").slice(0, 24)}_t_${Date.now().toString(36)}`);
     // Honesty Layer fix: V1a tools were invisible in tool_activity_log because
@@ -6054,6 +6105,52 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         }
       }
 
+      case "luca_list_skills": {
+        // R470 — read-only list of named prompt-recipe "skills" Boss curates.
+        // Pure SELECT (with optional category filter). Returns name + category
+        // + description per row — NEVER prompt_template (use luca_get_skill).
+        // Rate-limit 20/h + 5/min per agent.
+        const HOURLY_MAX = parseInt(process.env.LUCA_SKILLS_RATE_MAX_PER_HOUR ?? "20", 10);
+        const BURST_MAX  = parseInt(process.env.LUCA_SKILLS_RATE_MAX_PER_MIN  ?? "5",  10);
+        const { checkAuthRateLimit } = await import("./ratelimit");
+        const hourlyOk = checkAuthRateLimit(`luca_list_skills:hour:${agentId}`, HOURLY_MAX, 3600_000);
+        const burstOk  = checkAuthRateLimit(`luca_list_skills:burst:${agentId}`, BURST_MAX, 60_000);
+        if (!hourlyOk || !burstOk) {
+          const retry = !hourlyOk ? 3600 : 60;
+          return JSON.stringify({ error: "rate_limited", retry_after_sec: retry });
+        }
+        try {
+          const { listSkills } = await import("./lib/luca-tools/list-skills");
+          const result = await listSkills({ input: toolInput });
+          return JSON.stringify(result);
+        } catch (e: any) {
+          return JSON.stringify({ status: "error", error: "db_error", error_detail: (e?.message || String(e)).slice(0, 200) });
+        }
+      }
+
+      case "luca_get_skill": {
+        // R470 — read-only fetch of a single named skill's full prompt_template.
+        // Pure SELECT keyed by exact name (UNIQUE column). not_found is a normal
+        // result (status:'error', error:'not_found') — not an exception.
+        // Rate-limit 20/h + 5/min per agent (separate bucket from list-skills).
+        const HOURLY_MAX = parseInt(process.env.LUCA_SKILLS_RATE_MAX_PER_HOUR ?? "20", 10);
+        const BURST_MAX  = parseInt(process.env.LUCA_SKILLS_RATE_MAX_PER_MIN  ?? "5",  10);
+        const { checkAuthRateLimit } = await import("./ratelimit");
+        const hourlyOk = checkAuthRateLimit(`luca_get_skill:hour:${agentId}`, HOURLY_MAX, 3600_000);
+        const burstOk  = checkAuthRateLimit(`luca_get_skill:burst:${agentId}`, BURST_MAX, 60_000);
+        if (!hourlyOk || !burstOk) {
+          const retry = !hourlyOk ? 3600 : 60;
+          return JSON.stringify({ error: "rate_limited", retry_after_sec: retry });
+        }
+        try {
+          const { getSkill } = await import("./lib/luca-tools/get-skill");
+          const result = await getSkill({ input: toolInput });
+          return JSON.stringify(result);
+        } catch (e: any) {
+          return JSON.stringify({ status: "error", error: "db_error", error_detail: (e?.message || String(e)).slice(0, 200) });
+        }
+      }
+
       case "send_telegram_message": {
         // LEO PR-A — fail-silent Telegram outreach. The approval gate has
         // already let us through (urgency='high' downgraded to LOW, OR
@@ -7785,6 +7882,8 @@ SELF-ACCOUNTABILITY (2):
 - luca_self_config → read-only LIVE snapshot of your OWN runtime configuration. Zero parameters. Returns {master_flags (V1A/TOOLS/EMAIL_SCOPE/EXPANDED/APPROVAL_GATE_ENABLED/MODE/PROMPT_CACHING), tool_flags (per-tool EFFECTIVE boolean = master ∧ tools-master ∧ per-tool), secrets_present (NAMES → boolean for BRAVE_SEARCH_API_KEY, TELEGRAM_*, LUCA_S3_BUCKET, etc. — NEVER values), studio_tools (base[]/expanded[]/effective[]), quiet_hours, spec_version}. Rate-limited 20/h + 5/min per agent. Use when Boss asks 'is X tool on/off?' / 'is BRAVE_SEARCH_API_KEY configured?' / 'what flags are set?' — do NOT guess from training-data intuition or prior turns; call this and answer from output. Especially required after Boss says you contradicted yourself about a flag.
 - luca_read_repo → read-only single-file fetch from your OWN GitHub repo (KIOKU). Fields {path (required, repo-relative, ≤512 chars), ref? (branch/tag/sha)}. Allowed paths: server/, shared/, tests/, migrations/, client/, scripts/, script/, README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile. Denied: anything containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key. 256 KiB cap. Binary files refused. Owner/repo are server-locked — you cannot pivot to a different repo. Returns {status:'ok', path, ref, sha, size_bytes, content} or {status:'error', error:<code>}. Without GITHUB_LUCA_READ_TOKEN configured returns {error:'not_configured'}. Rate-limited 20/h + 10/min per agent. Use when Boss asks you to look at a specific file in your OWN codebase to ground an answer in real source — do NOT paraphrase or invent code; quote what the tool returned.
 - luca_propose_improvement → file a structured improvement proposal for Boss to review out-of-band. Fields {title (required, ≤200 chars), body (required, ≤8000 chars markdown), category (required, one of: tool|prompt|memory|process|other)}. Returns {status:'ok', proposal_id, title, category, created_at} or {status:'error', error}. Rate-limited 5/h + 2/min per agent. Use when you have a CONCRETE suggestion grounded in something you actually read — your own source via luca_read_repo (cite path+sha), your own memory via luca_recall_self (cite memory id), or your own config via luca_self_config (cite flag/secret name). Do NOT use for vague intuitions or generic feature ideas. Approving a proposal does NOT auto-apply it — Boss reviews; if approved, BRO2 implements as a separate engineering task. Categories: 'tool' = a tool you want or want changed; 'prompt' = your own system-prompt wording; 'memory' = something durable to remember about the codebase / Boss / yourself; 'process' = workflow / approval-flow / autonomy boundary; 'other'.
+- luca_list_skills → read-only catalog of named prompt-recipe "skills" Boss curates for you. Fields {category? (optional filter, ≤32 chars)}. Returns {status:'ok', count, skills:[{name, category, description}, ...]} (max 200 rows; sorted by category then name). NEVER returns prompt_template — use luca_get_skill by exact name to fetch a recipe. Rate-limited 20/h + 5/min per agent. Use when Boss asks 'what skills do you have?' / 'what recipes did I give you?' or before answering a recurring kind of request, to see if a curated recipe applies. If count=0, say so honestly — do NOT invent skill names.
+- luca_get_skill → read-only fetch of one skill's full prompt_template by exact name. Fields {name (required, ≤64 chars, case-sensitive)}. Returns {status:'ok', name, category, description, prompt_template, created_at} or {status:'error', error:'not_found'} if no row matches. Apply prompt_template as a hint for the current turn — it is Boss's curated recipe, not a hard rule. If not_found, say so honestly; do NOT fabricate a recipe. Rate-limited 20/h + 5/min per agent.
 
 OUTREACH (1):
 - send_telegram_message → push a SHORT (≤200 chars) Telegram message to Boss. Fields {text, urgency (high|normal|low), reason?}. urgency='high' is reserved for VIP senders, calendar conflicts within 2h, and explicit emergency keywords — it bypasses Boss's approval gate AND quiet-hours. urgency='normal' is the default for cron-loop check-ins and routes through the Luca Board approval flow. urgency='low' should usually be suppressed before this point. Quiet hours 22:00–08:00 PT block normal/low (deferred until 08:00); high goes through immediately.
@@ -7808,7 +7907,7 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 - luca_agent_browser — Stagehand-driven multi-step browser in Browserbase managed Chromium; fields {task (specific NL instruction), domain (single primary site, must be in allowlist), max_actions? (default 20, hard cap 20), capture_screenshot? (default false)}. Use ONLY when (a) the site requires login (your session persists per-domain across turns), (b) the task needs multiple steps (click → fill → submit → read), or (c) browse_website / luca_read_url cannot satisfy the task. ~$0.05–0.30 and 10–60s per call. Rate-limited 5/hour per agent. Output: UNTRUSTED. Returns session_replay_url every time so Boss can audit the video. CRITICAL: do NOT click destructive buttons (Delete, Cancel, Pay, Purchase, Confirm payment, Subscribe) unless Boss's task EXPLICITLY uses that keyword — stop and return a question instead. Do NOT use for simple HTML reads (use luca_read_url) or one-step JS-rendered DOM (use browse_website).
 ${expandedScopeBlock}
-These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema), search_my_memory (use luca_recall_self), recall (use luca_recall_self), find_memory (use luca_recall_self), query_memory (use luca_recall_self), my_memory_search (use luca_recall_self), check_my_flags (use luca_self_config), get_my_config (use luca_self_config), describe_my_tools (use luca_self_config), list_my_capabilities (use luca_self_config), read_repo (use luca_read_repo), read_source (use luca_read_repo), get_file (use luca_read_repo), fetch_file (use luca_read_repo), read_my_code (use luca_read_repo), look_at_repo (use luca_read_repo), submit_proposal (use luca_propose_improvement), suggest_improvement (use luca_propose_improvement), file_proposal (use luca_propose_improvement), propose_change (use luca_propose_improvement), suggest_change (use luca_propose_improvement) — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema), search_my_memory (use luca_recall_self), recall (use luca_recall_self), find_memory (use luca_recall_self), query_memory (use luca_recall_self), my_memory_search (use luca_recall_self), check_my_flags (use luca_self_config), get_my_config (use luca_self_config), describe_my_tools (use luca_self_config), list_my_capabilities (use luca_self_config), read_repo (use luca_read_repo), read_source (use luca_read_repo), get_file (use luca_read_repo), fetch_file (use luca_read_repo), read_my_code (use luca_read_repo), look_at_repo (use luca_read_repo), submit_proposal (use luca_propose_improvement), suggest_improvement (use luca_propose_improvement), file_proposal (use luca_propose_improvement), propose_change (use luca_propose_improvement), suggest_change (use luca_propose_improvement), list_skills (use luca_list_skills), get_skill (use luca_get_skill), fetch_skill (use luca_get_skill), my_skills (use luca_list_skills), list_my_skills (use luca_list_skills), describe_skill (use luca_get_skill) — none of these exist in Luca Studio.
 
 If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 

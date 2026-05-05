@@ -724,6 +724,31 @@ export const insertLucaProposalSchema = createInsertSchema(lucaProposals).omit({
 export type InsertLucaProposal = z.infer<typeof insertLucaProposalSchema>;
 export type LucaProposal = typeof lucaProposals.$inferSelect;
 
+// ──────────────────────────────────────────────────────────────────────────────────
+// R470 (BRO2) — luca_skills (0016)
+// Read-only catalog of named prompt-recipe "skills" Luca pulls on demand.
+// Boss seeds rows manually; Luca READS only via luca_list_skills +
+// luca_get_skill. There is intentionally no Luca write path — the trust
+// gradient is: Luca consults the catalog, she does not curate it.
+// Mirrors migrations/0016_luca_skills.sql.
+// ──────────────────────────────────────────────────────────────────────────────────
+export const lucaSkills = pgTable("luca_skills", {
+  id:              bigserial("id", { mode: "number" }).primaryKey(),
+  name:            varchar("name", { length: 64 }).notNull().unique(),
+  category:        varchar("category", { length: 32 }).notNull(),
+  promptTemplate:  text("prompt_template").notNull(),
+  description:     text("description").notNull(),
+  createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("idx_luca_skills_category_name").on(t.category, t.name),
+]);
+
+export const insertLucaSkillSchema = createInsertSchema(lucaSkills).omit({
+  id: true, createdAt: true,
+});
+export type InsertLucaSkill = z.infer<typeof insertLucaSkillSchema>;
+export type LucaSkill = typeof lucaSkills.$inferSelect;
+
 // ────────────────────────────────────────────────────────────────────────────
 // PR-A.5 — telegram_inbound_log (0011)
 // Forensic + IDEMPOTENCY log for inbound Telegram updates hitting

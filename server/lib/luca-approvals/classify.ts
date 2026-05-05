@@ -98,6 +98,9 @@ export type LucaAdmissibleTool =
   | "luca_read_repo"
   // R467 — Self-improvement proposals queue write (LOW_STAKES_WRITE; gate is the decide endpoint, not the insert)
   | "luca_propose_improvement"
+  // R470 — Read-only catalog of named prompt-recipe "skills" Boss curates (READ_ONLY; no write path)
+  | "luca_list_skills"
+  | "luca_get_skill"
   // ── Day 6 scope expansion (gated behind LUCA_EXPANDED_SCOPE_ENABLED) ──
   // Gmail reads + triage
   | "gmail_search"
@@ -241,6 +244,14 @@ export const TOOL_WRITE_CLASS = {
   // every proposal twice (file + apply) which defeats the point of
   // letting Luca file proposals at all. Rate-limited 5/h + 2/min.
   luca_propose_improvement: "LOW_STAKES_WRITE",
+  // R470 — Read-only skills catalog. Pure SELECTs with bounded result
+  // size (capped at 200 rows for list, single row for get). No writes,
+  // no network, no I/O outside Postgres. Rate-limited 20/h + 5/min per
+  // agent (per tool). Boss seeds rows manually — there is intentionally
+  // no Luca write path; the trust gradient is "Luca consults catalog,
+  // does not curate it".
+  luca_list_skills:         "READ_ONLY",
+  luca_get_skill:           "READ_ONLY",
 
   // ─── Gmail reads (content is UNTRUSTED — trust-policy handles that) ─
   gmail_search:             "READ_ONLY",

@@ -764,6 +764,23 @@ export async function initDb() {
       ON luca_proposals (user_id, created_at DESC);
   `);
 
+  // R470 (BRO2) — luca_skills: read-only prompt-recipe catalog Luca can pull
+  // by name. Mirrors migrations/0016_luca_skills.sql + shared/schema.ts:
+  // lucaSkills. Idempotent CREATE/INDEX. No Luca write path — Boss seeds
+  // rows manually; Luca only READS via luca_list_skills + luca_get_skill.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS luca_skills (
+      id                BIGSERIAL PRIMARY KEY,
+      name              VARCHAR(64) NOT NULL UNIQUE,
+      category          VARCHAR(32) NOT NULL,
+      prompt_template   TEXT NOT NULL,
+      description       TEXT NOT NULL,
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_luca_skills_category_name
+      ON luca_skills (category, name);
+  `);
+
   // ── Week 3 migrations: version-guarded new changes ──────────────────────────────
   // Demo migration: verifies the migration-guard infrastructure works end-to-end.
   // Uses a no-op SQL (SELECT 1) so it is safe to run on any database state.

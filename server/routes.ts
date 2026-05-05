@@ -3701,6 +3701,85 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── R470 — luca_skills: list + get endpoints (owner-only, read-only) ──
+  //
+  // Read-only catalog of named prompt-recipe "skills" Boss curates for Luca.
+  // No Luca-write path; Boss seeds rows manually via direct DB INSERT.
+  // These endpoints exist so Boss can see / verify the catalog — they
+  // mirror what Luca's tools (luca_list_skills, luca_get_skill) return.
+  //
+  //   GET /api/luca/skills?category=<optional>      (owner)
+  //   GET /api/luca/skills/:name                    (owner)
+  //
+  // Both are owner-only. The catalog is global (not per-user) by design —
+  // skills are Boss's curated recipes, not user data.
+
+  app.get("/api/luca/skills", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+
+    const categoryParam = typeof req.query.category === "string" ? req.query.category.trim() : "";
+    if (categoryParam.length > 32) {
+      return res.status(400).json({ error: "category_too_long" });
+    }
+    if (categoryParam.includes("\0")) {
+      return res.status(400).json({ error: "invalid_chars" });
+    }
+    const limitParam = Number(req.query.limit ?? 200);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 200
+      ? Math.floor(limitParam) : 200;
+
+    try {
+      const r = categoryParam
+        ? await pool.query(
+            `SELECT id, name, category, description, created_at
+               FROM luca_skills
+              WHERE category = $1
+              ORDER BY category ASC, name ASC
+              LIMIT $2`,
+            [categoryParam, limit],
+          )
+        : await pool.query(
+            `SELECT id, name, category, description, created_at
+               FROM luca_skills
+              ORDER BY category ASC, name ASC
+              LIMIT $1`,
+            [limit],
+          );
+      res.json({ skills: r.rows, count: r.rows.length, category: categoryParam || null });
+    } catch (e: any) {
+      logger.error({ source: "luca-skills", err: e?.message }, "[luca] skills/list failed");
+      res.status(500).json({ error: e?.message || "list failed" });
+    }
+  }));
+
+  app.get("/api/luca/skills/:name", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+
+    const name = typeof req.params.name === "string" ? req.params.name.trim() : "";
+    if (!name) return res.status(400).json({ error: "missing_name" });
+    if (name.length > 64) return res.status(400).json({ error: "name_too_long" });
+    if (name.includes("\0")) return res.status(400).json({ error: "invalid_chars" });
+
+    try {
+      const r = await pool.query(
+        `SELECT id, name, category, description, prompt_template, created_at
+           FROM luca_skills
+          WHERE name = $1
+          LIMIT 1`,
+        [name],
+      );
+      if (r.rows.length === 0) return res.status(404).json({ error: "not_found" });
+      res.json({ skill: r.rows[0] });
+    } catch (e: any) {
+      logger.error({ source: "luca-skills", err: e?.message }, "[luca] skills/get failed");
+      res.status(500).json({ error: e?.message || "get failed" });
+    }
+  }));
+
   // ── Admin: internal jobs (Step 3) ──────────────────────────────────────────
   // Manual-trigger + status for the Step 3 job scheduler (daily-backup,
   // missed-by-both annual review). Run-endpoint bypasses the day-claim so
