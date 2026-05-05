@@ -16,7 +16,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     if (originalFlag === undefined) delete process.env[FLAG];
     else process.env[FLAG] = originalFlag;
   });
-  it("returns exactly 28 tools for Luca (15 media + 3 workspace + 1 remember + 1 luca_memory_schema + 1 luca_recall_self + 1 luca_self_config + 1 luca_read_repo + 1 luca_propose_improvement + 2 multimodal + 1 telegram + 1 browse_website)", () => {
+  it("returns exactly 30 tools for Luca (15 media + 3 workspace + 1 remember + 1 luca_memory_schema + 1 luca_recall_self + 1 luca_self_config + 1 luca_read_repo + 1 luca_propose_improvement + 2 luca_skills + 2 multimodal + 1 telegram + 1 browse_website)", () => {
     // P2.6: bumped from 16 to 18 — added reframe_vertical + apply_ai_disclosure
     //       because produce_episode plan names them by hand (Bro2 F1).
     // P2.12: bumped from 18 to 19 — added `remember` for Luca self-write memory
@@ -41,8 +41,10 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     // R467: bumped from 27 to 28 — added luca_propose_improvement
     //        (LOW_STAKES_WRITE; structured proposal insert, human gate is
     //        the decide endpoint, NOT the insert; rate-limited 5/h + 2/min).
+    // R470: bumped from 28 to 30 — added luca_list_skills + luca_get_skill
+    //        (READ_ONLY; named prompt-recipe catalog Boss curates manually).
     const tools = getPartnerToolsForAgent({ name: "Luca" });
-    expect(tools).toHaveLength(28);
+    expect(tools).toHaveLength(30);
   });
 
   it("includes the produce_episode pipeline dependencies (P2.6 Bro2 F1)", () => {
@@ -107,7 +109,7 @@ describe("getPartnerToolsForAgent — Luca Studio scope (W7 P2.5)", () => {
     }
   });
 
-  it("all 28 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
+  it("all 30 Luca tools have valid Anthropic Tool shape (name + input_schema)", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     for (const t of tools) {
       expect(typeof t.name).toBe("string");
@@ -132,15 +134,15 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     else process.env[FLAG] = originalFlag;
   });
 
-  it("returns base 28 + expanded 18 = 46 tools for Luca when flag is on", () => {
+  it("returns base 30 + expanded 18 = 48 tools for Luca when flag is on", () => {
     const tools = getPartnerToolsForAgent({ name: "Luca" });
     // 15 media + 3 workspace + 1 remember + 1 luca_memory_schema (R455) +
     // 1 luca_recall_self (R462) + 1 luca_self_config (R464) + 1 luca_read_repo
-    // (R466) + 1 luca_propose_improvement (R467) + 2 multimodal (watch_video,
-    // listen_audio) + 1 send_telegram_message (LEO PR-A) + 1 browse_website
-    // (R-strategic uplift) + 10 Gmail reads/triage + 2 sends + 2 cloud reads
-    // + 3 scheduling + 1 produce_season = 46.
-    expect(tools).toHaveLength(46);
+    // (R466) + 1 luca_propose_improvement (R467) + 2 luca_skills (R470) +
+    // 2 multimodal (watch_video, listen_audio) + 1 send_telegram_message
+    // (LEO PR-A) + 1 browse_website (R-strategic uplift) + 10 Gmail reads/
+    // triage + 2 sends + 2 cloud reads + 3 scheduling + 1 produce_season = 48.
+    expect(tools).toHaveLength(48);
   });
 
   it("includes Gmail, cloud, scheduling, producer tools in expanded scope", () => {
@@ -178,9 +180,9 @@ describe("getPartnerToolsForAgent — expanded scope (Day 6 part 3)", () => {
     // GitHub read + luca_propose_improvement R467 structured proposal).
     // Expanded adds 18 (gmail/cloud/schedule/produce_season).
     const withFlag = getLucaStudioToolNames();
-    expect(withFlag.size).toBe(46);
+    expect(withFlag.size).toBe(48);
     delete process.env[FLAG];
     const withoutFlag = getLucaStudioToolNames();
-    expect(withoutFlag.size).toBe(28);
+    expect(withoutFlag.size).toBe(30);
   });
 });
