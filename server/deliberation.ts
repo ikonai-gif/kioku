@@ -6512,6 +6512,19 @@ export function isRoomTurnActive(roomId: number): boolean {
 }
 
 /**
+ * R473: A room name counts as "partner chat" iff it's either the user-facing
+ * `Partner` room or the hidden self-monitoring fabrication probe room
+ * (`__kioku_self_test__`). The probe room must reuse the partner-chat
+ * pipeline so probes exercise the same prompt and tools Boss sees —
+ * otherwise probes test a stripped-down Luca and falsely fail.
+ *
+ * Exported so unit tests can pin the contract.
+ */
+export function isPartnerChatRoomName(roomName: string | undefined): boolean {
+  return roomName === "Partner" || roomName === "__kioku_self_test__";
+}
+
+/**
  * Trigger AI agent responses after a human message is posted.
  * Runs async — does NOT block the HTTP response.
  */
@@ -6524,7 +6537,13 @@ export async function triggerAgentResponses(
   roomAgentIds: number[],
   roomName?: string
 ): Promise<void> {
-  const isPartnerChat = roomName === "Partner";
+  // R473: self-monitoring fabrication probes run inside the hidden
+  // `__kioku_self_test__` room. They MUST go through the same partner-chat
+  // pipeline as Boss talks to Luca — otherwise probes don't see partner tools
+  // (luca_search / luca_read_url / luca_analyze_image / etc.) and the
+  // anti-fabrication system-prompt rules (R471 reading honesty etc.) never
+  // reach Luca, making every probe falsely red.
+  const isPartnerChat = isPartnerChatRoomName(roomName);
   const __turnStartedAt = Date.now();
   if (!openai && !GEMINI_API_KEY && !ANTHROPIC_API_KEY) return; // no shared provider
   // Check room lock with auto-expiry
@@ -6557,10 +6576,17 @@ export async function triggerAgentResponses(
       return;
     }
 
-    // Fetch room history for context (last 20 messages)
+    // Fetch room history for context (last 20 messages).
+    // R473: in the self-monitoring probe room, restrict history to ONLY the
+    // current probe message. Otherwise Luca sees the prior days' identical
+    // probe prompts and misreads the situation as a runaway loop
+    // ("SelfTest, ты зациклился…") instead of answering each probe on its
+    // own merits. This is a safe, scoped override — only affects the hidden
+    // self_monitoring room, never user chats.
     const history = await storage.getRoomMessages(roomId, userId);
     if (!history) { roomLocks.delete(roomId); return; }
-    const recent = history.slice(-20);
+    const isSelfMonitoringRoom = roomName === "__kioku_self_test__";
+    const recent = isSelfMonitoringRoom ? history.slice(-1) : history.slice(-20);
 
     // Each respondent replies in sequence (staggered timing for realism)
     for (let i = 0; i < respondents.length; i++) {
