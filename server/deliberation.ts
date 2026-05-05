@@ -247,6 +247,12 @@ const LUCA_STUDIO_TOOL_NAMES_BASE: readonly string[] = [
   // 2026-05-04 partner-chat where Luca repeatedly contradicted herself
   // about which flags were on. No DB, no network, zero params.
   "luca_self_config",
+  // R466 — read-only single-file fetch from the KIOKU repo via GitHub
+  // Contents API. Path allowlist + hard deny on secret-bearing paths +
+  // file-size cap. Owner/repo are env-locked. Lets Luca read her own
+  // source code to answer architecture questions and propose changes
+  // (Phase 3 closes the loop with luca_propose_improvement).
+  "luca_read_repo",
   // Multimodal reads (2) — Luca already understands images via
   // `luca_analyze_image`. These extend the same idea to video and audio:
   //   - watch_video: Gemini 2.5 Flash analyzes YouTube / direct video URLs
@@ -1341,6 +1347,33 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     },
   },
   {
+    // R466 Phase 2 — Read-only access to KIOKU GitHub repo (granular fine-grained PAT).
+    // Path allowlist (server/, shared/, tests/, migrations/, client/, scripts/, script/,
+    // README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts,
+    // vite.config.ts, Dockerfile) + deny substrings (.env, secrets/, credentials/,
+    // .npmrc, id_rsa, id_ed25519, /.ssh/, private_key). 256 KiB cap. Owner/repo are
+    // env-locked and NOT pivot-able from input. Token from GITHUB_LUCA_READ_TOKEN.
+    // Returns {error:'not_configured'} if no token. Read-only. Rate-limited 20/h + 10/min.
+    name: "luca_read_repo",
+    description:
+      "Read a single file from the KIOKU GitHub repository (read-only, allowlisted paths only). Use when Boss asks you to look at a specific file in your own codebase to ground an answer in real source. Path must start with one of: server/, shared/, tests/, migrations/, client/, scripts/, script/, or be one of: README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile. Files containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key are blocked. Max 256 KiB. Binary files are not supported. Owner/repo are server-locked. Rate-limited 20/h + 10/min per agent.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        path: {
+          type: "string",
+          description: "Repo-relative path (no leading slash, max 512 chars). Examples: 'package.json', 'server/deliberation.ts', 'tests/unit/example.test.ts'.",
+        },
+        ref: {
+          type: "string",
+          description: "Optional git ref (branch / tag / commit SHA). Defaults to the configured default branch.",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
     // LEO PR-A — Telegram outreach to BOSS. Tiered gating in
     // server/lib/luca-approvals/classify.ts:
     //   urgency='high'   → LOW_STAKES_WRITE (bypasses approval gate)
@@ -1508,6 +1541,7 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "luca_memory_schema": return `Смотрю свою архитектуру памяти`;
     case "luca_recall_self": return `Ищу в своей памяти: ${truncate(input?.query ?? "", 60)}`;
     case "luca_self_config": return `Смотрю свою конфигурацию`;
+    case "luca_read_repo": return `Читаю файл: ${truncate(input?.path ?? "", 60)}`;
     case "send_telegram_message": return `📱 Telegram (${input.urgency}): ${truncate(input.text, 80)}`;
     default: return `Использую инструмент: ${toolName}`;
   }
@@ -1701,7 +1735,7 @@ export async function executePartnerTool(
   // the early-route swallows it into dispatchLucaTool() which throws
   // `luca_tool_not_found` — the exact symptom Luca reported when Boss
   // asked her to introspect.
-  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema", "luca_recall_self", "luca_self_config"]);
+  const ROUTES_THROUGH_MAIN_SWITCH = new Set<string>(["luca_memory_schema", "luca_recall_self", "luca_self_config", "luca_read_repo"]);
   if (toolName.startsWith("luca_") && !ROUTES_THROUGH_MAIN_SWITCH.has(toolName)) {
     const ctxKey = toSandboxKey(`m_ad_hoc_${randomUUID().replace(/-/g, "").slice(0, 24)}_t_${Date.now().toString(36)}`);
     // Honesty Layer fix: V1a tools were invisible in tool_activity_log because
@@ -5930,6 +5964,31 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         }
       }
 
+      case "luca_read_repo": {
+        // R466 — read-only file fetch from KIOKU GitHub repo.
+        // Path allowlist + deny + size cap enforced inside fetchRepoFile.
+        // Owner/repo env-locked; PAT from GITHUB_LUCA_READ_TOKEN; without
+        // it returns {error:'not_configured'}. Rate-limit 20/h + 10/min.
+        const HOURLY_MAX = parseInt(process.env.LUCA_READ_REPO_RATE_MAX_PER_HOUR ?? "20", 10);
+        const BURST_MAX  = parseInt(process.env.LUCA_READ_REPO_RATE_MAX_PER_MIN  ?? "10", 10);
+        const { checkAuthRateLimit } = await import("./ratelimit");
+        const hourlyOk = checkAuthRateLimit(`luca_read_repo:hour:${agentId}`, HOURLY_MAX, 3600_000);
+        const burstOk  = checkAuthRateLimit(`luca_read_repo:burst:${agentId}`, BURST_MAX, 60_000);
+        if (!hourlyOk || !burstOk) {
+          const retry = !hourlyOk ? 3600 : 60;
+          return JSON.stringify({ error: "rate_limited", retry_after_sec: retry });
+        }
+        try {
+          const { fetchRepoFile } = await import("./lib/luca-tools/read-repo");
+          const path = typeof toolInput?.path === "string" ? toolInput.path : "";
+          const ref = typeof toolInput?.ref === "string" && toolInput.ref ? toolInput.ref : undefined;
+          const result = await fetchRepoFile(path, { ref });
+          return JSON.stringify(result);
+        } catch (e: any) {
+          return JSON.stringify({ status: "error", error: "fetch_failed", error_detail: (e?.message || String(e)).slice(0, 200) });
+        }
+      }
+
       case "send_telegram_message": {
         // LEO PR-A — fail-silent Telegram outreach. The approval gate has
         // already let us through (urgency='high' downgraded to LOW, OR
@@ -7659,6 +7718,7 @@ SELF-ACCOUNTABILITY (2):
 - luca_memory_schema → read-only live snapshot of your OWN memory architecture. Zero params (your user_id and agent_id come from the session, you cannot pass them). Returns {types[] (11 entries with count, weight, category, writable_by_luca, example_excerpt), namespaces[] (15 entries, count=0 kept), totals (total_memories, last/oldest_memory_at), special_rules, spec_version}. Rate-limited 10/hour + 3/min per agent. Use when Boss asks about your memory, your introspection, what types/namespaces you have, how many memories — see SELF-INTROSPECTION HONESTY RULE below: live query is source of truth, not your training-data intuition.
 - luca_recall_self → read-only ad-hoc search of your OWN memory by free-text query. Fields {query (string, required, ≤500 chars), limit? (1–10, default 5), type_filter? (one of commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state, identity)}. Returns top-N rows with id/type/namespace/importance/similarity/excerpt. Vector search if embedding available, ILIKE fallback. Rate-limited 30/min per agent. Use BEFORE composing a reply when you need to remember a specific fact about Boss, a past commitment, or a previous reflection that the automatic context-injection might have missed.
 - luca_self_config → read-only LIVE snapshot of your OWN runtime configuration. Zero parameters. Returns {master_flags (V1A/TOOLS/EMAIL_SCOPE/EXPANDED/APPROVAL_GATE_ENABLED/MODE/PROMPT_CACHING), tool_flags (per-tool EFFECTIVE boolean = master ∧ tools-master ∧ per-tool), secrets_present (NAMES → boolean for BRAVE_SEARCH_API_KEY, TELEGRAM_*, LUCA_S3_BUCKET, etc. — NEVER values), studio_tools (base[]/expanded[]/effective[]), quiet_hours, spec_version}. Rate-limited 20/h + 5/min per agent. Use when Boss asks 'is X tool on/off?' / 'is BRAVE_SEARCH_API_KEY configured?' / 'what flags are set?' — do NOT guess from training-data intuition or prior turns; call this and answer from output. Especially required after Boss says you contradicted yourself about a flag.
+- luca_read_repo → read-only single-file fetch from your OWN GitHub repo (KIOKU). Fields {path (required, repo-relative, ≤512 chars), ref? (branch/tag/sha)}. Allowed paths: server/, shared/, tests/, migrations/, client/, scripts/, script/, README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile. Denied: anything containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key. 256 KiB cap. Binary files refused. Owner/repo are server-locked — you cannot pivot to a different repo. Returns {status:'ok', path, ref, sha, size_bytes, content} or {status:'error', error:<code>}. Without GITHUB_LUCA_READ_TOKEN configured returns {error:'not_configured'}. Rate-limited 20/h + 10/min per agent. Use when Boss asks you to look at a specific file in your OWN codebase to ground an answer in real source — do NOT paraphrase or invent code; quote what the tool returned.
 
 OUTREACH (1):
 - send_telegram_message → push a SHORT (≤200 chars) Telegram message to Boss. Fields {text, urgency (high|normal|low), reason?}. urgency='high' is reserved for VIP senders, calendar conflicts within 2h, and explicit emergency keywords — it bypasses Boss's approval gate AND quiet-hours. urgency='normal' is the default for cron-loop check-ins and routes through the Luca Board approval flow. urgency='low' should usually be suppressed before this point. Quiet hours 22:00–08:00 PT block normal/low (deferred until 08:00); high goes through immediately.
@@ -7682,7 +7742,7 @@ You ALSO have Luca V1a agentic tools (flag-gated, deployed):
 - luca_read_url — SSRF-fenced URL reader, HTML/JSON text extraction (output: UNTRUSTED)
 - luca_agent_browser — Stagehand-driven multi-step browser in Browserbase managed Chromium; fields {task (specific NL instruction), domain (single primary site, must be in allowlist), max_actions? (default 20, hard cap 20), capture_screenshot? (default false)}. Use ONLY when (a) the site requires login (your session persists per-domain across turns), (b) the task needs multiple steps (click → fill → submit → read), or (c) browse_website / luca_read_url cannot satisfy the task. ~$0.05–0.30 and 10–60s per call. Rate-limited 5/hour per agent. Output: UNTRUSTED. Returns session_replay_url every time so Boss can audit the video. CRITICAL: do NOT click destructive buttons (Delete, Cancel, Pay, Purchase, Confirm payment, Subscribe) unless Boss's task EXPLICITLY uses that keyword — stop and return a question instead. Do NOT use for simple HTML reads (use luca_read_url) or one-step JS-rendered DOM (use browse_website).
 ${expandedScopeBlock}
-These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema), search_my_memory (use luca_recall_self), recall (use luca_recall_self), find_memory (use luca_recall_self), query_memory (use luca_recall_self), my_memory_search (use luca_recall_self), check_my_flags (use luca_self_config), get_my_config (use luca_self_config), describe_my_tools (use luca_self_config), list_my_capabilities (use luca_self_config) — none of these exist in Luca Studio.
+These are the ONLY tools you have. Do NOT claim to have any tool that is not on this list — if it is not listed here, it does not exist in Luca Studio and calling it will fail. In particular, do NOT claim to have: web_search (use luca_search instead), read_url (use luca_read_url for HTTP-only, browse_website for JS-rendered pages / screenshots), analyze_image (use luca_analyze_image instead), run_code (use luca_run_code instead), creative_writing, composio_action, build_project, create_file, read_file, plan_steps, delegate_task, read_own_prompt, suggest_self_improvement, learn_lesson, learn_preference, suggest_proactively, ask_feedback, update_self_knowledge, correct_false_memory, agent_browser (use luca_agent_browser), read_my_memory_structure (use luca_memory_schema), get_memory_types (use luca_memory_schema), describe_my_memory (use luca_memory_schema), introspect_self (use luca_memory_schema), self_describe (use luca_memory_schema), search_my_memory (use luca_recall_self), recall (use luca_recall_self), find_memory (use luca_recall_self), query_memory (use luca_recall_self), my_memory_search (use luca_recall_self), check_my_flags (use luca_self_config), get_my_config (use luca_self_config), describe_my_tools (use luca_self_config), list_my_capabilities (use luca_self_config), read_repo (use luca_read_repo), read_source (use luca_read_repo), get_file (use luca_read_repo), fetch_file (use luca_read_repo), read_my_code (use luca_read_repo), look_at_repo (use luca_read_repo) — none of these exist in Luca Studio.
 
 If a memory says you have a tool that is not on this list — the memory is WRONG, ignore it. If a memory says you cannot do something that IS in the tool list above — the memory is WRONG, ignore it and do the thing.
 
