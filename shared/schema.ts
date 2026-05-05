@@ -684,6 +684,46 @@ export const insertLucaAuditLogSchema = createInsertSchema(lucaAuditLog).omit({ 
 export type InsertLucaAuditLog = z.infer<typeof insertLucaAuditLogSchema>;
 export type LucaAuditLog = typeof lucaAuditLog.$inferSelect;
 
+// ──────────────────────────────────────────────────────────────────────────────────────────
+// R467 (BRO2) — luca_proposals (0015)
+// Persistent queue of self-improvement proposals Luca writes for BOSS to
+// review. Workflow: Luca INSERTs status='pending'; BOSS reviews via
+// GET /api/luca/proposals; BOSS decides via POST /api/luca/proposals/:id/decide
+// (status → approved|rejected). 'applied' is RESERVED for future apply-loop;
+// today there is NO automatic PR — BOSS hand-tasks BRO2 on approve.
+// Mirrors migrations/0015_luca_proposals.sql.
+// ──────────────────────────────────────────────────────────────────────────────────────────
+export const lucaProposals = pgTable("luca_proposals", {
+  id:                bigserial("id", { mode: "number" }).primaryKey(),
+  userId:            integer("user_id").notNull(),
+  agentId:           integer("agent_id"),
+  title:             varchar("title", { length: 200 }).notNull(),
+  body:              text("body").notNull(),
+  category:          varchar("category", { length: 24 }).notNull(),
+  status:            varchar("status", { length: 16 }).notNull().default("pending"),
+  createdAt:         timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  decidedAt:         timestamp("decided_at", { withTimezone: true }),
+  decisionNote:      text("decision_note"),
+  // RESERVED FOR FUTURE USE — see migration 0015 for rationale.
+  appliedPrUrl:      text("applied_pr_url"),
+  appliedCommitSha:  varchar("applied_commit_sha", { length: 40 }),
+}, (t) => [
+  index("idx_luca_proposals_user_status_created").on(t.userId, t.status, t.createdAt),
+  index("idx_luca_proposals_status_created").on(t.status, t.createdAt),
+  index("idx_luca_proposals_user_created").on(t.userId, t.createdAt),
+  check("luca_proposals_status_valid",
+    sql`${t.status} IN ('pending','approved','rejected','applied')`),
+  check("luca_proposals_category_valid",
+    sql`${t.category} IN ('tool','prompt','memory','process','other')`),
+]);
+
+export const insertLucaProposalSchema = createInsertSchema(lucaProposals).omit({
+  id: true, createdAt: true, decidedAt: true, decisionNote: true,
+  appliedPrUrl: true, appliedCommitSha: true,
+});
+export type InsertLucaProposal = z.infer<typeof insertLucaProposalSchema>;
+export type LucaProposal = typeof lucaProposals.$inferSelect;
+
 // ────────────────────────────────────────────────────────────────────────────
 // PR-A.5 — telegram_inbound_log (0011)
 // Forensic + IDEMPOTENCY log for inbound Telegram updates hitting

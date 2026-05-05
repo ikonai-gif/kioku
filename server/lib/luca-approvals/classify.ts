@@ -96,6 +96,8 @@ export type LucaAdmissibleTool =
   | "luca_self_config"
   // R466 — Read-only single-file fetch from KIOKU repo via GitHub Contents API (READ_ONLY)
   | "luca_read_repo"
+  // R467 — Self-improvement proposals queue write (LOW_STAKES_WRITE; gate is the decide endpoint, not the insert)
+  | "luca_propose_improvement"
   // ── Day 6 scope expansion (gated behind LUCA_EXPANDED_SCOPE_ENABLED) ──
   // Gmail reads + triage
   | "gmail_search"
@@ -232,6 +234,13 @@ export const TOOL_WRITE_CLASS = {
   // is a granular fine-grained PAT (Contents:read on KIOKU only). Rate-
   // limited 20/h + 10/min per agent.
   luca_read_repo:           "READ_ONLY",
+  // R467 — Self-improvement proposals queue insert. LOW: writes a single
+  // 'pending' row that BOSS still has to approve via a separate decide
+  // endpoint. The HUMAN GATE is the decide call, not the insert. Putting
+  // the insert through the approval gate would require BOSS to approve
+  // every proposal twice (file + apply) which defeats the point of
+  // letting Luca file proposals at all. Rate-limited 5/h + 2/min.
+  luca_propose_improvement: "LOW_STAKES_WRITE",
 
   // ─── Gmail reads (content is UNTRUSTED — trust-policy handles that) ─
   gmail_search:             "READ_ONLY",

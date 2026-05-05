@@ -733,6 +733,37 @@ export async function initDb() {
       ON luca_audit_log (created_at DESC) WHERE status IN ('rate_limited','blocked','error');
   `);
 
+  // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.
+  // Mirrors migrations/0015_luca_proposals.sql + shared/schema.ts:lucaProposals.
+  // Idempotent CREATE/INDEX. Workflow: Luca INSERTs status='pending';
+  // BOSS reviews via API; BOSS decides via API. NO automatic apply path.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS luca_proposals (
+      id                   BIGSERIAL PRIMARY KEY,
+      user_id              INTEGER NOT NULL,
+      agent_id             INTEGER,
+      title                VARCHAR(200) NOT NULL,
+      body                 TEXT NOT NULL,
+      category             VARCHAR(24) NOT NULL,
+      status               VARCHAR(16) NOT NULL DEFAULT 'pending',
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_at           TIMESTAMPTZ,
+      decision_note        TEXT,
+      applied_pr_url       TEXT,
+      applied_commit_sha   VARCHAR(40),
+      CONSTRAINT luca_proposals_status_valid
+        CHECK (status IN ('pending','approved','rejected','applied')),
+      CONSTRAINT luca_proposals_category_valid
+        CHECK (category IN ('tool','prompt','memory','process','other'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_luca_proposals_user_status_created
+      ON luca_proposals (user_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_luca_proposals_status_created
+      ON luca_proposals (status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_luca_proposals_user_created
+      ON luca_proposals (user_id, created_at DESC);
+  `);
+
   // ── Week 3 migrations: version-guarded new changes ──────────────────────────────
   // Demo migration: verifies the migration-guard infrastructure works end-to-end.
   // Uses a no-op SQL (SELECT 1) so it is safe to run on any database state.
