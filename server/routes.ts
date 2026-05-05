@@ -3602,6 +3602,105 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // ── R467 — luca_propose_improvement: list + decide endpoints (owner-only) ──
+  //
+  // Luca files structured improvement proposals via the luca_propose_improvement
+  // tool. They land in the luca_proposals table with status='pending'. Boss
+  // reviews them out-of-band via these endpoints. Approving a proposal does
+  // NOT auto-apply it — BRO2 implements approved proposals as a separate
+  // engineering task.
+  //
+  //   GET  /api/luca/proposals?status=pending|approved|rejected|applied (owner)
+  //   POST /api/luca/proposals/:id/decide  body {decision, note?}      (owner)
+  //
+  // Both endpoints are owner-only and scoped to the requesting user's rows.
+
+  app.get("/api/luca/proposals", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+
+    const statusParam = typeof req.query.status === "string" ? req.query.status : "pending";
+    const VALID_STATUS = new Set(["pending", "approved", "rejected", "applied"]);
+    if (!VALID_STATUS.has(statusParam)) {
+      return res.status(400).json({ error: "invalid_status", allowed: [...VALID_STATUS] });
+    }
+    const limitParam = Number(req.query.limit ?? 50);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 200
+      ? Math.floor(limitParam) : 50;
+
+    try {
+      const r = await pool.query(
+        `SELECT id, user_id, agent_id, title, body, category, status,
+                created_at, decided_at, decision_note,
+                applied_pr_url, applied_commit_sha
+           FROM luca_proposals
+          WHERE user_id = $1 AND status = $2
+          ORDER BY created_at DESC
+          LIMIT $3`,
+        [userId, statusParam, limit],
+      );
+      res.json({ proposals: r.rows, count: r.rows.length, status: statusParam });
+    } catch (e: any) {
+      logger.error({ source: "luca-proposals", err: e?.message }, "[luca] proposals/list failed");
+      res.status(500).json({ error: e?.message || "list failed" });
+    }
+  }));
+
+  app.post("/api/luca/proposals/:id/decide", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+
+    const idParam = Number(req.params.id);
+    if (!Number.isFinite(idParam) || idParam <= 0 || !Number.isInteger(idParam)) {
+      return res.status(400).json({ error: "invalid_id" });
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const decision = typeof body.decision === "string" ? body.decision : "";
+    if (decision !== "approved" && decision !== "rejected") {
+      return res.status(400).json({ error: "invalid_decision", allowed: ["approved", "rejected"] });
+    }
+    let note: string | null = null;
+    if (typeof body.note === "string") {
+      const trimmed = body.note.trim();
+      if (body.note.length > 2000) return res.status(400).json({ error: "note_too_long" });
+      if (body.note.includes("\0")) return res.status(400).json({ error: "invalid_chars" });
+      note = trimmed.length > 0 ? trimmed : null;
+    } else if (body.note !== undefined && body.note !== null) {
+      return res.status(400).json({ error: "invalid_note" });
+    }
+
+    try {
+      // Atomic conditional update: only flip pending -> decision; require user_id match.
+      const upd = await pool.query(
+        `UPDATE luca_proposals
+            SET status = $1,
+                decided_at = NOW(),
+                decision_note = $2
+          WHERE id = $3 AND user_id = $4 AND status = 'pending'
+          RETURNING id, status, decided_at, decision_note, title, category`,
+        [decision, note, idParam, userId],
+      );
+      if (upd.rows.length === 0) {
+        // Distinguish missing vs already-decided vs wrong-owner.
+        const probe = await pool.query(
+          `SELECT id, user_id, status FROM luca_proposals WHERE id = $1 LIMIT 1`,
+          [idParam],
+        );
+        if (probe.rows.length === 0) return res.status(404).json({ error: "not_found" });
+        const row = probe.rows[0];
+        if (row.user_id !== userId) return res.status(404).json({ error: "not_found" });
+        return res.status(409).json({ error: "already_decided", current_status: row.status });
+      }
+      res.json({ status: "ok", proposal: upd.rows[0] });
+    } catch (e: any) {
+      logger.error({ source: "luca-proposals", err: e?.message }, "[luca] proposals/decide failed");
+      res.status(500).json({ error: e?.message || "decide failed" });
+    }
+  }));
+
   // ── Admin: internal jobs (Step 3) ──────────────────────────────────────────
   // Manual-trigger + status for the Step 3 job scheduler (daily-backup,
   // missed-by-both annual review). Run-endpoint bypasses the day-claim so
