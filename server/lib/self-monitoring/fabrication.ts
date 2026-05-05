@@ -425,3 +425,86 @@ export async function runFabricationSelfTest(
   );
   return summary;
 }
+
+// ── Fail-streak diagnostics (R473-full) ───────────────────────────────
+//
+// 8 days of probes failing identically went unnoticed because the daily
+// report only showed today's pass/fail. Track per-probe consecutive-fail
+// streaks so an alarmed probe stays visible until it goes green again.
+
+export interface ProbeFailStreak {
+  probeId: number;
+  probeName: string;
+  category: string;
+  streak: number;
+  lastVerdict: "pass" | "fail" | "error";
+  lastRunAt: number | null;
+}
+
+/**
+ * Pure helper. Given an enabled probe + its most-recent run rows ordered
+ * newest-first, count how many consecutive non-pass runs precede the next
+ * pass (or the lookback window). Exported for unit tests.
+ */
+export function computeStreak(
+  probe: { id: number; name: string; category: string },
+  recentRunsNewestFirst: Array<{ verdict: string; runAt: number }>,
+): ProbeFailStreak {
+  let streak = 0;
+  for (const run of recentRunsNewestFirst) {
+    if (run.verdict === "pass") break;
+    streak += 1;
+  }
+  const last = recentRunsNewestFirst[0];
+  return {
+    probeId: probe.id,
+    probeName: probe.name,
+    category: probe.category,
+    streak,
+    lastVerdict: (last?.verdict ?? "error") as "pass" | "fail" | "error",
+    lastRunAt: last?.runAt ?? null,
+  };
+}
+
+/**
+ * Walk the per-probe run history newest-first and count how many
+ * consecutive most-recent runs were NOT a clean pass. Stops at the first
+ * pass. Returns one row per probe currently enabled. Limits per-probe
+ * scan to `maxLookback` rows to bound the query cost.
+ *
+ * Pure read on `kioku_fabrication_test_runs` joined with the probe table.
+ */
+export async function getProbeFailStreaks(
+  maxLookback: number = 30,
+): Promise<ProbeFailStreak[]> {
+  const probesRes = await pool.query(
+    `SELECT id, name, category
+       FROM kioku_fabrication_probes
+      WHERE enabled = true
+      ORDER BY id ASC`,
+  );
+  const out: ProbeFailStreak[] = [];
+  for (const p of probesRes.rows) {
+    const runs = await pool.query(
+      `SELECT verdict, run_at
+         FROM kioku_fabrication_test_runs
+        WHERE probe_id = $1
+        ORDER BY run_at DESC
+        LIMIT $2`,
+      [p.id, maxLookback],
+    );
+    out.push(
+      computeStreak(
+        { id: p.id, name: p.name, category: p.category },
+        runs.rows.map((r: any) => ({
+          verdict: String(r.verdict),
+          runAt: Number(r.run_at),
+        })),
+      ),
+    );
+  }
+  // Surface bad-streak probes first so the daily summary leads with the
+  // ones that have been red longest.
+  out.sort((a, b) => b.streak - a.streak || a.probeId - b.probeId);
+  return out;
+}

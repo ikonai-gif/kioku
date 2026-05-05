@@ -15,7 +15,7 @@ import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, ab
 import { readLucaEnv } from "./lib/luca/env";
 import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
 import { runHealthCheck, acceptCurrentTruthAsBaseline } from "./lib/self-monitoring/health-job";
-import { runFabricationSelfTest, ensureSelfMonitoringRoom } from "./lib/self-monitoring/fabrication";
+import { runFabricationSelfTest, ensureSelfMonitoringRoom, getProbeFailStreaks } from "./lib/self-monitoring/fabrication";
 import { runDeliberation, getSession, getSessionsByRoom, getLatestConsensus, submitHumanInput, getActiveDeliberationCount, getProvenanceChain, getProvenanceTree, runCreativeDeliberation, CREATIVE_ROLES } from "./structured-deliberation";
 import * as provenanceModule from "./provenance";
 import { registerMcp } from "./mcp";
@@ -3538,10 +3538,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ORDER BY r.run_at DESC
           LIMIT 100`,
       );
+      // R473-full: surface per-probe consecutive-fail streaks. The 8-day
+      // false-red incident slipped past us because the dashboard only
+      // showed today's pass/fail. Streaks make a probe stuck red until
+      // it actually goes green again — visibility-by-default.
+      let failStreaks: any[] = [];
+      try {
+        failStreaks = await getProbeFailStreaks(30);
+      } catch (e: any) {
+        logger.warn({ source: "self-monitoring", err: e?.message }, "[admin] fail-streak query failed (non-fatal)");
+      }
       res.json({
         baseline: baseline.rows[0] || null,
         drift: drift.rows,
         fabrication_runs: fab.rows,
+        probe_fail_streaks: failStreaks,
       });
     } catch (e: any) {
       logger.error({ source: "self-monitoring", err: e?.message }, "[admin] self-monitoring/detail failed");
