@@ -70,15 +70,31 @@ async function resolveUser(req: Request): Promise<number | null> {
     }
   }
 
-  // x-session-token header (JWT)
-  const sessionToken = req.headers["x-session-token"] as string | undefined;
-  if (sessionToken) {
+  // R469: helper — verify a JWT session token and return userId if valid
+  async function verifyJwt(tok: string): Promise<number | null> {
     try {
       const jwt = await import("jsonwebtoken");
       const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-secret');
-      const payload = jwt.default.verify(sessionToken, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
+      const payload = jwt.default.verify(tok, JWT_SECRET, { algorithms: ['HS256'] }) as { userId: number };
       return payload.userId ?? null;
-    } catch {}
+    } catch { return null; }
+  }
+
+  // x-session-token header (JWT)
+  const sessionToken = req.headers["x-session-token"] as string | undefined;
+  if (sessionToken) {
+    const id = await verifyJwt(sessionToken);
+    if (id !== null) return id;
+  }
+
+  // R469: httpOnly cookie fallback — browser sessions after /api/auth/me
+  // restore have no header token, only the `kioku_session` cookie. Without
+  // this fallback `/api/billing/status` returned 401 and the SPA force-
+  // logged-out the user locally on the Boss Board load.
+  const cookieToken = (req as any).cookies?.kioku_session as string | undefined;
+  if (cookieToken) {
+    const id = await verifyJwt(cookieToken);
+    if (id !== null) return id;
   }
 
   // Express session fallback
