@@ -702,6 +702,37 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_ma_type ON meeting_artifacts(meeting_id, type);
   `);
 
+  // R465 (BRO2) — luca_audit_log: append-only forensic record of every
+  // luca_* tool invocation (ok / error / rate_limited / blocked). Mirrors
+  // migrations/0014_luca_audit_log.sql + shared/schema.ts:lucaAuditLog.
+  // Idempotent CREATE/INDEX. Best-effort writes from recordLucaAudit().
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS luca_audit_log (
+      id              BIGSERIAL PRIMARY KEY,
+      user_id         INTEGER NOT NULL,
+      agent_id        INTEGER,
+      tool            VARCHAR(64) NOT NULL,
+      classification  VARCHAR(24) NOT NULL,
+      status          VARCHAR(16) NOT NULL,
+      input_hash      VARCHAR(64) NOT NULL,
+      latency_ms      INTEGER NOT NULL DEFAULT 0,
+      error_detail    TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT luca_audit_log_status_valid
+        CHECK (status IN ('ok','error','rate_limited','blocked')),
+      CONSTRAINT luca_audit_log_classification_valid
+        CHECK (classification IN ('READ_ONLY','LOW_STAKES_WRITE','HIGH_STAKES_WRITE','UNKNOWN'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_luca_audit_user_created
+      ON luca_audit_log (user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_luca_audit_tool_created
+      ON luca_audit_log (tool, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_luca_audit_input_hash
+      ON luca_audit_log (input_hash);
+    CREATE INDEX IF NOT EXISTS idx_luca_audit_blocked
+      ON luca_audit_log (created_at DESC) WHERE status IN ('rate_limited','blocked','error');
+  `);
+
   // ── Week 3 migrations: version-guarded new changes ──────────────────────────────
   // Demo migration: verifies the migration-guard infrastructure works end-to-end.
   // Uses a no-op SQL (SELECT 1) so it is safe to run on any database state.

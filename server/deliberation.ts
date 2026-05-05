@@ -40,13 +40,14 @@ import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile,
 // `getLucaTools()` is self-flag-gated (three-level: V1A + TOOLS + per-tool).
 import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
 import { TRUST_POLICY_PROMPT_SECTION } from "./lib/luca-tools/trust-policy";
+import { recordLucaAudit, hashLucaInput, inferStatusFromResult } from "./lib/luca-tools/audit-log";
 import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
 import {
   readLucaEnv,
   isApprovalGateActive,
   isApprovalGateEnforcing,
 } from "./lib/luca/env";
-import { classifyToolCall } from "./lib/luca-approvals/classify";
+import { classifyToolCall, classifyTool } from "./lib/luca-approvals/classify";
 // LEO PR-A — Telegram tool + quiet-hours gate. Tool is fail-silent; the
 // dispatcher case below also logs the deferred path to luca_telegram_log so
 // audit reads stay uniform between in-line and deferred attempts.
@@ -1764,6 +1765,18 @@ export async function executePartnerTool(
         elapsedMs: __v1aEnded - __v1aStarted,
         finishedAt: __v1aEnded,
       }).catch(() => { /* best-effort */ });
+      // R465 — audit log (best-effort). Includes rate_limited / blocked
+      // outcomes inferred from the JSON result body (handlers return
+      // {"error":"rate_limited",...} on cap hits).
+      recordLucaAudit({
+        userId,
+        agentId,
+        tool: toolName,
+        classification: classifyTool(toolName),
+        status: inferStatusFromResult(resultStr),
+        inputHash: hashLucaInput(toolInput),
+        latencyMs: __v1aEnded - __v1aStarted,
+      }).catch(() => { /* best-effort */ });
 
       // Phase 2 (R-luca-computer-ui): persist agent_browser screenshots so the
       // activity timeline can show inline thumbnails. Best-effort — a failure
@@ -1824,6 +1837,17 @@ export async function executePartnerTool(
         description: __v1aDescription,
         elapsedMs: __v1aEnded - __v1aStarted,
         finishedAt: __v1aEnded,
+      }).catch(() => { /* best-effort */ });
+      // R465 — audit log on dispatch failure.
+      recordLucaAudit({
+        userId,
+        agentId,
+        tool: toolName,
+        classification: classifyTool(toolName),
+        status: "error",
+        inputHash: hashLucaInput(toolInput),
+        latencyMs: __v1aEnded - __v1aStarted,
+        errorDetail: msg,
       }).catch(() => { /* best-effort */ });
       logger.warn(
         { component: "deliberation", event: "luca_v1a_dispatch_failed", tool: toolName, err: msg },
@@ -6119,6 +6143,21 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
       elapsedMs: Date.now() - __activityStarted,
       finishedAt: Date.now(),
     }).catch(() => {});
+    // R465 — audit log for main-switch luca_* tools (luca_memory_schema,
+    // luca_recall_self, luca_self_config). Other (non-luca_) Studio tools
+    // already log via tool_activity_log + tool_runs; we only audit the
+    // luca-self surface here.
+    if (toolName.startsWith("luca_")) {
+      recordLucaAudit({
+        userId,
+        agentId,
+        tool: toolName,
+        classification: classifyTool(toolName),
+        status: inferStatusFromResult(__raw),
+        inputHash: hashLucaInput(toolInput),
+        latencyMs: Date.now() - __activityStarted,
+      }).catch(() => { /* best-effort */ });
+    }
     return __finalResult;
   } catch (err: any) {
     const message = err?.message || String(err);
@@ -6143,6 +6182,19 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
       elapsedMs: Date.now() - __activityStarted,
       finishedAt: Date.now(),
     }).catch(() => {});
+    // R465 — audit error path for luca_* tools.
+    if (toolName.startsWith("luca_")) {
+      recordLucaAudit({
+        userId,
+        agentId,
+        tool: toolName,
+        classification: classifyTool(toolName),
+        status: "error",
+        inputHash: hashLucaInput(toolInput),
+        latencyMs: Date.now() - __activityStarted,
+        errorDetail: message,
+      }).catch(() => { /* best-effort */ });
+    }
     return `Tool "${toolName}" failed: ${message}`;
   }
 }

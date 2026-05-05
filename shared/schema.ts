@@ -650,6 +650,41 @@ export type InsertLucaTelegramLog = z.infer<typeof insertLucaTelegramLogSchema>;
 export type LucaTelegramLog = typeof lucaTelegramLog.$inferSelect;
 
 // ────────────────────────────────────────────────────────────────────────────
+// R465 (BRO2) — luca_audit_log (0014)
+// Append-only forensic record of every `luca_*` tool invocation. One row
+// per terminal call. Records ok / error AND rate_limited / blocked
+// (both of which tool_activity_log + tool_runs miss). Mirrors
+// migrations/0014_luca_audit_log.sql; see SQL for long-form rationale.
+// Privacy: stores `inputHash` (sha256 of stable-JSON(input)), NEVER raw
+// inputs (queries / paths may carry user context).
+// ────────────────────────────────────────────────────────────────────────────
+export const lucaAuditLog = pgTable("luca_audit_log", {
+  id:             bigserial("id", { mode: "number" }).primaryKey(),
+  userId:         integer("user_id").notNull(),
+  agentId:        integer("agent_id"),
+  tool:           varchar("tool", { length: 64 }).notNull(),
+  classification: varchar("classification", { length: 24 }).notNull(),
+  status:         varchar("status", { length: 16 }).notNull(),
+  inputHash:      varchar("input_hash", { length: 64 }).notNull(),
+  latencyMs:      integer("latency_ms").notNull().default(0),
+  errorDetail:    text("error_detail"),
+  createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("idx_luca_audit_user_created").on(t.userId, t.createdAt),
+  index("idx_luca_audit_tool_created").on(t.tool, t.createdAt),
+  index("idx_luca_audit_input_hash").on(t.inputHash),
+  // Mirror of CHECK constraints in migrations/0014_luca_audit_log.sql.
+  check("luca_audit_log_status_valid",
+    sql`${t.status} IN ('ok','error','rate_limited','blocked')`),
+  check("luca_audit_log_classification_valid",
+    sql`${t.classification} IN ('READ_ONLY','LOW_STAKES_WRITE','HIGH_STAKES_WRITE','UNKNOWN')`),
+]);
+
+export const insertLucaAuditLogSchema = createInsertSchema(lucaAuditLog).omit({ id: true, createdAt: true });
+export type InsertLucaAuditLog = z.infer<typeof insertLucaAuditLogSchema>;
+export type LucaAuditLog = typeof lucaAuditLog.$inferSelect;
+
+// ────────────────────────────────────────────────────────────────────────────
 // PR-A.5 — telegram_inbound_log (0011)
 // Forensic + IDEMPOTENCY log for inbound Telegram updates hitting
 // POST /api/telegram/webhook. Pairs with luca_telegram_log (outbound). The
