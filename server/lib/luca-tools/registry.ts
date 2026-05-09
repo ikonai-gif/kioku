@@ -53,7 +53,18 @@ import {
   emailThreadHandler,
   type EmailReadContext,
 } from "./email-read";
-import { isLucaEmailToolEnabled } from "../luca/env";
+import {
+  notionSearchTool,
+  notionSearchHandler,
+  notionFetchTool,
+  notionFetchHandler,
+  notionAppendTool,
+  notionAppendHandler,
+  notionCreateTool,
+  notionCreateHandler,
+  type NotionContext,
+} from "./notion";
+import { isLucaEmailToolEnabled, isLucaNotionToolEnabled } from "../luca/env";
 
 // ─── Registry ────────────────────────────────────────────────────────────
 
@@ -81,6 +92,11 @@ type LucaToolEntry =
       kind: "email";
       spec: Anthropic.Messages.Tool;
       flag: Parameters<typeof isLucaEmailToolEnabled>[0];
+    }
+  | {
+      kind: "notion";
+      spec: Anthropic.Messages.Tool;
+      flag: Parameters<typeof isLucaNotionToolEnabled>[0];
     };
 
 const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
@@ -96,12 +112,22 @@ const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
   { kind: "email", spec: inboxListTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
   { kind: "email", spec: emailReadTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
   { kind: "email", spec: emailThreadTool, flag: "LUCA_TOOL_EMAIL_READ_ENABLED" },
+  // Notion (IKON_SYSTEM workspace) — read scope and write scope are gated
+  // SEPARATELY so reads can ship first (LUCA_TOOL_NOTION_READ_ENABLED), then
+  // writes (LUCA_TOOL_NOTION_WRITE_ENABLED) after smoke testing. Writes are
+  // additionally hard-whitelisted to MEETING_ROOM + 07_MEMORY parents inside
+  // the handlers (see server/lib/luca-tools/notion.ts module doc).
+  { kind: "notion", spec: notionSearchTool, flag: "LUCA_TOOL_NOTION_READ_ENABLED" },
+  { kind: "notion", spec: notionFetchTool, flag: "LUCA_TOOL_NOTION_READ_ENABLED" },
+  { kind: "notion", spec: notionAppendTool, flag: "LUCA_TOOL_NOTION_WRITE_ENABLED" },
+  { kind: "notion", spec: notionCreateTool, flag: "LUCA_TOOL_NOTION_WRITE_ENABLED" },
   // Day 5+: read_memory, write_memory, read_file, upload_file
 ];
 
 function isEntryLive(entry: LucaToolEntry): boolean {
   if (entry.kind === "tool") return isLucaToolEnabled(entry.flag);
-  return isLucaEmailToolEnabled(entry.flag);
+  if (entry.kind === "email") return isLucaEmailToolEnabled(entry.flag);
+  return isLucaNotionToolEnabled(entry.flag);
 }
 
 /**
@@ -142,7 +168,8 @@ export async function dispatchLucaTool(
     SearchContext &
     ReadUrlContext &
     AgentBrowserContext &
-    EmailReadContext,
+    EmailReadContext &
+    NotionContext,
 ): Promise<unknown> {
   switch (toolName) {
     case "luca_run_code":
@@ -162,6 +189,15 @@ export async function dispatchLucaTool(
       return emailReadHandler(toolInput, ctx);
     case "luca_email_thread":
       return emailThreadHandler(toolInput, ctx);
+    // Notion (IKON_SYSTEM)
+    case "luca_notion_search":
+      return notionSearchHandler(toolInput, ctx);
+    case "luca_notion_fetch":
+      return notionFetchHandler(toolInput, ctx);
+    case "luca_notion_append":
+      return notionAppendHandler(toolInput, ctx);
+    case "luca_notion_create":
+      return notionCreateHandler(toolInput, ctx);
     // Day 5+: memory, files
     default:
       throw new Error(`luca_tool_not_found: ${toolName}`);

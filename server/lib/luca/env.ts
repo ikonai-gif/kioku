@@ -92,6 +92,28 @@ export interface LucaEnv {
   /** Per-tool flag for the email read family (inbox_list/read/thread). */
   LUCA_TOOL_EMAIL_READ_ENABLED: boolean;
 
+  // ── Notion scope (luca_notion_search/fetch/append/create) ─────────────
+  /**
+   * Scope-level master for Notion tools. When false, every notion_* tool
+   * is invisible to Luca and refuses to execute. Same role as
+   * LUCA_EMAIL_SCOPE_ENABLED but for the IKON_SYSTEM Notion workspace.
+   * Read and write families have separate per-tool flags below so we can
+   * ship reads first, then enable writes after smoke testing.
+   */
+  LUCA_NOTION_SCOPE_ENABLED: boolean;
+  /** Per-tool flag for the notion read family (search + fetch). */
+  LUCA_TOOL_NOTION_READ_ENABLED: boolean;
+  /** Per-tool flag for the notion write family (append + create). */
+  LUCA_TOOL_NOTION_WRITE_ENABLED: boolean;
+  /** Notion integration token (workspace-scoped). Without it the tools
+   *  refuse at call time with `not_configured`. */
+  NOTION_INTEGRATION_TOKEN: string | null;
+  /** Workspace identifier — informational. The Notion REST API does not
+   *  expose workspace_id on page/block objects, so it cannot be used to
+   *  cross-check page ownership at runtime today. Kept for documentation
+   *  and audit-log clarity. */
+  NOTION_WORKSPACE_ID: string | null;
+
   // Day 6 — approval gate. When LUCA_APPROVAL_GATE_ENABLED=true, the
   // middleware intercepts HIGH_STAKES_WRITE tool calls (see
   // server/lib/luca-approvals/classify.ts) and inserts a pending row
@@ -177,6 +199,14 @@ export function readLucaEnv(): LucaEnv {
     LUCA_TOOL_UPLOAD_FILE_ENABLED: process.env.LUCA_TOOL_UPLOAD_FILE_ENABLED === "true",
     LUCA_EMAIL_SCOPE_ENABLED: process.env.LUCA_EMAIL_SCOPE_ENABLED === "true",
     LUCA_TOOL_EMAIL_READ_ENABLED: process.env.LUCA_TOOL_EMAIL_READ_ENABLED === "true",
+    LUCA_NOTION_SCOPE_ENABLED: process.env.LUCA_NOTION_SCOPE_ENABLED === "true",
+    LUCA_TOOL_NOTION_READ_ENABLED:
+      process.env.LUCA_TOOL_NOTION_READ_ENABLED === "true",
+    LUCA_TOOL_NOTION_WRITE_ENABLED:
+      process.env.LUCA_TOOL_NOTION_WRITE_ENABLED === "true",
+    NOTION_INTEGRATION_TOKEN:
+      (process.env.NOTION_INTEGRATION_TOKEN ?? "").trim() || null,
+    NOTION_WORKSPACE_ID: (process.env.NOTION_WORKSPACE_ID ?? "").trim() || null,
     LUCA_APPROVAL_GATE_ENABLED: process.env.LUCA_APPROVAL_GATE_ENABLED === "true",
     // Mode defaults to "block" — when the flag is on, enforce. "log_only"
     // is opt-in via explicit value. Any unrecognized value falls back to
@@ -273,6 +303,26 @@ export function isLucaEmailToolEnabled(
     env.LUCA_V1A_ENABLED &&
     env.LUCA_TOOLS_ENABLED &&
     env.LUCA_EMAIL_SCOPE_ENABLED &&
+    env[toolFlag]
+  );
+}
+
+/**
+ * Four-level flag check for the Notion scope: master → tools-master →
+ * notion-scope → per-tool. Read and write families share the scope master
+ * (LUCA_NOTION_SCOPE_ENABLED) but have independent per-tool flags so reads
+ * can ship first, then writes after smoke testing.
+ */
+export function isLucaNotionToolEnabled(
+  toolFlag:
+    | "LUCA_TOOL_NOTION_READ_ENABLED"
+    | "LUCA_TOOL_NOTION_WRITE_ENABLED",
+): boolean {
+  const env = readLucaEnv();
+  return (
+    env.LUCA_V1A_ENABLED &&
+    env.LUCA_TOOLS_ENABLED &&
+    env.LUCA_NOTION_SCOPE_ENABLED &&
     env[toolFlag]
   );
 }

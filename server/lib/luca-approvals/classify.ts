@@ -66,6 +66,11 @@ export type LucaAdmissibleTool =
   | "luca_inbox_list"
   | "luca_email_read"
   | "luca_email_thread"
+  // Notion (IKON_SYSTEM workspace) — read pair + whitelist-gated write pair
+  | "luca_notion_search"
+  | "luca_notion_fetch"
+  | "luca_notion_append"
+  | "luca_notion_create"
   // Media (15)
   | "generate_image"
   | "generate_video"
@@ -171,6 +176,22 @@ export const TOOL_WRITE_CLASS = {
   luca_inbox_list:      "READ_ONLY",
   luca_email_read:      "READ_ONLY",
   luca_email_thread:    "READ_ONLY",
+
+  // ─── Notion (IKON_SYSTEM workspace) ──────────────────────────────────
+  // search / fetch — pure Notion API GET against pages the workspace
+  // integration can see. Output is UNTRUSTED (page bodies are author-
+  // controlled, possibly by other agents — see notion.ts module doc) but
+  // that's orthogonal to side-effects.
+  luca_notion_search:   "READ_ONLY",
+  luca_notion_fetch:    "READ_ONLY",
+  // append / create — LOW_STAKES_WRITE. Whitelist (LUCA_WRITABLE_PARENTS:
+  // MEETING_ROOM + 07_MEMORY) is the strong pre-gate enforced INSIDE the
+  // handler before any Notion API call. Promoting these to HIGH would mean
+  // BOSS approves every Synchro entry, which defeats the agent-to-agent
+  // communication channel; the whitelist + per-tool flag + audit-log row
+  // on every write is the correct trade.
+  luca_notion_append:   "LOW_STAKES_WRITE",
+  luca_notion_create:   "LOW_STAKES_WRITE",
 
   // ─── Media generation — LOW (costs some $$ but ephemeral URLs) ────
   // Returns data URI / signed URL to Luca. Kote sees output in chat.
