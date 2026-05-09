@@ -52,6 +52,13 @@ describe("trust-policy: TOOL_TRUST_POLICY table", () => {
       "luca_email_read",
       "luca_email_thread",
       "luca_inbox_list",
+      // Notion (IKON_SYSTEM workspace) — all four UNTRUSTED. Page bodies
+      // and titles are author-controlled; multiple agents (BRO1/BRO2)
+      // share write access. See trust-policy.ts module doc.
+      "luca_notion_append",
+      "luca_notion_create",
+      "luca_notion_fetch",
+      "luca_notion_search",
       "luca_read_url",
       "luca_run_code",
       "luca_search",
