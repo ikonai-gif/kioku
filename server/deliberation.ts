@@ -35,7 +35,7 @@ import { sendPushNotification } from "./push";
 import { checkSycophancy } from "./sycophancy-checker";
 import { applyVoiceGate, buildRewriteDirective } from "./voice-gate";
 import dns from "dns/promises";
-import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus } from "./cloud-integrations";
+import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus, InvalidGrantError } from "./cloud-integrations";
 // Luca V1a — wire-up for integration Day 6 (early: to unblock Luca on `luca_run_code`).
 // `getLucaTools()` is self-flag-gated (three-level: V1A + TOOLS + per-tool).
 import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
@@ -2993,7 +2993,11 @@ export async function executePartnerTool(
               const gResults = await searchGoogleDrive(userId, query);
               results.push(...gResults);
             } catch (err: any) {
-              errors.push(`Google Drive: ${err.message}`);
+              if (err instanceof InvalidGrantError) {
+                errors.push("Google Drive access has been revoked. Please ask the user to reconnect Google Drive in Settings → Integrations.");
+              } else {
+                errors.push(`Google Drive: ${err.message}`);
+              }
             }
           }
           if ((provider === "dropbox" || provider === "all") && status.dropbox.connected) {
@@ -3037,6 +3041,9 @@ export async function executePartnerTool(
           const truncNote = result.truncated ? " (truncated to 8000 chars)" : "";
           return `File: ${result.fileName}${truncNote}\n\n${result.text}`;
         } catch (err: any) {
+          if (err instanceof InvalidGrantError) {
+            return "Google Drive access has been revoked or expired. Please ask the user to reconnect Google Drive in Settings → Integrations.";
+          }
           return `Failed to read file: ${err.message}`;
         }
       }

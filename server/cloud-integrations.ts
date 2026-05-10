@@ -11,6 +11,30 @@ function asciiSafe(s: string): string {
   return s.replace(/[\u0080-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
+/**
+ * Thrown when Google returns `invalid_grant` during a token refresh.
+ * This means the refresh token has been revoked, the user changed their
+ * Google password, or the OAuth app was de-authorized. The stored tokens
+ * are cleared automatically — the user must re-authorize via the OAuth
+ * connect flow before cloud storage will work again.
+ *
+ * Callers can check `err instanceof InvalidGrantError` (or `err.needsReconnect`)
+ * to distinguish this from transient network errors and surface a re-auth prompt.
+ */
+export class InvalidGrantError extends Error {
+  readonly needsReconnect = true as const;
+  readonly provider: string;
+  constructor(provider: string, detail?: string) {
+    super(
+      `Google OAuth token revoked or expired (invalid_grant) for ${provider}.` +
+      ` Re-authorization required.` +
+      (detail ? ` Detail: ${detail}` : ""),
+    );
+    this.name = "InvalidGrantError";
+    this.provider = provider;
+  }
+}
+
 // ── Environment ──────────────────────────────────────────────────
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -57,8 +81,30 @@ async function refreshGoogleToken(integration: Integration): Promise<string> {
     }),
   });
   if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Google token refresh failed: ${resp.status} ${err}`);
+    const errText = await resp.text();
+    let errCode: string | undefined;
+    try { errCode = (JSON.parse(errText) as any).error; } catch { /* non-JSON body */ }
+
+    if (errCode === "invalid_grant" || errCode === "invalid_client") {
+      // The refresh token has been revoked or the OAuth app de-authorized.
+      // Clear the stale tokens so we don't keep hitting the token endpoint
+      // on every request. The user must reconnect via the OAuth flow.
+      await pool.query(
+        `UPDATE user_integrations
+         SET access_token = '', refresh_token = NULL, token_expiry = NULL, updated_at = $1
+         WHERE id = $2`,
+        [Date.now(), integration.id],
+      ).catch((dbErr: any) => {
+        logger.error({ source: "cloud-integrations", integrationId: integration.id, dbErr: dbErr?.message }, "Failed to clear stale Google Drive tokens");
+      });
+      logger.warn(
+        { source: "cloud-integrations", integrationId: integration.id, provider: "google_drive", errCode },
+        "invalid_grant — tokens cleared, re-authorization required",
+      );
+      throw new InvalidGrantError("google_drive", errText.slice(0, 300));
+    }
+
+    throw new Error(`Google token refresh failed: ${resp.status} ${errText}`);
   }
   const data = await resp.json() as any;
   const newToken = data.access_token;
@@ -452,8 +498,28 @@ async function refreshGmailToken(integration: Integration): Promise<string> {
     }),
   });
   if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Gmail token refresh failed: ${resp.status} ${err}`);
+    const errText = await resp.text();
+    let errCode: string | undefined;
+    try { errCode = (JSON.parse(errText) as any).error; } catch { /* non-JSON body */ }
+
+    if (errCode === "invalid_grant" || errCode === "invalid_client") {
+      // Clear stale tokens so we don't keep hitting the token endpoint.
+      await pool.query(
+        `UPDATE user_integrations
+         SET access_token = '', refresh_token = NULL, token_expiry = NULL, updated_at = $1
+         WHERE id = $2`,
+        [Date.now(), integration.id],
+      ).catch((dbErr: any) => {
+        logger.error({ source: "cloud-integrations", integrationId: integration.id, dbErr: dbErr?.message }, "Failed to clear stale Gmail tokens");
+      });
+      logger.warn(
+        { source: "cloud-integrations", integrationId: integration.id, provider: "gmail", email: integration.email, errCode },
+        "invalid_grant — Gmail tokens cleared, re-authorization required",
+      );
+      throw new InvalidGrantError("gmail", errText.slice(0, 300));
+    }
+
+    throw new Error(`Gmail token refresh failed: ${resp.status} ${errText}`);
   }
   const data = await resp.json() as any;
   const newToken = data.access_token;

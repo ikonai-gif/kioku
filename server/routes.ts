@@ -34,6 +34,7 @@ import {
   searchGoogleDrive, readGoogleDriveFile,
   searchDropbox, readDropboxFile,
   getIntegrationStatus,
+  InvalidGrantError,
 } from "./cloud-integrations";
 import { recordAuthFailure, recordAuthSuccess } from "./auth-hooks";
 import { safeCompare } from "./index";
@@ -5687,14 +5688,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const status = await getIntegrationStatus(userId);
       const results: any[] = [];
+      const providerErrors: Array<{ provider: string; error: string; needs_reconnect?: boolean }> = [];
       const searches: Promise<void>[] = [];
       if (status.google_drive.connected) {
-        searches.push(searchGoogleDrive(userId, query).then(r => { results.push(...r); }).catch(() => {}));
+        searches.push(
+          searchGoogleDrive(userId, query)
+            .then(r => { results.push(...r); })
+            .catch((err: any) => {
+              if (err instanceof InvalidGrantError) {
+                providerErrors.push({ provider: "google_drive", error: err.message, needs_reconnect: true });
+              }
+              // Transient errors are silently ignored to avoid breaking combined results.
+            }),
+        );
       }
       if (status.dropbox.connected) {
         searches.push(searchDropbox(userId, query).then(r => { results.push(...r); }).catch(() => {}));
       }
       await Promise.all(searches);
+      if (providerErrors.length > 0) {
+        return res.status(200).json({ results, errors: providerErrors });
+      }
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -5713,6 +5727,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : await readGoogleDriveFile(userId, fileId);
       res.json(result);
     } catch (err: any) {
+      if (err instanceof InvalidGrantError) {
+        return res.status(401).json({ error: err.message, needs_reconnect: true, provider: err.provider });
+      }
       res.status(500).json({ error: err.message });
     }
   }));
