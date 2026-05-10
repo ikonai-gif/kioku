@@ -599,9 +599,9 @@ describe("T2b — notion_fetch truncation + pagination", () => {
   });
 
   it("sets truncated=true when rendered markdown exceeds the char cap (single page case)", async () => {
-    // One paragraph block with a body comfortably over 12,000 chars to
+    // One paragraph block with a body comfortably over 50,000 chars to
     // force char-truncation regardless of block pagination.
-    const huge = "lorem ipsum ".repeat(2000); // ~24,000 chars
+    const huge = "lorem ipsum ".repeat(5000); // ~60,000 chars
     const blocksList = vi.fn().mockResolvedValue({
       object: "list",
       has_more: false,
