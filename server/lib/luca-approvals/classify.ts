@@ -228,13 +228,14 @@ export const TOOL_WRITE_CLASS = {
   produce_episode:          "LOW_STAKES_WRITE",
   produce_season:           "HIGH_STAKES_WRITE",  // $$$, hours compute
 
-  // ─── Workspace — own subtree LOW, shared surface via save is HIGH  ─
+  // ─── Workspace — all writes go to Luca's own S3 bucket ───────────
   workspace_list:           "READ_ONLY",
   workspace_read:           "READ_ONLY",
-  // NOTE: classifyToolCall inspects the `path` field. Writes to `/luca/*`
-  // downgrade to LOW; writes elsewhere stay HIGH. Name-only answer is the
-  // upper bound.
-  workspace_save:           "HIGH_STAKES_WRITE",
+  // workspace_save writes only to the ikonbai-luca-storage bucket (us-west-2),
+  // a controlled surface with no external recipients. Equivalent risk class to
+  // `remember` (own memory) or `generate_document` (own artifact store).
+  // No approval needed; audit-logged in tool_runs like all LOW_STAKES_WRITE ops.
+  workspace_save:           "LOW_STAKES_WRITE",
 
   // ─── Self-memory — Luca's own authority, no approval ──────────────
   remember:                 "LOW_STAKES_WRITE",
@@ -432,7 +433,6 @@ export function isAdmissibleTool(toolName: string): toolName is LucaAdmissibleTo
  * treated as by the gate.
  *
  * Known sub-action rules:
- *   - `workspace_save` with path starting "/luca/" → LOW; else HIGH.
  *   - `schedule_task` with action_type === "message" + recipient = self
  *     → LOW; else HIGH. (Conservative: if we can't tell, assume HIGH.)
  *   - `inbox_action` — all sub-actions today (mark_read/mark_unread/
@@ -456,15 +456,6 @@ export function classifyToolCall(toolName: string, toolInput: unknown): ToolWrit
     return byName;
   }
   const input = toolInput as Record<string, unknown>;
-
-  // workspace_save — own subtree downgrade.
-  if (toolName === "workspace_save") {
-    const path = typeof input.path === "string" ? input.path : "";
-    if (path.startsWith("/luca/")) {
-      return "LOW_STAKES_WRITE";
-    }
-    return "HIGH_STAKES_WRITE";
-  }
 
   // schedule_task — self-message downgrade. action_type === "message"
   // with no external recipient field is treated as self-reminder.

@@ -9,7 +9,7 @@
  *   - fail-closed unknown → HIGH
  *   - V1a tools all READ_ONLY
  *   - email sends HIGH
- *   - workspace_save path-based downgrade
+ *   - workspace_save LOW for all paths (own S3 bucket, no approval gate)
  *   - schedule_task action_type-based downgrade
  *   - admissible ∩ unadmitted = ∅ (no tool classified both ways)
  */
@@ -64,8 +64,8 @@ describe("classify: TOOL_WRITE_CLASS table", () => {
     expect(TOOL_WRITE_CLASS.inbox_action).toBe("LOW_STAKES_WRITE");
   });
 
-  it("workspace_save is HIGH by name (upper bound; path downgrades at classifyToolCall)", () => {
-    expect(TOOL_WRITE_CLASS.workspace_save).toBe("HIGH_STAKES_WRITE");
+  it("workspace_save is LOW (writes to Luca's own S3 bucket; no approval needed)", () => {
+    expect(TOOL_WRITE_CLASS.workspace_save).toBe("LOW_STAKES_WRITE");
   });
 
   it("workspace_read/list are READ_ONLY", () => {
@@ -149,23 +149,20 @@ describe("classify: classifyToolCall (input-aware)", () => {
     );
   });
 
-  it("workspace_save to /luca/ downgrades to LOW", () => {
+  it("workspace_save is LOW for all paths (own S3 bucket; no approval needed)", () => {
     expect(
       classifyToolCall("workspace_save", { path: "/luca/notes.md", content: "hi" }),
     ).toBe("LOW_STAKES_WRITE");
     expect(
       classifyToolCall("workspace_save", { path: "/luca/series/bible.md", content: "hi" }),
     ).toBe("LOW_STAKES_WRITE");
-  });
-
-  it("workspace_save outside /luca/ stays HIGH", () => {
     expect(
       classifyToolCall("workspace_save", { path: "/shared/memo.md", content: "hi" }),
-    ).toBe("HIGH_STAKES_WRITE");
-    expect(classifyToolCall("workspace_save", { path: "notes.md", content: "hi" })).toBe(
-      "HIGH_STAKES_WRITE",
-    );
-    expect(classifyToolCall("workspace_save", {})).toBe("HIGH_STAKES_WRITE");
+    ).toBe("LOW_STAKES_WRITE");
+    expect(
+      classifyToolCall("workspace_save", { path: "notes.md", content: "hi" }),
+    ).toBe("LOW_STAKES_WRITE");
+    expect(classifyToolCall("workspace_save", {})).toBe("LOW_STAKES_WRITE");
   });
 
   it("schedule_task self-message downgrades to LOW", () => {
