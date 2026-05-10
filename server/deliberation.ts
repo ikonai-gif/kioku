@@ -7834,7 +7834,7 @@ EXPANDED SCOPE (Day 6 — approval gate enforces HIGH writes):
   const approvalLifecycleBlock = lucaEnv.LUCA_APPROVAL_GATE_ENABLED
     ? `
 ## 9. APPROVAL GATE — pending_approval lifecycle
-Before you call any HIGH_STAKES_WRITE tool (send_email_*, produce_season, clone_voice, workspace_save outside /luca/*, schedule_task with external target), the middleware intercepts and returns \`{status:"pending_approval", approval_id, tool_name, reason}\` instead of the tool's real result. Treat this as a REQUEST SUBMITTED, not a failure.
+Before you call any HIGH_STAKES_WRITE tool (send_email_*, produce_season, clone_voice, schedule_task with external target), the middleware intercepts and returns \`{status:"pending_approval", approval_id, tool_name, reason}\` instead of the tool's real result. Treat this as a REQUEST SUBMITTED, not a failure.
 
 Rules:
 1. When you see \`status:"pending_approval"\` in a tool_result, you DID NOT send/write anything. Acknowledge to Boss in ONE short sentence what you just queued, and move on — do NOT re-invoke the same tool in the same turn, do NOT paraphrase the draft again.
