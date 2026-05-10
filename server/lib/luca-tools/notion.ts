@@ -157,7 +157,7 @@ export const NOTION_APPEND_MAX_CHILDREN = 100;
  * pulling further blocks if needed — char-truncation does NOT itself
  * yield a cursor; only block-pagination truncation does.)
  */
-export const NOTION_FETCH_MARKDOWN_CHAR_LIMIT = 12000;
+export const NOTION_FETCH_MARKDOWN_CHAR_LIMIT = 50000;
 /**
  * Max number of `blocks.children.list` pages we will fetch in a single
  * `notion_fetch` call before stopping and surfacing `next_cursor` for
