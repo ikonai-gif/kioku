@@ -458,12 +458,186 @@ describe("T2 — notion_fetch returns markdown", () => {
     expect(r.markdown).toContain("Hello world");
     expect(r.url).toBe("https://www.notion.so/abc");
     expect(r.truncated).toBe(false);
+    expect(r.has_more).toBe(false);
+    expect(r.next_cursor).toBeNull();
   });
 
   it("rejects malformed page_id without calling the API", async () => {
     const { client, spies } = makeFakeClient();
     const r = await notionFetchHandler(
       { page_id: "not-a-page" },
+      makeCtx(),
+      FAST_DEPS({ notionClient: client }),
+    );
+    expect(r.status).toBe("error");
+    expect(spies.pagesRetrieve).not.toHaveBeenCalled();
+  });
+});
+
+// ─── T2b: notion_fetch — truncation + pagination ─────────────────────────
+//
+// Regression tests for the bug where `truncated:false` was returned even
+// when the Notion API said `has_more:true` (the original implementation
+// silently dropped any blocks past the first 100). Also covers the new
+// `cursor` input that resumes paging from a previous `next_cursor`.
+
+describe("T2b — notion_fetch truncation + pagination", () => {
+  it("sets truncated=true and surfaces next_cursor when block list has more pages than we will fetch", async () => {
+    // Build a fake `blocks.children.list` that always reports `has_more`
+    // — every page drives us past the per-call cap so we expect the
+    // handler to STOP and surface a cursor.
+    let calls = 0;
+    const blocksList = vi.fn().mockImplementation(async () => {
+      calls += 1;
+      return {
+        object: "list",
+        has_more: true,
+        next_cursor: `cur-${calls}`,
+        results: [
+          {
+            object: "block",
+            id: `blk-${calls}`,
+            type: "paragraph",
+            paragraph: { rich_text: [{ plain_text: `chunk ${calls}` }] },
+          },
+        ],
+      };
+    });
+    const { client } = makeFakeClient({ blocksList });
+
+    const r = await notionFetchHandler(
+      { page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa" },
+      makeCtx(),
+      FAST_DEPS({ notionClient: client }),
+    );
+
+    expect(r.status).toBe("ok");
+    expect(r.truncated).toBe(true);
+    expect(r.has_more).toBe(true);
+    expect(typeof r.next_cursor).toBe("string");
+    expect(r.next_cursor && r.next_cursor.length).toBeGreaterThan(0);
+    // We should have fetched UP TO the per-call page cap and stopped.
+    expect(blocksList).toHaveBeenCalled();
+    expect(blocksList.mock.calls.length).toBeLessThanOrEqual(10);
+    // First call has no start_cursor, subsequent calls do.
+    expect(blocksList.mock.calls[0][0]).not.toHaveProperty("start_cursor");
+    if (blocksList.mock.calls.length > 1) {
+      expect(blocksList.mock.calls[1][0]).toHaveProperty("start_cursor");
+    }
+  });
+
+  it("paginates through multiple pages until has_more=false, then truncated=false", async () => {
+    let calls = 0;
+    const blocksList = vi.fn().mockImplementation(async () => {
+      calls += 1;
+      const last = calls >= 3;
+      return {
+        object: "list",
+        has_more: !last,
+        next_cursor: last ? null : `cur-${calls}`,
+        results: [
+          {
+            object: "block",
+            id: `blk-${calls}`,
+            type: "paragraph",
+            paragraph: { rich_text: [{ plain_text: `chunk ${calls}` }] },
+          },
+        ],
+      };
+    });
+    const { client } = makeFakeClient({ blocksList });
+
+    const r = await notionFetchHandler(
+      { page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa" },
+      makeCtx(),
+      FAST_DEPS({ notionClient: client }),
+    );
+
+    expect(r.status).toBe("ok");
+    expect(r.truncated).toBe(false);
+    expect(r.has_more).toBe(false);
+    expect(r.next_cursor).toBeNull();
+    expect(blocksList).toHaveBeenCalledTimes(3);
+    expect(r.markdown).toContain("chunk 1");
+    expect(r.markdown).toContain("chunk 2");
+    expect(r.markdown).toContain("chunk 3");
+  });
+
+  it("passes start_cursor through to Notion when input.cursor is set", async () => {
+    const blocksList = vi.fn().mockResolvedValue({
+      object: "list",
+      has_more: false,
+      next_cursor: null,
+      results: [
+        {
+          object: "block",
+          id: "blk-x",
+          type: "paragraph",
+          paragraph: { rich_text: [{ plain_text: "resumed" }] },
+        },
+      ],
+    });
+    const { client } = makeFakeClient({ blocksList });
+
+    const r = await notionFetchHandler(
+      {
+        page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa",
+        cursor: "cursor-from-prev-call",
+      },
+      makeCtx(),
+      FAST_DEPS({ notionClient: client }),
+    );
+
+    expect(r.status).toBe("ok");
+    expect(blocksList).toHaveBeenCalledTimes(1);
+    expect(blocksList.mock.calls[0][0]).toMatchObject({
+      block_id: expect.any(String),
+      page_size: 100,
+      start_cursor: "cursor-from-prev-call",
+    });
+    expect(r.markdown).toContain("resumed");
+  });
+
+  it("sets truncated=true when rendered markdown exceeds the char cap (single page case)", async () => {
+    // One paragraph block with a body comfortably over 12,000 chars to
+    // force char-truncation regardless of block pagination.
+    const huge = "lorem ipsum ".repeat(2000); // ~24,000 chars
+    const blocksList = vi.fn().mockResolvedValue({
+      object: "list",
+      has_more: false,
+      next_cursor: null,
+      results: [
+        {
+          object: "block",
+          id: "blk-big",
+          type: "paragraph",
+          paragraph: { rich_text: [{ plain_text: huge }] },
+        },
+      ],
+    });
+    const { client } = makeFakeClient({ blocksList });
+
+    const r = await notionFetchHandler(
+      { page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa" },
+      makeCtx(),
+      FAST_DEPS({ notionClient: client }),
+    );
+
+    expect(r.status).toBe("ok");
+    expect(r.truncated).toBe(true);
+    // Block-level pagination ended cleanly so no resume cursor.
+    expect(r.has_more).toBe(false);
+    expect(r.next_cursor).toBeNull();
+    expect(r.markdown).toMatch(/\[\.\.\.truncated, \d+ more chars\]/);
+  });
+
+  it("rejects malformed cursor input without calling the API", async () => {
+    const { client, spies } = makeFakeClient();
+    const r = await notionFetchHandler(
+      {
+        page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa",
+        cursor: 123, // wrong type
+      } as any,
       makeCtx(),
       FAST_DEPS({ notionClient: client }),
     );
@@ -936,5 +1110,31 @@ describe("notion: input validation", () => {
         title: "t",
       } as any),
     ).toThrow(/markdown/);
+  });
+
+  it("parseNotionFetchInput accepts an optional string cursor", () => {
+    const r = parseNotionFetchInput({
+      page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa",
+      cursor: "abc",
+    });
+    expect(r.cursor).toBe("abc");
+  });
+
+  it("parseNotionFetchInput rejects non-string cursor", () => {
+    expect(() =>
+      parseNotionFetchInput({
+        page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa",
+        cursor: 5,
+      } as any),
+    ).toThrow(/cursor/);
+  });
+
+  it("parseNotionFetchInput rejects empty cursor", () => {
+    expect(() =>
+      parseNotionFetchInput({
+        page_id: "abc12345-1111-2222-3333-aaaaaaaaaaaa",
+        cursor: "",
+      }),
+    ).toThrow(/cursor/);
   });
 });
