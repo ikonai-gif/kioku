@@ -290,7 +290,8 @@ export async function workspaceHealth(): Promise<{ configured: boolean; bucket: 
 export async function readAsset(
   userId: number,
   agentId: number,
-  relPath: string
+  relPath: string,
+  opts: { maxBytes?: number; encoding?: "utf8" | "base64" } = {}
 ): Promise<{ content: string; contentType: string }> {
   if (!workspaceEnabled) {
     throw new Error(
@@ -298,15 +299,17 @@ export async function readAsset(
     );
   }
 
+  if (!relPath || relPath.includes("..") || relPath.includes("\0")) {
+    throw new Error("Invalid path");
+  }
+
   const key = buildKey(userId, agentId, relPath);
+  const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
 
   try {
     const res = await fetch(
       `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURI(key)}`,
-      {
-        method: "GET",
-        headers: authHeaders(),
-      }
+      { method: "GET", headers: authHeaders() }
     );
 
     if (!res.ok) {
@@ -314,10 +317,33 @@ export async function readAsset(
       throw new Error(`Read failed (${res.status}): ${text.slice(0, 200)}`);
     }
 
-    return {
-      content: await res.text(),
-      contentType: res.headers.get("content-type") || "application/octet-stream",
-    };
+    const cl = res.headers.get("content-length");
+    if (cl && Number(cl) > maxBytes) {
+      throw new Error(`File too large: ${cl} bytes (max ${maxBytes})`);
+    }
+
+    const contentType =
+      res.headers.get("content-type") || "application/octet-stream";
+
+    const isBinary =
+      contentType.startsWith("image/") ||
+      contentType.includes("pdf") ||
+      contentType.includes("octet-stream");
+    const encoding = opts.encoding ?? (isBinary ? "base64" : "utf8");
+
+    let content: string;
+    if (encoding === "base64") {
+      const ab = await res.arrayBuffer();
+      if (ab.byteLength > maxBytes)
+        throw new Error(`File too large: ${ab.byteLength} bytes (max ${maxBytes})`);
+      content = Buffer.from(ab).toString("base64");
+    } else {
+      content = await res.text();
+      if (Buffer.byteLength(content, "utf8") > maxBytes)
+        throw new Error(`Text too large: ${Buffer.byteLength(content, "utf8")} bytes (max ${maxBytes})`);
+    }
+
+    return { content, contentType };
   } catch (e: any) {
     logger.warn(
       { source: "workspace-storage", key, err: e?.message || String(e) },
