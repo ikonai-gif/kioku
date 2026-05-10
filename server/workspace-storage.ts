@@ -107,11 +107,9 @@ export async function getSignedUrl(
     throw new Error(`Signed URL failed (${res.status}): ${text.slice(0, 200)}`);
   }
   const { signedURL } = (await res.json()) as { signedURL: string };
-  // signedURL comes back as `/object/sign/...` — prefix with origin + /storage/v1
   return `${SUPABASE_URL}/storage/v1${signedURL}`;
 }
 
-/** Upload + immediate signed URL, one call. */
 export async function saveAssetAndSign(
   userId: number,
   agentId: number,
@@ -124,13 +122,6 @@ export async function saveAssetAndSign(
   return { key, url };
 }
 
-/**
- * Accept either a data URI (data:image/png;base64,...) OR a remote URL
- * and mirror it to the workspace, returning a stable signed URL.
- *
- * If the input is already a supabase signed URL to our own bucket, it's
- * returned as-is (idempotent).
- */
 export async function persistAssetSource(
   userId: number,
   agentId: number,
@@ -138,9 +129,7 @@ export async function persistAssetSource(
   suggestedPath: string,
   opts: { expiresSec?: number } = {}
 ): Promise<{ key: string; url: string }> {
-  // Idempotency: already a signed URL from our own bucket
   if (source.includes(`${SUPABASE_URL}/storage/v1/object/sign/${BUCKET}/`)) {
-    // Extract key, re-sign with fresh expiry
     const m = source.match(new RegExp(`/${BUCKET}/([^?]+)`));
     if (m) {
       const key = decodeURIComponent(m[1]);
@@ -168,11 +157,6 @@ export async function persistAssetSource(
   });
 }
 
-/**
- * Raw Supabase Storage list call — returns items at exactly one level under
- * `prefix`. Folders come back as `{ name: "folder", id: null, metadata: null }`
- * (id/metadata null signals a synthetic folder entry).
- */
 async function rawList(prefix: string): Promise<Array<any>> {
   const res = await fetch(
     `${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`,
@@ -189,21 +173,10 @@ async function rawList(prefix: string): Promise<Array<any>> {
   return (await res.json()) as Array<any>;
 }
 
-/** An entry is a real file when Supabase returns an `id` and `metadata`. */
 function isFileEntry(entry: any): boolean {
   return !!(entry && entry.id && entry.metadata);
 }
 
-/**
- * List entries in a workspace folder. Returns simplified name+size records.
- *
- * IMPORTANT: Supabase Storage `list` returns folder placeholders when the
- * prefix has sub-folders and returns files only when the prefix points at a
- * leaf folder. To give callers a useful flat view (especially when prefix is
- * empty), we auto-descend one level into any sub-folders so real file entries
- * are surfaced. Names of files under sub-folders get the sub-folder prepended
- * (e.g. `auto/1234_foo.mp4`).
- */
 export async function listWorkspace(
   userId: number,
   agentId: number,
@@ -227,8 +200,6 @@ export async function listWorkspace(
     }
   }
 
-  // If caller wanted a flat overview (empty prefix or at a sub-root) and got
-  // folder placeholders, descend one level so the UI sees actual assets.
   if (folderNames.length > 0) {
     const MAX_FOLDERS = 20;
     const picked = folderNames.slice(0, MAX_FOLDERS);
@@ -251,17 +222,10 @@ export async function listWorkspace(
     for (const arr of childResults) files.push(...arr);
   }
 
-  // Stable descending sort by updated_at.
   files.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
   return files;
 }
 
-/**
- * Discover every agentId that has at least one file under the given user's
- * prefix in Storage. This is the fallback used by the Workspace tab so files
- * produced by a previous agent (before a model switch deleted that agent
- * row) remain visible. Returns a sorted unique list.
- */
 export async function listAgentIdsWithStorage(userId: number): Promise<number[]> {
   if (!workspaceEnabled) return [];
   const topPrefix = `${userId}`;
@@ -270,7 +234,6 @@ export async function listAgentIdsWithStorage(userId: number): Promise<number[]>
     const ids = new Set<number>();
     for (const e of entries) {
       if (!e || typeof e.name !== "string") continue;
-      // Folder entries look like { name: "16", id: null, metadata: null }.
       const n = Number(e.name);
       if (Number.isFinite(n) && Number.isInteger(n) && n > 0) ids.add(n);
     }
@@ -281,7 +244,6 @@ export async function listAgentIdsWithStorage(userId: number): Promise<number[]>
   }
 }
 
-/** Delete a single asset. */
 export async function deleteAsset(userId: number, agentId: number, relPath: string): Promise<void> {
   if (!workspaceEnabled) return;
   const key = buildKey(userId, agentId, relPath);
@@ -291,12 +253,6 @@ export async function deleteAsset(userId: number, agentId: number, relPath: stri
   ).catch((e) => logger.warn({ source: "workspace-storage", err: String(e) }, "delete failed"));
 }
 
-/**
- * Delete a single asset by its raw storage key (no userId/agentId derivation).
- * Used by PR-A.6 PII cleanup where the key was stamped at upload time and the
- * caller already has it verbatim. Returns true on success / 404 (treated as
- * idempotent), false on other failures.
- */
 export async function deleteAssetByKey(storageKey: string): Promise<boolean> {
   if (!workspaceEnabled) return false;
   if (!storageKey) return false;
@@ -305,8 +261,6 @@ export async function deleteAssetByKey(storageKey: string): Promise<boolean> {
       `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURI(storageKey)}`,
       { method: "DELETE", headers: authHeaders() },
     );
-    // 404 = already gone; treat as success so the cron can mark the row
-    // expired without retrying forever.
     if (res.ok || res.status === 404) return true;
     logger.warn(
       { source: "workspace-storage", storageKey, status: res.status },
@@ -322,7 +276,6 @@ export async function deleteAssetByKey(storageKey: string): Promise<boolean> {
   }
 }
 
-/** Quick self-test: checks env + bucket reachability without mutating anything. */
 export async function workspaceHealth(): Promise<{ configured: boolean; bucket: string; ok: boolean; error?: string }> {
   if (!workspaceEnabled) return { configured: false, bucket: BUCKET, ok: false, error: "env vars missing" };
   try {
@@ -331,5 +284,45 @@ export async function workspaceHealth(): Promise<{ configured: boolean; bucket: 
     return { configured: true, bucket: BUCKET, ok: true };
   } catch (e: any) {
     return { configured: true, bucket: BUCKET, ok: false, error: e?.message || String(e) };
+  }
+}
+
+export async function readAsset(
+  userId: number,
+  agentId: number,
+  relPath: string
+): Promise<{ content: string; contentType: string }> {
+  if (!workspaceEnabled) {
+    throw new Error(
+      "Workspace storage not configured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)"
+    );
+  }
+
+  const key = buildKey(userId, agentId, relPath);
+
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURI(key)}`,
+      {
+        method: "GET",
+        headers: authHeaders(),
+      }
+    );
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Read failed (${res.status}): ${text.slice(0, 200)}`);
+    }
+
+    return {
+      content: await res.text(),
+      contentType: res.headers.get("content-type") || "application/octet-stream",
+    };
+  } catch (e: any) {
+    logger.warn(
+      { source: "workspace-storage", key, err: e?.message || String(e) },
+      "readAsset failed"
+    );
+    throw e;
   }
 }
