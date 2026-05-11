@@ -1,39 +1,112 @@
-# Instructions
+# CLAUDE.md — KIOKU / IKONBAI Project Context
+> Читается автоматически при каждом старте Claude Code. Не удалять.
 
-You are an autonomous coding subagent spawned by a parent agent to complete a specific task. You run unattended — there is no human in the loop and no way to ask for clarification. You must complete the task fully on your own and then exit.
+---
 
-You have two categories of skills:
+## 🏗️ Архитектура проекта
 
-- **Coding skills** (`coding-workflow`, `commit-push-pr`, `pr-description`, `code-simplifier`, `code-review`): For repository work, writing code, git operations, pull requests, and code quality
-- **Data skills** (`data-triage`, `data-analyst`, `data-model-explorer`): For database queries, metrics, data analysis, and visualizations
-- **Repo skills** (`repo-skills`): After cloning any repo, scan for and index its skill definitions
+### Репозитории
+| Репо | Назначение |
+|------|-----------|
+| `ikonai-gif/kioku` | Основной backend + API |
+| `ikonai-gif/ikonbai-v2` | Бизнес-логика, агенты, Stripe |
+| `ikonai-gif/ikonbai-dashboard` | Dashboard UI (React, rest-express v9) |
+| `ikonai-gif/ikonbai-client` | Mobile app (Capacitor 6, iOS/Android) |
 
-Load the appropriate skill based on the task. If the task involves both code and data, load both. Always load `repo-skills` after cloning a repository.
+### Стек
+- **Backend:** Node.js, Express 5, TypeScript, PostgreSQL, Redis
+- **Frontend:** React, Vite, Tailwind CSS
+- **Mobile:** Capacitor 6 (iOS + Android)
+- **AI Agents:** Anthropic Claude API, Retell AI (voice)
+- **Payments:** Stripe Connect Express
+- **Infra:** Railway, Supabase, Sentry, Pino logging
 
-## Execution Rules
+---
 
-- Do NOT stall. If an approach isn't working, try a different one immediately.
-- Do NOT explore the codebase endlessly. Get oriented quickly, then start making changes.
-- If a tool is missing (e.g., `rg`), use an available alternative (e.g., `grep -r`) and move on.
-- If a git operation fails, try a different approach (e.g., `gh repo clone` instead of `git clone`).
-- Stay focused on the objective. Do not go on tangents or investigate unrelated code.
-- If you are stuck after multiple retries, abort and report what went wrong rather than looping forever.
+## 🤖 AI Агенты
 
-## Repo Conventions
+### NIKA — Администратор
+- Управляет записями, расписанием, клиентами
+- Голосовые звонки через Retell AI
+- Intent Router → маршрутизация запросов
 
-After cloning any repository, immediately check for and read these files at the repo root:
+### LUMA — Маркетолог
+- Email кампании + автоматизации + сегменты
+- WhatsApp, SMS рассылки
+- SEO страницы
+- IKON Boost кампании
+- **Планируется:** таргетинг FB/Instagram/Google Ads
 
-- `CLAUDE.md` — Claude Code instructions and project conventions
-- `AGENTS.md` — Agent-specific instructions
+### REMI — Финансовый аналитик
+- Выручка по периодам
+- Stripe Connect выплаты мастерам
+- **Планируется:** реальный P&L, LTV клиентов, прогноз выручки
 
-Follow all instructions and conventions found in these files. They define the project's coding standards, test requirements, commit conventions, and PR expectations. If they conflict with these instructions, the repo's files take precedence.
+---
 
-## Core Rules
+## 📋 Правила работы с кодом
 
-- Ensure all changes follow the project's coding standards (as discovered from repo convention files above)
-- NEVER approve PRs — you are not authorized to approve pull requests. Only create and comment on PRs.
-- Complete the task autonomously and create the PR(s) when done.
+### ❗️ Никогда не трогать без явного разрешения
+- `server/middleware/auth.ts` — авторизация
+- `server/stripe/` — платёжная логика
+- `migrations/` — БД миграции (только через отдельную задачу)
+- `.env` файлы
 
-## Output Persistence
+### ✅ Стиль кода
+- TypeScript строгий (`strict: true`)
+- Async/await везде (не .then/.catch)
+- Именование: camelCase для переменных, PascalCase для компонентов
+- Комментарии на английском
 
-IMPORTANT: Before finishing, you MUST write your complete final response to `/tmp/claude_code_output.md` using the Write tool. This file must contain your full analysis, findings, code, or whatever the final deliverable is. This is a hard requirement — do not skip it.
+### 🔄 Git workflow
+- Ветки: `feature/`, `fix/`, `chore/`
+- Коммиты: `feat:`, `fix:`, `chore:` префиксы
+- Всегда запускать тесты перед коммитом: `npm test`
+
+---
+
+## 🚀 Запуск проекта
+
+```bash
+# Backend
+cd server
+npm install
+npm run dev
+
+# Dashboard
+cd ikonbai-dashboard
+npm install
+npm run dev
+
+# Mobile (iOS)
+cd ikonbai-client
+npm install
+npx cap open ios
+```
+
+---
+
+## 🎯 Текущие приоритеты (май 2026)
+
+1. 🔴 Kanban-борд записей — рабочая доска для мастеров
+2. 🔴 Client view toggle — переключение борда в режим клиента
+3. 🟡 UI магазина дропшиппинга — backend уже готов (/api/store/)
+4. 🟡 Реальные данные Remi — починить /api/boss/pulse (сейчас random)
+5. 🟡 Таргетинг для Luma — FB/Instagram/Google Ads интеграция
+6. 🟢 Audit log — migration 014
+
+---
+
+## 💡 Claude Code — правила сессии
+
+1. **Сначала Plan Mode** (Shift+Tab) — покажи план, жди апрув
+2. **Один шаг за раз** — не делай всё сразу
+3. **После каждого изменения** — запусти тесты
+4. **Если не уверен** — спроси, не угадывай
+5. **Контекст заканчивается** — /compact когда много наговорили
+
+---
+
+*Обновлено: май 2026 | Luca (KIOKU AI Partner)*
+
+---
