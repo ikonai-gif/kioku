@@ -23,6 +23,8 @@ import {
   readAllowPrefixes,
   readDenySubstrings,
   fetchRepoFile,
+  getToken,
+  LUCA_READ_REPO_IKONBAI_DASHBOARD_CLIENT_PATH_ALLOW,
 } from "../../server/lib/luca-tools/read-repo";
 
 function b64(s: string): string {
@@ -134,6 +136,51 @@ describe("validateRef", () => {
   });
   it("rejects > 200 chars", () => {
     expect(validateRef("a".repeat(201)).ok).toBe(false);
+  });
+});
+
+describe("getToken", () => {
+  const keys = [
+    "GITHUB_IKONBAI_DASHBOARD_READ_TOKEN",
+    "GITHUB_IKONBAI_CLIENT_READ_TOKEN",
+    "GITHUB_IKONBAI_READ_TOKEN",
+    "GITHUB_LUCA_READ_TOKEN",
+  ] as const;
+
+  afterEach(() => {
+    for (const k of keys) delete process.env[k];
+  });
+
+  it("returns dashboard PAT for ikonai-gif/ikonbai-dashboard and ikonbai-dashboard", () => {
+    process.env.GITHUB_IKONBAI_DASHBOARD_READ_TOKEN = "dash-token";
+    expect(getToken("ikonai-gif/ikonbai-dashboard")).toBe("dash-token");
+    expect(getToken("ikonbai-dashboard")).toBe("dash-token");
+  });
+
+  it("returns client PAT for ikonai-gif/ikonbai-client and ikonbai-client", () => {
+    process.env.GITHUB_IKONBAI_CLIENT_READ_TOKEN = "client-token";
+    expect(getToken("ikonai-gif/ikonbai-client")).toBe("client-token");
+    expect(getToken("ikonbai-client")).toBe("client-token");
+  });
+
+  it("returns IKONBAI v2 PAT for ikonbai-v2 / ikonbai / full slug", () => {
+    process.env.GITHUB_IKONBAI_READ_TOKEN = "v2-token";
+    expect(getToken("ikonai-gif/ikonbai-v2")).toBe("v2-token");
+    expect(getToken("ikonbai-v2")).toBe("v2-token");
+    expect(getToken("ikonbai")).toBe("v2-token");
+  });
+
+  it("falls back to GITHUB_LUCA_READ_TOKEN for kioku default slug", () => {
+    process.env.GITHUB_LUCA_READ_TOKEN = "kioku-token";
+    expect(getToken("ikonai-gif/kioku")).toBe("kioku-token");
+  });
+});
+
+describe("IKONBAI dashboard/client path allowlist includes src/", () => {
+  it("allows src/foo.ts under dashboard/client allowlist", () => {
+    expect(
+      validateRepoPath("src/app.tsx", { allowPrefixes: [...LUCA_READ_REPO_IKONBAI_DASHBOARD_CLIENT_PATH_ALLOW] }).ok,
+    ).toBe(true);
   });
 });
 
