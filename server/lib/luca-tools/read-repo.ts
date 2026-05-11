@@ -23,13 +23,20 @@
  *      size > cap. Defends against accidentally pulling huge generated
  *      bundles into the LLM context.
  *   5. Owner+repo are env-locked. LUCA_READ_REPO_OWNER + LUCA_READ_REPO_REPO
- *      (defaults: 'ikonai-gif' + 'kioku'). Tool input only carries `path`
- *      and optional `ref`. Luca CANNOT pivot to a different repo at call
- *      time — that's a hard env boundary.
+ *      (defaults: 'ikonai-gif' + 'kioku'). Tool input carries `path`,
+ *      optional `ref`, and optional `repo` (see R466b below). Luca cannot
+ *      pivot to arbitrary repos — only the default KIOKU target or the
+ *      fixed IKONBAI v2 slug handled in deliberation.ts.
  *   6. Token: GITHUB_LUCA_READ_TOKEN (granular fine-grained PAT, repo
  *      Contents:read on KIOKU only). NEVER exposed in returned data,
  *      logs, or audit. If unset, tool returns {error:'not_configured'}.
  *   7. Rate-limited at the dispatcher (20/h + 10/min per agent).
+ *
+ * R466b — Optional second read target (IKONBAI v2): when the tool is invoked
+ * with repo === LUCA_READ_REPO_IKONBAI_V2_SLUG, deliberation.ts supplies
+ * GITHUB_IKONBAI_READ_TOKEN + owner/repo from GITHUB_IKONBAI_REPO and a
+ * dedicated path allowlist (LUCA_READ_REPO_IKONBAI_V2_PATH_ALLOW). KIOKU
+ * default behavior is unchanged when `repo` is omitted.
  *
  * Returns to Luca:
  *   ok:      {status:'ok', path, ref, sha, size_bytes, content (UTF-8)}
@@ -107,6 +114,17 @@ const DEFAULT_ALLOW_PREFIXES = [
   "vitest.config.ts",
   "vite.config.ts",
   "Dockerfile",
+];
+
+/** Tool input value that selects IKONBAI v2 read mode (must match exactly). */
+export const LUCA_READ_REPO_IKONBAI_V2_SLUG = "ikonai-gif/ikonbai-v2";
+
+/** Path allowlist for luca_read_repo when reading IKONBAI v2 (R466b). */
+export const LUCA_READ_REPO_IKONBAI_V2_PATH_ALLOW: readonly string[] = [
+  "server/",
+  "shared/",
+  "client/",
+  "package.json",
 ];
 
 /**

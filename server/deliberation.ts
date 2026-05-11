@@ -1371,9 +1371,12 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     // .npmrc, id_rsa, id_ed25519, /.ssh/, private_key). 256 KiB cap. Owner/repo are
     // env-locked and NOT pivot-able from input. Token from GITHUB_LUCA_READ_TOKEN.
     // Returns {error:'not_configured'} if no token. Read-only. Rate-limited 20/h + 10/min.
+    // R466b — Optional second target: repo input exactly "ikonai-gif/ikonbai-v2" uses
+    // GITHUB_IKONBAI_READ_TOKEN + GITHUB_IKONBAI_REPO with a narrower allowlist
+    // (server/, shared/, client/, package.json only). Any other non-empty repo → error.
     name: "luca_read_repo",
     description:
-      "Read a single file from the KIOKU GitHub repository (read-only, allowlisted paths only). Use when Boss asks you to look at a specific file in your own codebase to ground an answer in real source. Path must start with one of: server/, shared/, tests/, migrations/, client/, scripts/, script/, or be one of: README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile. Files containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key are blocked. Max 256 KiB. Binary files are not supported. Owner/repo are server-locked. Rate-limited 20/h + 10/min per agent.",
+      "Read a single file from a fixed GitHub repository (read-only, allowlisted paths only). Default target is the KIOKU repo. Optional `repo`: pass exactly \"ikonai-gif/ikonbai-v2\" to read from the IKONBAI app repo instead (server/, shared/, client/, package.json only — same deny rules). Omit `repo` for KIOKU (broader allowlist). Use when Boss asks you to look at a specific file to ground an answer in real source. Files containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key are blocked. Max 256 KiB. Binary files are not supported. Rate-limited 20/h + 10/min per agent.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1384,6 +1387,11 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         ref: {
           type: "string",
           description: "Optional git ref (branch / tag / commit SHA). Defaults to the configured default branch.",
+        },
+        repo: {
+          type: "string",
+          description:
+            "Optional. Omit for KIOKU. ONLY accepted value: \"ikonai-gif/ikonbai-v2\" (IKONBAI app repo, narrower path allowlist). Any other string returns an error.",
         },
       },
       required: ["path"],
@@ -1627,7 +1635,10 @@ function describeToolCall(toolName: string, input: Record<string, any>): string 
     case "luca_memory_schema": return `Смотрю свою архитектуру памяти`;
     case "luca_recall_self": return `Ищу в своей памяти: ${truncate(input?.query ?? "", 60)}`;
     case "luca_self_config": return `Смотрю свою конфигурацию`;
-    case "luca_read_repo": return `Читаю файл: ${truncate(input?.path ?? "", 60)}`;
+    case "luca_read_repo": {
+      const rp = typeof input?.repo === "string" && input.repo.trim() ? ` [${truncate(input.repo.trim(), 40)}]` : "";
+      return `Читаю файл: ${truncate(input?.path ?? "", 60)}${rp}`;
+    }
     case "luca_propose_improvement": return `Предлагаю улучшение: ${truncate(input?.title ?? "", 60)}`;
     case "luca_list_skills": return input?.category ? `Смотрю навыки (${truncate(String(input.category), 30)})` : `Смотрю свои навыки`;
     case "luca_get_skill": return `Открываю навык: ${truncate(String(input?.name ?? ""), 60)}`;
@@ -6062,6 +6073,7 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
 
       case "luca_read_repo": {
         // R466 — read-only file fetch from KIOKU GitHub repo.
+        // R466b — same tool, optional repo="ikonai-gif/ikonbai-v2" → IKONBAI PAT + allowlist.
         // Path allowlist + deny + size cap enforced inside fetchRepoFile.
         // Owner/repo env-locked; PAT from GITHUB_LUCA_READ_TOKEN; without
         // it returns {error:'not_configured'}. Rate-limit 20/h + 10/min.
@@ -6075,10 +6087,47 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           return JSON.stringify({ error: "rate_limited", retry_after_sec: retry });
         }
         try {
-          const { fetchRepoFile } = await import("./lib/luca-tools/read-repo");
+          const {
+            fetchRepoFile,
+            LUCA_READ_REPO_IKONBAI_V2_PATH_ALLOW,
+            LUCA_READ_REPO_IKONBAI_V2_SLUG,
+          } = await import("./lib/luca-tools/read-repo");
           const path = typeof toolInput?.path === "string" ? toolInput.path : "";
           const ref = typeof toolInput?.ref === "string" && toolInput.ref ? toolInput.ref : undefined;
-          const result = await fetchRepoFile(path, { ref });
+          const repoArg = typeof toolInput?.repo === "string" ? toolInput.repo.trim() : "";
+          if (repoArg && repoArg !== LUCA_READ_REPO_IKONBAI_V2_SLUG) {
+            return JSON.stringify({
+              status: "error",
+              error: "invalid_repo",
+              error_detail: `only "${LUCA_READ_REPO_IKONBAI_V2_SLUG}" supported as optional repo`,
+            });
+          }
+          let result;
+          if (repoArg === LUCA_READ_REPO_IKONBAI_V2_SLUG) {
+            const slug = (process.env.GITHUB_IKONBAI_REPO ?? LUCA_READ_REPO_IKONBAI_V2_SLUG).trim();
+            const parts = slug.split("/").map((s: string) => s.trim()).filter(Boolean);
+            if (parts.length !== 2) {
+              return JSON.stringify({
+                status: "error",
+                error: "not_configured",
+                error_detail: "GITHUB_IKONBAI_REPO must be owner/repo",
+              });
+            }
+            const [ghOwner, ghRepo] = parts;
+            const token = process.env.GITHUB_IKONBAI_READ_TOKEN ?? "";
+            if (!token) {
+              return JSON.stringify({ status: "error", error: "not_configured" });
+            }
+            result = await fetchRepoFile(path, {
+              ref,
+              owner: ghOwner,
+              repo: ghRepo,
+              token,
+              allowPrefixes: [...LUCA_READ_REPO_IKONBAI_V2_PATH_ALLOW],
+            });
+          } else {
+            result = await fetchRepoFile(path, { ref });
+          }
           return JSON.stringify(result);
         } catch (e: any) {
           return JSON.stringify({ status: "error", error: "fetch_failed", error_detail: (e?.message || String(e)).slice(0, 200) });
@@ -7913,7 +7962,7 @@ SELF-ACCOUNTABILITY (2):
 - luca_memory_schema → read-only live snapshot of your OWN memory architecture. Zero params (your user_id and agent_id come from the session, you cannot pass them). Returns {types[] (11 entries with count, weight, category, writable_by_luca, example_excerpt), namespaces[] (15 entries, count=0 kept), totals (total_memories, last/oldest_memory_at), special_rules, spec_version}. Rate-limited 10/hour + 3/min per agent. Use when Boss asks about your memory, your introspection, what types/namespaces you have, how many memories — see SELF-INTROSPECTION HONESTY RULE below: live query is source of truth, not your training-data intuition.
 - luca_recall_self → read-only ad-hoc search of your OWN memory by free-text query. Fields {query (string, required, ≤500 chars), limit? (1–10, default 5), type_filter? (one of commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state, identity)}. Returns top-N rows with id/type/namespace/importance/similarity/excerpt. Vector search if embedding available, ILIKE fallback. Rate-limited 30/min per agent. Use BEFORE composing a reply when you need to remember a specific fact about Boss, a past commitment, or a previous reflection that the automatic context-injection might have missed.
 - luca_self_config → read-only LIVE snapshot of your OWN runtime configuration. Zero parameters. Returns {master_flags (V1A/TOOLS/EMAIL_SCOPE/EXPANDED/APPROVAL_GATE_ENABLED/MODE/PROMPT_CACHING), tool_flags (per-tool EFFECTIVE boolean = master ∧ tools-master ∧ per-tool), secrets_present (NAMES → boolean for BRAVE_SEARCH_API_KEY, TELEGRAM_*, LUCA_S3_BUCKET, etc. — NEVER values), studio_tools (base[]/expanded[]/effective[]), quiet_hours, spec_version}. Rate-limited 20/h + 5/min per agent. Use when Boss asks 'is X tool on/off?' / 'is BRAVE_SEARCH_API_KEY configured?' / 'what flags are set?' — do NOT guess from training-data intuition or prior turns; call this and answer from output. Especially required after Boss says you contradicted yourself about a flag.
-- luca_read_repo → read-only single-file fetch from your OWN GitHub repo (KIOKU). Fields {path (required, repo-relative, ≤512 chars), ref? (branch/tag/sha)}. Allowed paths: server/, shared/, tests/, migrations/, client/, scripts/, script/, README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile. Denied: anything containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key. 256 KiB cap. Binary files refused. Owner/repo are server-locked — you cannot pivot to a different repo. Returns {status:'ok', path, ref, sha, size_bytes, content} or {status:'error', error:<code>}. Without GITHUB_LUCA_READ_TOKEN configured returns {error:'not_configured'}. Rate-limited 20/h + 10/min per agent. Use when Boss asks you to look at a specific file in your OWN codebase to ground an answer in real source — do NOT paraphrase or invent code; quote what the tool returned.
+- luca_read_repo → read-only single-file fetch from a fixed GitHub repo. Default: KIOKU (your own codebase). Fields {path (required, repo-relative, ≤512 chars), ref? (branch/tag/sha), repo? (optional; ONLY "ikonai-gif/ikonbai-v2" selects the IKONBAI app repo — any other non-empty value is rejected)}. KIOKU mode: allowed paths server/, shared/, tests/, migrations/, client/, scripts/, script/, README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile; requires GITHUB_LUCA_READ_TOKEN. IKONBAI mode (repo="ikonai-gif/ikonbai-v2"): allowed paths ONLY server/, shared/, client/, package.json; requires GITHUB_IKONBAI_READ_TOKEN; owner/repo from GITHUB_IKONBAI_REPO (default ikonai-gif/ikonbai-v2). Denied (both modes): anything containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key. 256 KiB cap. Binary files refused. You cannot pivot to arbitrary repos — only KIOKU default or the fixed IKONBAI slug. Returns {status:'ok', path, ref, sha, size_bytes, content} or {status:'error', error:<code>}. Without the required PAT for the selected mode returns {error:'not_configured'}. Rate-limited 20/h + 10/min per agent. Use when Boss asks you to look at a specific file to ground an answer in real source — do NOT paraphrase or invent code; quote what the tool returned.
 - luca_propose_improvement → file a structured improvement proposal for Boss to review out-of-band. Fields {title (required, ≤200 chars), body (required, ≤8000 chars markdown), category (required, one of: tool|prompt|memory|process|other)}. Returns {status:'ok', proposal_id, title, category, created_at} or {status:'error', error}. Rate-limited 5/h + 2/min per agent. Use when you have a CONCRETE suggestion grounded in something you actually read — your own source via luca_read_repo (cite path+sha), your own memory via luca_recall_self (cite memory id), or your own config via luca_self_config (cite flag/secret name). Do NOT use for vague intuitions or generic feature ideas. Approving a proposal does NOT auto-apply it — Boss reviews; if approved, BRO2 implements as a separate engineering task. Categories: 'tool' = a tool you want or want changed; 'prompt' = your own system-prompt wording; 'memory' = something durable to remember about the codebase / Boss / yourself; 'process' = workflow / approval-flow / autonomy boundary; 'other'.
 - luca_list_skills → read-only catalog of named prompt-recipe "skills" Boss curates for you. Fields {category? (optional filter, ≤32 chars)}. Returns {status:'ok', count, skills:[{name, category, description}, ...]} (max 200 rows; sorted by category then name). NEVER returns prompt_template — use luca_get_skill by exact name to fetch a recipe. Rate-limited 20/h + 5/min per agent. Use when Boss asks 'what skills do you have?' / 'what recipes did I give you?' or before answering a recurring kind of request, to see if a curated recipe applies. If count=0, say so honestly — do NOT invent skill names.
 - luca_get_skill → read-only fetch of one skill's full prompt_template by exact name. Fields {name (required, ≤64 chars, case-sensitive)}. Returns {status:'ok', name, category, description, prompt_template, created_at} or {status:'error', error:'not_found'} if no row matches. Apply prompt_template as a hint for the current turn — it is Boss's curated recipe, not a hard rule. If not_found, say so honestly; do NOT fabricate a recipe. Rate-limited 20/h + 5/min per agent.
