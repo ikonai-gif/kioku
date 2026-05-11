@@ -268,7 +268,8 @@ export async function fetchRepoFile(path: string, opts: FetchRepoFileOpts = {}):
 
   const owner = opts.owner ?? process.env.LUCA_READ_REPO_OWNER ?? "ikonai-gif";
   const repo = opts.repo ?? process.env.LUCA_READ_REPO_REPO ?? "kioku";
-  const token = opts.token ?? process.env.GITHUB_LUCA_READ_TOKEN ?? "";
+  const isIkonbai = (opts.repo === "ikonbai-v2" || opts.repo === "ikonbai");
+  const token = opts.token ?? (isIkonbai ? process.env.GITHUB_IKONBAI_READ_TOKEN : process.env.GITHUB_LUCA_READ_TOKEN) ?? "";
   if (!token) return { status: "error", error: "not_configured" };
 
   const maxBytes = opts.maxBytes ?? 256 * 1024;
