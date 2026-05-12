@@ -27,7 +27,9 @@ const delib = readFileSync(
 
 describe("R462 — alwaysInject Boss profile (memory-injection)", () => {
   it("declares BOSS_PROFILE_CHAR_CAP, BOSS_NAME_RE, BOSS_PROFILE_TYPES", () => {
-    expect(memInj).toMatch(/const\s+BOSS_PROFILE_CHAR_CAP\s*=\s*4000\b/);
+    expect(memInj).toMatch(
+      /const\s+BOSS_PROFILE_CHAR_CAP\s*=\s*config\.bossProfileCharCap\b/,
+    );
     expect(memInj).toMatch(/const\s+BOSS_NAME_RE\s*=/);
     // Regex must match: котэ, кот[аеуыя]?, kote, boss, босс — case-insensitive
     expect(memInj).toMatch(/\/\\b\(котэ\|кот\[аеуыя\]\?\\b\|kote\|boss\|босс\)\/i/);

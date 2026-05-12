@@ -1,5 +1,53 @@
 import { describe, it, expect } from "vitest";
-import { formatMemoryContext, type InjectedMemory } from "../memory-injection";
+import { formatMemoryContext, getLucaMemoryConfig, type InjectedMemory } from "../memory-injection";
+
+describe("getLucaMemoryConfig", () => {
+  it("uses defaults when env vars are not set", () => {
+    expect(getLucaMemoryConfig({} as NodeJS.ProcessEnv)).toEqual({
+      memoryFetchLimit: 500,
+      graphExpansionEnabled: true,
+      bossProfileCharCap: 4000,
+    });
+  });
+
+  it("parses explicit env values", () => {
+    expect(
+      getLucaMemoryConfig({
+        LUCA_MEMORY_FETCH_LIMIT: "200",
+        LUCA_GRAPH_EXPANSION_ENABLED: "false",
+        LUCA_BOSS_PROFILE_CHAR_CAP: "2500",
+      } as NodeJS.ProcessEnv),
+    ).toEqual({
+      memoryFetchLimit: 200,
+      graphExpansionEnabled: false,
+      bossProfileCharCap: 2500,
+    });
+  });
+
+  it("parses boolean true variants", () => {
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "true" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(true);
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "1" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(true);
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "TRUE" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(true);
+  });
+
+  it("parses boolean false variants", () => {
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "false" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(false);
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "0" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(false);
+  });
+
+  it("falls back graphExpansion to true on invalid boolean strings", () => {
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "maybe" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(true);
+    expect(getLucaMemoryConfig({ LUCA_GRAPH_EXPANSION_ENABLED: "2" } as NodeJS.ProcessEnv).graphExpansionEnabled).toBe(true);
+  });
+
+  it("falls back numeric env on invalid or empty string", () => {
+    expect(getLucaMemoryConfig({ LUCA_MEMORY_FETCH_LIMIT: "abc" } as NodeJS.ProcessEnv).memoryFetchLimit).toBe(500);
+    expect(getLucaMemoryConfig({ LUCA_BOSS_PROFILE_CHAR_CAP: "xyz" } as NodeJS.ProcessEnv).bossProfileCharCap).toBe(4000);
+    expect(getLucaMemoryConfig({ LUCA_MEMORY_FETCH_LIMIT: "" } as NodeJS.ProcessEnv).memoryFetchLimit).toBe(500);
+    expect(getLucaMemoryConfig({ LUCA_BOSS_PROFILE_CHAR_CAP: "" } as NodeJS.ProcessEnv).bossProfileCharCap).toBe(4000);
+    expect(getLucaMemoryConfig({ LUCA_MEMORY_FETCH_LIMIT: "0" } as NodeJS.ProcessEnv).memoryFetchLimit).toBe(500);
+  });
+});
 
 describe("formatMemoryContext", () => {
   it("returns empty string when no memories", () => {

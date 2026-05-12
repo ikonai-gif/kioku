@@ -11,6 +11,50 @@ import { computeDecayedConfidence } from "./memory-decay";
 import { embedText } from "./embeddings";
 import { memoryDomain } from "./lib/memory-domain";
 
+export interface LucaMemoryEnvConfig {
+  memoryFetchLimit: number;
+  graphExpansionEnabled: boolean;
+  bossProfileCharCap: number;
+}
+
+function parseLucaMemoryFetchLimit(raw: string | undefined): number {
+  if (raw === undefined) return 500;
+  const s = String(raw).trim();
+  if (s === "") return 500;
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n <= 0) return 500;
+  return n;
+}
+
+function parseLucaBossProfileCharCap(raw: string | undefined): number {
+  if (raw === undefined) return 4000;
+  const s = String(raw).trim();
+  if (s === "") return 4000;
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n <= 0) return 4000;
+  return n;
+}
+
+function parseLucaGraphExpansionEnabled(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  const s = String(raw).trim().toLowerCase();
+  if (s === "" || s === "true" || s === "1") return true;
+  if (s === "false" || s === "0") return false;
+  return true;
+}
+
+/**
+ * Phase 0 — read Luca memory injection knobs from env without changing defaults.
+ * When vars are unset or invalid, behavior matches historical hardcodes (500 / true / 4000).
+ */
+export function getLucaMemoryConfig(env: NodeJS.ProcessEnv = process.env): LucaMemoryEnvConfig {
+  return {
+    memoryFetchLimit: parseLucaMemoryFetchLimit(env.LUCA_MEMORY_FETCH_LIMIT),
+    graphExpansionEnabled: parseLucaGraphExpansionEnabled(env.LUCA_GRAPH_EXPANSION_ENABLED),
+    bossProfileCharCap: parseLucaBossProfileCharCap(env.LUCA_BOSS_PROFILE_CHAR_CAP),
+  };
+}
+
 export interface InjectedMemory {
   id: number;
   content: string;
@@ -400,8 +444,9 @@ export async function fetchRelevantMemories(
   limit: number = 10,
   currentEmotionVector?: number[] | null
 ): Promise<InjectedMemory[]> {
+  const config = getLucaMemoryConfig();
   // Fetch all user memories (includes all agents + shared)
-  const allMemories = await storage.getMemories(userId, 500);
+  const allMemories = await storage.getMemories(userId, config.memoryFetchLimit);
 
   // Filter to agent-specific + shared (agentId = null) memories
   const candidateMemories = allMemories.filter(
@@ -460,7 +505,7 @@ export async function fetchRelevantMemories(
   // Sorting: importance DESC, then recency DESC. Same shape as identity loop.
   // Filter: type ∈ {relational, aesthetic, procedural} AND content matches
   // Boss-name regex (case-insensitive). De-dupe vs identity by id.
-  const BOSS_PROFILE_CHAR_CAP = 4000; // ~1000 tokens
+  const BOSS_PROFILE_CHAR_CAP = config.bossProfileCharCap; // env-configurable, default 4000 (~1000 tokens)
   const BOSS_NAME_RE = /\b(котэ|кот[аеуыя]?\b|kote|boss|босс)/i;
   const BOSS_PROFILE_TYPES = new Set(["relational", "aesthetic", "procedural"]);
   const alwaysInjectIds = new Set(alwaysInject.map((m) => m.id));
@@ -599,7 +644,7 @@ export async function fetchRelevantMemories(
     // ── Graph walk: fetch 1-hop connected memories for top 10 vector results ──
     const topIds = scored.slice(0, 10).map((r: any) => r.id);
     let graphMemories: any[] = [];
-    if (topIds.length > 0) {
+    if (topIds.length > 0 && config.graphExpansionEnabled) {
       try {
         const graphResults = await pool.query(`
           SELECT DISTINCT m.*, ml.link_type, ml.strength as link_strength
