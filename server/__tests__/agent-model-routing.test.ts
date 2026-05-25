@@ -161,3 +161,29 @@ describe("W7 P2.3 — client factories resolve per-agent key only when llm_provi
     expect(body).toMatch(/GEMINI_API_KEY/);
   });
 });
+
+describe("Kimi/OpenRouter routing", () => {
+  it("isKimi discriminator triggers on moonshotai/ prefix, kimi- prefix, or llmProvider=openrouter", () => {
+    const src = readFileSync(join(serverDir, "deliberation.ts"), "utf8");
+    expect(src).toMatch(/const\s+isKimi\s*=/);
+    expect(src).toMatch(/chatModel\.startsWith\("moonshotai\//);
+    expect(src).toMatch(/chatModel\.startsWith\("kimi-"\)/);
+    expect(src).toMatch(/llmProvider === "openrouter"/);
+  });
+
+  it("Kimi dispatch has privacy gate for K12-K17/K20 and patent keywords", () => {
+    const src = readFileSync(join(serverDir, "deliberation.ts"), "utf8");
+    expect(src).toMatch(/kimiBlockedByPrivacy/);
+    expect(src).toMatch(/K\(1\[2-7\]\|20\)/);
+    expect(src).toMatch(/patent\|.*provisional\|USPTO\|disclosure/i);
+  });
+
+  it("getOpenRouterClient uses OpenRouter baseURL and KIOKU headers", () => {
+    const src = readFileSync(join(serverDir, "deliberation.ts"), "utf8");
+    expect(src).toMatch(/function getOpenRouterClient/);
+    expect(src).toMatch(/openrouter\.ai\/api\/v1/);
+    expect(src).toMatch(/"X-Title":\s*"KIOKU"/);
+    expect(src).toMatch(/"HTTP-Referer":\s*"https:\/\/usekioku\.com"/);
+  });
+});
+
