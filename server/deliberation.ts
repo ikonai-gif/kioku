@@ -6813,6 +6813,20 @@ export async function triggerAgentResponses(
         writingStyleBlock = formatWritingStyleBlock(style);
       }
 
+      // R474: 48h recent-context injection. Surface high-importance
+      // commitments/procedural rules from the _projects namespace written in
+      // the last 48 hours so Luca starts the turn with fresh project state
+      // even when retrieval misses them. Best-effort; failure never breaks
+      // the turn. Block sits BEFORE coreIdentityBlock in dynamicHalf so the
+      // freshest context is closest to the user message (standard Anthropic
+      // prompt structure: recent → identity → memory → user).
+      let recentContextBlock = "";
+      if (isPartnerChat) {
+        try {
+          recentContextBlock = await buildRecentContextBlock(pool, userId, agent.id);
+        } catch { /* best-effort — never fail the turn */ }
+      }
+
       // W7 P2.13: Core identity injection. Every turn, inject a compact
       // "who am I, who am I talking to, where am I, what am I committed to,
       // how am I feeling" block BEFORE the rest of the prompt. This is the
@@ -6885,6 +6899,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
             pastSuggestions,
             writingStyleBlock,
             coreIdentityBlock,
+            recentContextBlock,
           )
         : null;
       const systemPrompt = isPartnerChat && partnerPromptParts
@@ -7837,6 +7852,7 @@ export function buildPartnerPromptParts(
   pastSuggestions?: string[],
   writingStyleBlock?: string,
   coreIdentityBlock?: string,
+  recentContextBlock?: string,
 ): PartnerPromptParts {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
@@ -8150,6 +8166,7 @@ ${approvalLifecycleBlock}
   // live HERE so the static half stays byte-stable across turns and the
   // cache_control breakpoint hits. R403-P1.
   const dynamicHalf =
+    (recentContextBlock ? `\n${recentContextBlock}` : "") +
     (coreIdentityBlock ? `\n${coreIdentityBlock}` : "") +
     (identitySection ? `\n${identitySection}` : "") +
     `\n${mood}` +
@@ -8190,6 +8207,7 @@ export function buildPartnerPrompt(
   pastSuggestions?: string[],
   writingStyleBlock?: string,
   coreIdentityBlock?: string,
+  recentContextBlock?: string,
 ): string {
   const parts = buildPartnerPromptParts(
     _name,
@@ -8203,8 +8221,63 @@ export function buildPartnerPrompt(
     pastSuggestions,
     writingStyleBlock,
     coreIdentityBlock,
+    recentContextBlock,
   );
   return parts.static + parts.dynamic;
+}
+
+/**
+ * R474 — fetch + format the 48h RECENT_CONTEXT block.
+ *
+ * Pulls high-importance commitments/procedural rules from the _projects
+ * namespace written in the last 48 hours and renders them as a compact
+ * block to inject at the top of Luca's dynamic system-prompt half.
+ *
+ * created_at is bigint epoch ms (shared/schema.ts:99) — we compute the
+ * threshold in JS and bind it as $6. Best-effort: empty result returns ""
+ * (caller renders nothing). Pool is injected so unit tests can supply a
+ * fake without mocking ./storage.
+ */
+export async function buildRecentContextBlock(
+  poolArg: { query: (sql: string, params: any[]) => Promise<{ rows: any[] }> },
+  userId: number,
+  agentId: number,
+): Promise<string> {
+  const HOURS = 48;
+  const IMPORTANCE_MIN = 0.8;
+  const LIMIT = 10;
+  const TYPES = ["commitment", "procedural"];
+  const NAMESPACE = "_projects";
+
+  const sinceMs = Date.now() - HOURS * 3600 * 1000;
+  const r = await poolArg.query(
+    `SELECT id, type, namespace, importance, content, created_at
+     FROM memories
+     WHERE user_id = $1
+       AND agent_id = $2
+       AND namespace = $3
+       AND type = ANY($4::text[])
+       AND importance >= $5
+       AND created_at >= $6
+     ORDER BY importance DESC NULLS LAST, created_at DESC
+     LIMIT $7`,
+    [userId, agentId, NAMESPACE, TYPES, IMPORTANCE_MIN, sinceMs, LIMIT],
+  );
+
+  if (!r.rows || r.rows.length === 0) {
+    logger.debug(
+      { component: "deliberation", event: "recent_context_empty", userId, agentId, hours: HOURS, namespace: NAMESPACE, importance_min: IMPORTANCE_MIN },
+      "[recent-context] no rows matched 48h window",
+    );
+    return "";
+  }
+
+  const lines = r.rows.map((row: any) => {
+    const clean = String(row.content ?? "").replace(/\n*\[meta:[\s\S]*?\]\s*$/, "").trim();
+    const imp = Number(row.importance ?? 0).toFixed(2);
+    return `- ${clean.slice(0, 300)} (importance: ${imp}, type: ${row.type})`;
+  });
+  return `[RECENT_CONTEXT — last 48h]\n${lines.join("\n")}\n`;
 }
 
 function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {

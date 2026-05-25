@@ -113,18 +113,19 @@ describe("P2.13 — callsite integration", () => {
     expect(block).toMatch(/try\s*\{[\s\S]*?\}\s*catch\s*\{[^}]*\}/);
   });
 
-  it("coreIdentityBlock is passed as last argument to buildPartnerPromptParts in partner-chat branch (R403)", () => {
+  it("coreIdentityBlock is passed to buildPartnerPromptParts in partner-chat branch (R403)", () => {
     // R403 — the partner-chat path now calls buildPartnerPromptParts
     // (returns {static, dynamic}) instead of buildPartnerPrompt directly.
     // Anthropic call site #1 reads parts directly to build the
     // cache_control'd system array; legacy buildPartnerPrompt remains for
     // non-Claude paths and unit tests, and delegates through the same
-    // buildPartnerPromptParts. coreIdentityBlock must be the final arg in
-    // both call shapes.
+    // buildPartnerPromptParts. coreIdentityBlock must be threaded through
+    // both call shapes (followed by any additional optional blocks such as
+    // R474 recentContextBlock).
     const callsite = extractBlock(source, "// R403 — partner-chat path computes static/dynamic parts once", "      // Build conversation history");
-    expect(callsite).toMatch(/buildPartnerPromptParts\([\s\S]*?coreIdentityBlock,?\s*\)/);
+    expect(callsite).toMatch(/buildPartnerPromptParts\([\s\S]*?coreIdentityBlock,/);
     // Wrapper still threads coreIdentityBlock through.
-    expect(source).toMatch(/export function buildPartnerPrompt\([\s\S]*?coreIdentityBlock\?:\s*string,?\s*\):\s*string/);
+    expect(source).toMatch(/export function buildPartnerPrompt\([\s\S]*?coreIdentityBlock\?:\s*string,/);
   });
 
   it("only runs for partner-chat (not mesh deliberation)", () => {
