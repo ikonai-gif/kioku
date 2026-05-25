@@ -599,25 +599,7 @@ export async function initDb() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT DEFAULT 'us';
   `);
 
-  // Phase 12: Allow multiple accounts per provider (e.g. several Gmail inboxes)
-  // Replace the (user_id, provider) unique with (user_id, provider, email).
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'user_integrations_user_id_provider_key'
-      ) THEN
-        ALTER TABLE user_integrations DROP CONSTRAINT user_integrations_user_id_provider_key;
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'user_integrations_user_provider_email_key'
-      ) THEN
-        -- NULL emails are allowed (treated distinct); use coalesce to make NULLs de-dup as empty string
-        CREATE UNIQUE INDEX IF NOT EXISTS user_integrations_user_provider_email_key
-          ON user_integrations (user_id, provider, COALESCE(email, ''));
-      END IF;
-    END$$;
-  `);
+  // Phase 12 user_integrations index → moved to drizzle migration (see migrations/0001_verify_no_drift.sql)
 
   // ── Meeting Room Track A — Week 1 (2026-04-20) ──────────────────────────────
   // All statements are idempotent (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)

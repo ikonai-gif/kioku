@@ -62,10 +62,21 @@ interface Integration {
 async function getIntegration(userId: number, provider: string): Promise<Integration | null> {
   const { rows } = await pool.query(
     `SELECT id, access_token, refresh_token, token_expiry, email, provider
-     FROM user_integrations WHERE user_id = $1 AND provider = $2`,
+     FROM user_integrations 
+     WHERE user_id = $1 AND provider = $2
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT 1`,
     [userId, provider],
   );
-  return rows[0] || null;
+  const row = rows[0];
+  if (!row) return null;
+  // Wiped row: empty access_token → treat as disconnected
+  if (!row.access_token || row.access_token.length === 0) return null;
+  // Expired with no refresh path → effectively disconnected
+  if (row.token_expiry && row.token_expiry < Date.now() && !row.refresh_token) {
+    return null;
+  }
+  return row;
 }
 
 async function refreshGoogleToken(integration: Integration): Promise<string> {
@@ -364,12 +375,16 @@ export async function getIntegrationStatus(userId: number): Promise<{
   dropbox: { connected: boolean; email?: string };
 }> {
   const { rows } = await pool.query(
-    `SELECT provider, email FROM user_integrations WHERE user_id = $1`,
+    `SELECT provider, email, access_token FROM user_integrations WHERE user_id = $1`,
     [userId],
   );
-  const gd = rows.find((r: any) => r.provider === "google_drive");
-  const db = rows.find((r: any) => r.provider === "dropbox");
-  const gmails = rows.filter((r: any) => r.provider === "gmail").map((r: any) => r.email).filter(Boolean);
+  const isLive = (r: any) => !!r && typeof r.access_token === "string" && r.access_token.length > 0;
+  const gd = rows.find((r: any) => r.provider === "google_drive" && isLive(r));
+  const db = rows.find((r: any) => r.provider === "dropbox" && isLive(r));
+  const gmails = rows
+    .filter((r: any) => r.provider === "gmail" && isLive(r))
+    .map((r: any) => r.email)
+    .filter(Boolean);
   return {
     google_drive: { connected: !!gd, email: gd?.email || undefined },
     dropbox: { connected: !!db, email: db?.email || undefined },
