@@ -328,7 +328,10 @@ export const userIntegrations = pgTable("user_integrations", {
   email:        text("email"),                                       // connected account email
   createdAt:    bigint("created_at", { mode: "number" }).notNull().$defaultFn(() => Date.now()),
   updatedAt:    bigint("updated_at", { mode: "number" }).notNull().$defaultFn(() => Date.now()),
-}, (t) => [unique().on(t.userId, t.provider)]);
+}, (t) => [
+  uniqueIndex("user_integrations_user_provider_email_key")
+    .on(t.userId, t.provider, sql`COALESCE(${t.email}, '')`)
+]);
 
 export const insertUserIntegrationSchema = createInsertSchema(userIntegrations).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertUserIntegration = z.infer<typeof insertUserIntegrationSchema>;
