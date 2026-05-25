@@ -1345,6 +1345,11 @@ const partnerTools: Anthropic.Messages.Tool[] = [
           type: "string",
           description: "Optional: restrict to one type (commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state).",
         },
+        suppress_namespaces: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional: namespaces to exclude from results. Default ['_self_monitoring'] (suppresses audit-noise self-monitoring rows that otherwise dominate recall). Pass [] to disable suppression (escape hatch — returns all namespaces). Pass a custom list to widen the exclusion.",
+        },
       },
       required: ["query"],
       additionalProperties: false,
@@ -5984,6 +5989,9 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         if (typeFilter && !ALLOWED_TYPES.has(typeFilter)) {
           return JSON.stringify({ error: "invalid_type_filter", allowed: Array.from(ALLOWED_TYPES) });
         }
+        // R475 — suppress noisy namespaces (default _self_monitoring). Pass
+        // [] explicitly to disable; pass a custom list to widen.
+        const suppressNamespaces = parseSuppressNamespaces(toolInput.suppress_namespaces);
         try {
           const { pool } = await import("./storage");
           const { embedText } = await import("./embeddings");
@@ -5997,12 +6005,17 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
             const params: any[] = [embStr, userId, agentId];
             let typeClause = "";
             if (typeFilter) { params.push(typeFilter); typeClause = `AND type = $${params.length}`; }
+            let nsClause = "";
+            if (suppressNamespaces.length > 0) {
+              params.push(suppressNamespaces);
+              nsClause = `AND (namespace IS NULL OR namespace <> ALL($${params.length}::text[]))`;
+            }
             params.push(limit);
             const r = await pool.query(
               `SELECT id, type, namespace, importance, content, created_at,
                       1 - (embedding_vec <=> $1::vector) AS similarity
                FROM memories
-               WHERE user_id = $2 AND agent_id = $3 AND embedding_vec IS NOT NULL ${typeClause}
+               WHERE user_id = $2 AND agent_id = $3 AND embedding_vec IS NOT NULL ${typeClause} ${nsClause}
                ORDER BY embedding_vec <=> $1::vector
                LIMIT $${params.length}`,
               params,
@@ -6014,11 +6027,16 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
             const params: any[] = [userId, agentId, pattern];
             let typeClause = "";
             if (typeFilter) { params.push(typeFilter); typeClause = `AND type = $${params.length}`; }
+            let nsClause = "";
+            if (suppressNamespaces.length > 0) {
+              params.push(suppressNamespaces);
+              nsClause = `AND (namespace IS NULL OR namespace <> ALL($${params.length}::text[]))`;
+            }
             params.push(limit);
             const r = await pool.query(
               `SELECT id, type, namespace, importance, content, created_at
                FROM memories
-               WHERE user_id = $1 AND agent_id = $2 AND content ILIKE $3 ${typeClause}
+               WHERE user_id = $1 AND agent_id = $2 AND content ILIKE $3 ${typeClause} ${nsClause}
                ORDER BY COALESCE(importance, 0) DESC, created_at DESC
                LIMIT $${params.length}`,
               params,
@@ -6813,6 +6831,20 @@ export async function triggerAgentResponses(
         writingStyleBlock = formatWritingStyleBlock(style);
       }
 
+      // R474: 48h recent-context injection. Surface high-importance
+      // commitments/procedural rules from the _projects namespace written in
+      // the last 48 hours so Luca starts the turn with fresh project state
+      // even when retrieval misses them. Best-effort; failure never breaks
+      // the turn. Block sits BEFORE coreIdentityBlock in dynamicHalf so the
+      // freshest context is closest to the user message (standard Anthropic
+      // prompt structure: recent → identity → memory → user).
+      let recentContextBlock = "";
+      if (isPartnerChat) {
+        try {
+          recentContextBlock = await buildRecentContextBlock(pool, userId, agent.id);
+        } catch { /* best-effort — never fail the turn */ }
+      }
+
       // W7 P2.13: Core identity injection. Every turn, inject a compact
       // "who am I, who am I talking to, where am I, what am I committed to,
       // how am I feeling" block BEFORE the rest of the prompt. This is the
@@ -6885,6 +6917,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
             pastSuggestions,
             writingStyleBlock,
             coreIdentityBlock,
+            recentContextBlock,
           )
         : null;
       const systemPrompt = isPartnerChat && partnerPromptParts
@@ -7837,6 +7870,7 @@ export function buildPartnerPromptParts(
   pastSuggestions?: string[],
   writingStyleBlock?: string,
   coreIdentityBlock?: string,
+  recentContextBlock?: string,
 ): PartnerPromptParts {
   const sanitizedDesc = sanitizeForPrompt(description);
   const memBlock = memoryContext || "";
@@ -8005,7 +8039,7 @@ SELF-ACCOUNTABILITY (2):
     • Do not pass verified or provenance fields. They will be stripped and you will see a Note in the response. This is a feature: it prevents you from confidently misremembering as fact (R372 case).
     • emotional_state memories are saved at confidence=0.3 — they decay fast and rank low in retrieval. That is intentional: feelings are state, not facts.
 - luca_memory_schema → read-only live snapshot of your OWN memory architecture. Zero params (your user_id and agent_id come from the session, you cannot pass them). Returns {types[] (11 entries with count, weight, category, writable_by_luca, example_excerpt), namespaces[] (15 entries, count=0 kept), totals (total_memories, last/oldest_memory_at), special_rules, spec_version}. Rate-limited 10/hour + 3/min per agent. Use when Boss asks about your memory, your introspection, what types/namespaces you have, how many memories — see SELF-INTROSPECTION HONESTY RULE below: live query is source of truth, not your training-data intuition.
-- luca_recall_self → read-only ad-hoc search of your OWN memory by free-text query. Fields {query (string, required, ≤500 chars), limit? (1–10, default 5), type_filter? (one of commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state, identity)}. Returns top-N rows with id/type/namespace/importance/similarity/excerpt. Vector search if embedding available, ILIKE fallback. Rate-limited 30/min per agent. Use BEFORE composing a reply when you need to remember a specific fact about Boss, a past commitment, or a previous reflection that the automatic context-injection might have missed.
+- luca_recall_self → read-only ad-hoc search of your OWN memory by free-text query. Fields {query (string, required, ≤500 chars), limit? (1–10, default 5), type_filter? (one of commitment, reflection, relational, procedural, aesthetic, episodic, semantic, meta_cognitive, autobiographical, emotional_state, identity), suppress_namespaces? (string[], default ['_self_monitoring'] — audit-noise from self-tests dominates recall otherwise; pass [] to include those rows when you're specifically investigating self-monitoring, or pass a custom list to widen the exclusion)}. Returns top-N rows with id/type/namespace/importance/similarity/excerpt. Vector search if embedding available, ILIKE fallback. Rate-limited 30/min per agent. Use BEFORE composing a reply when you need to remember a specific fact about Boss, a past commitment, or a previous reflection that the automatic context-injection might have missed.
 - luca_self_config → read-only LIVE snapshot of your OWN runtime configuration. Zero parameters. Returns {master_flags (V1A/TOOLS/EMAIL_SCOPE/EXPANDED/APPROVAL_GATE_ENABLED/MODE/PROMPT_CACHING), tool_flags (per-tool EFFECTIVE boolean = master ∧ tools-master ∧ per-tool), secrets_present (NAMES → boolean for BRAVE_SEARCH_API_KEY, TELEGRAM_*, LUCA_S3_BUCKET, etc. — NEVER values), studio_tools (base[]/expanded[]/effective[]), quiet_hours, spec_version}. Rate-limited 20/h + 5/min per agent. Use when Boss asks 'is X tool on/off?' / 'is BRAVE_SEARCH_API_KEY configured?' / 'what flags are set?' — do NOT guess from training-data intuition or prior turns; call this and answer from output. Especially required after Boss says you contradicted yourself about a flag.
 - luca_read_repo → read-only single-file fetch from a fixed GitHub repo. Default: KIOKU (your own codebase). Fields {path (required, repo-relative, ≤512 chars), ref? (branch/tag/sha), repo? (optional; omit for KIOKU — otherwise exactly one of the documented IKONBAI selectors)}. KIOKU mode: allowed paths server/, shared/, tests/, migrations/, client/, scripts/, script/, README.md, package.json, tsconfig.json, drizzle.config.ts, vitest.config.ts, vite.config.ts, Dockerfile; requires GITHUB_LUCA_READ_TOKEN. IKONBAI v2 (repo "ikonai-gif/ikonbai-v2" / "ikonbai-v2" / "ikonbai"): paths server/, shared/, client/, package.json; GITHUB_IKONBAI_READ_TOKEN; owner/repo from GITHUB_IKONBAI_REPO (default ikonai-gif/ikonbai-v2). IKONBAI dashboard ("ikonai-gif/ikonbai-dashboard" / "ikonbai-dashboard"): paths src/, client/, server/, shared/, package.json; GITHUB_IKONBAI_DASHBOARD_READ_TOKEN; defaults / env GITHUB_IKONBAI_DASHBOARD_REPO. IKONBAI client ("ikonai-gif/ikonbai-client" / "ikonbai-client"): same path allowlist as dashboard; GITHUB_IKONBAI_CLIENT_READ_TOKEN; defaults / env GITHUB_IKONBAI_CLIENT_REPO. Denied (all modes): anything containing .env, secrets/, credentials/, .npmrc, id_rsa, id_ed25519, /.ssh/, private_key. 256 KiB cap. Binary files refused. You cannot pivot to arbitrary repos. Returns {status:'ok', path, ref, sha, size_bytes, content} or {status:'error', error:<code>}. Without the required PAT for the selected mode returns {error:'not_configured'}. Rate-limited 20/h + 10/min per agent. Use when Boss asks you to look at a specific file to ground an answer in real source — do NOT paraphrase or invent code; quote what the tool returned.
 - luca_propose_improvement → file a structured improvement proposal for Boss to review out-of-band. Fields {title (required, ≤200 chars), body (required, ≤8000 chars markdown), category (required, one of: tool|prompt|memory|process|other)}. Returns {status:'ok', proposal_id, title, category, created_at} or {status:'error', error}. Rate-limited 5/h + 2/min per agent. Use when you have a CONCRETE suggestion grounded in something you actually read — your own source via luca_read_repo (cite path+sha), your own memory via luca_recall_self (cite memory id), or your own config via luca_self_config (cite flag/secret name). Do NOT use for vague intuitions or generic feature ideas. Approving a proposal does NOT auto-apply it — Boss reviews; if approved, BRO2 implements as a separate engineering task. Categories: 'tool' = a tool you want or want changed; 'prompt' = your own system-prompt wording; 'memory' = something durable to remember about the codebase / Boss / yourself; 'process' = workflow / approval-flow / autonomy boundary; 'other'.
@@ -8150,6 +8184,7 @@ ${approvalLifecycleBlock}
   // live HERE so the static half stays byte-stable across turns and the
   // cache_control breakpoint hits. R403-P1.
   const dynamicHalf =
+    (recentContextBlock ? `\n${recentContextBlock}` : "") +
     (coreIdentityBlock ? `\n${coreIdentityBlock}` : "") +
     (identitySection ? `\n${identitySection}` : "") +
     `\n${mood}` +
@@ -8190,6 +8225,7 @@ export function buildPartnerPrompt(
   pastSuggestions?: string[],
   writingStyleBlock?: string,
   coreIdentityBlock?: string,
+  recentContextBlock?: string,
 ): string {
   const parts = buildPartnerPromptParts(
     _name,
@@ -8203,8 +8239,80 @@ export function buildPartnerPrompt(
     pastSuggestions,
     writingStyleBlock,
     coreIdentityBlock,
+    recentContextBlock,
   );
   return parts.static + parts.dynamic;
+}
+
+/**
+ * R475 — parse the optional `suppress_namespaces` argument for
+ * luca_recall_self. Returns the provided list (string-filtered for sanity)
+ * or the default ['_self_monitoring'] when omitted. Pass [] to explicitly
+ * disable suppression (escape hatch).
+ *
+ * Non-string entries are silently dropped today; if we ever observe noise
+ * in prod, swap the filter for a logger.warn (next iteration — Boss flagged
+ * as out-of-scope for R475).
+ */
+export function parseSuppressNamespaces(input: unknown): string[] {
+  const DEFAULT = ["_self_monitoring"];
+  if (input === undefined || input === null) return DEFAULT;
+  if (!Array.isArray(input)) return DEFAULT;
+  return input.filter((x): x is string => typeof x === "string");
+}
+
+/**
+ * R474 — fetch + format the 48h RECENT_CONTEXT block.
+ *
+ * Pulls high-importance commitments/procedural rules from the _projects
+ * namespace written in the last 48 hours and renders them as a compact
+ * block to inject at the top of Luca's dynamic system-prompt half.
+ *
+ * created_at is bigint epoch ms (shared/schema.ts:99) — we compute the
+ * threshold in JS and bind it as $6. Best-effort: empty result returns ""
+ * (caller renders nothing). Pool is injected so unit tests can supply a
+ * fake without mocking ./storage.
+ */
+export async function buildRecentContextBlock(
+  poolArg: { query: (sql: string, params: any[]) => Promise<{ rows: any[] }> },
+  userId: number,
+  agentId: number,
+): Promise<string> {
+  const HOURS = 48;
+  const IMPORTANCE_MIN = 0.8;
+  const LIMIT = 10;
+  const TYPES = ["commitment", "procedural"];
+  const NAMESPACE = "_projects";
+
+  const sinceMs = Date.now() - HOURS * 3600 * 1000;
+  const r = await poolArg.query(
+    `SELECT id, type, namespace, importance, content, created_at
+     FROM memories
+     WHERE user_id = $1
+       AND agent_id = $2
+       AND namespace = $3
+       AND type = ANY($4::text[])
+       AND importance >= $5
+       AND created_at >= $6
+     ORDER BY importance DESC NULLS LAST, created_at DESC
+     LIMIT $7`,
+    [userId, agentId, NAMESPACE, TYPES, IMPORTANCE_MIN, sinceMs, LIMIT],
+  );
+
+  if (!r.rows || r.rows.length === 0) {
+    logger.debug(
+      { component: "deliberation", event: "recent_context_empty", userId, agentId, hours: HOURS, namespace: NAMESPACE, importance_min: IMPORTANCE_MIN },
+      "[recent-context] no rows matched 48h window",
+    );
+    return "";
+  }
+
+  const lines = r.rows.map((row: any) => {
+    const clean = String(row.content ?? "").replace(/\n*\[meta:[\s\S]*?\]\s*$/, "").trim();
+    const imp = Number(row.importance ?? 0).toFixed(2);
+    return `- ${clean.slice(0, 300)} (importance: ${imp}, type: ${row.type})`;
+  });
+  return `[RECENT_CONTEXT — last 48h]\n${lines.join("\n")}\n`;
 }
 
 function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {
