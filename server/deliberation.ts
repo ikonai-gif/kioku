@@ -6605,6 +6605,29 @@ function getAnthropicClient(agent: { llmApiKey?: string | null; llmProvider?: st
   return null;
 }
 
+/**
+ * OpenRouter client (OpenAI-compatible API) for Kimi K2.6 and other OpenRouter models.
+ * Priority: per-agent llmApiKey IFF llmProvider === "openrouter", then shared
+ * OPENROUTER_API_KEY env. Returns null if neither path is available, which
+ * causes the Kimi dispatch branch to skip and fall back to subsequent providers.
+ */
+function getOpenRouterClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): OpenAI | null {
+  const baseConfig = {
+    baseURL: "https://openrouter.ai/api/v1",
+    defaultHeaders: {
+      "HTTP-Referer": "https://usekioku.com",
+      "X-Title": "KIOKU",
+    },
+  };
+  if (agent.llmApiKey && agent.llmProvider === "openrouter") {
+    return new OpenAI({ apiKey: agent.llmApiKey, ...baseConfig });
+  }
+  if (process.env.OPENROUTER_API_KEY && agent.llmProvider === "openrouter") {
+    return new OpenAI({ apiKey: process.env.OPENROUTER_API_KEY, ...baseConfig });
+  }
+  return null;
+}
+
 const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
 
 // Prevent simultaneous agent responses for same room (simple lock)
@@ -7026,6 +7049,24 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         const chatModel = (agent as any).llmModel || defaultModel;
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
+        const isKimi = chatModel.startsWith("kimi-")
+          || chatModel.startsWith("moonshotai/")
+          || ((agent as any).llmProvider === "openrouter");
+
+        // Patent privacy: K12-K17/K20 content and patent-related keywords must
+        // not route to OpenRouter (Kimi). When isKimi=true but trigger/system
+        // mentions sensitive patent material, block and let later branches
+        // fall back to Claude/Gemini.
+        let kimiBlockedByPrivacy = false;
+        if (isKimi) {
+          const patentKeysRe = /\bK(1[2-7]|20)\b/i;
+          const patentKeywordsRe = /\b(patent|патент|provisional|USPTO|disclosure)\b/i;
+          const combined = `${triggerContent}\n${systemPrompt}`;
+          if (patentKeysRe.test(combined) || patentKeywordsRe.test(combined)) {
+            kimiBlockedByPrivacy = true;
+            console.warn(`[deliberation] Kimi blocked for ${agent.name} — patent-sensitive content detected`);
+          }
+        }
 
         let reply: string | undefined;
         // W6 1c / W7 Variant C (NEW-3): unified flag across OpenAI + Claude
@@ -7209,6 +7250,47 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
             if (reply && generatedAssets.length > 0) {
               const assetBlock = generatedAssets.map(url => `\n${url}`).join("");
               reply = reply + assetBlock;
+            }
+          }
+        }
+
+        if (!reply && isKimi && !kimiBlockedByPrivacy) {
+          const orClient = getOpenRouterClient(agent as any);
+          if (orClient) {
+            try {
+              // Normalize model slug. Accepted forms:
+              //   "moonshotai/kimi-k2.6" → used as-is
+              //   "kimi-k2.6"            → prefixed with moonshotai/
+              //   anything else when llmProvider="openrouter" → default to k2.6
+              const kimiModel = chatModel.startsWith("moonshotai/")
+                ? chatModel
+                : (chatModel.startsWith("kimi-")
+                    ? `moonshotai/${chatModel}`
+                    : "moonshotai/kimi-k2.6");
+
+              const userMessage = isPartnerChat
+                ? sanitizeForPrompt(triggerContent)
+                : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
+
+              const resp = await orClient.chat.completions.create({
+                model: kimiModel,
+                // BRO4 review: explicit generous max_tokens. K2.6 max output = 262K.
+                // 24K covers long-horizon coding outputs (8-12K typical) with headroom.
+                // 4K for inter-agent talk where short replies are desired.
+                max_tokens: isPartnerChat ? 24000 : 4000,
+                temperature: isPartnerChat ? 0.85 : 0.75,
+                messages: [
+                  { role: "system" as const, content: systemPrompt },
+                  ...chatHistory.map(h => ({
+                    role: h.role,
+                    content: h.content,
+                  })),
+                  { role: "user" as const, content: userMessage },
+                ],
+              }, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
+              reply = resp.choices[0]?.message?.content?.trim();
+            } catch (err) {
+              console.error(`[deliberation] Kimi/OpenRouter error for ${agent.name}:`, err);
             }
           }
         }
