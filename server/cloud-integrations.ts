@@ -981,7 +981,7 @@ export async function exchangeGoogleCode(code: string, userId: number): Promise<
   await pool.query(
     `INSERT INTO user_integrations (user_id, provider, access_token, refresh_token, token_expiry, email, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (user_id, provider)
+     ON CONFLICT (user_id, provider, COALESCE(email, ''))
      DO UPDATE SET access_token = $3, refresh_token = COALESCE($4, user_integrations.refresh_token), token_expiry = $5, email = $6, updated_at = $8`,
     [userId, "google_drive", tokens.access_token, tokens.refresh_token || null, expiry, email, now, now],
   );
@@ -1028,7 +1028,7 @@ export async function exchangeDropboxCode(code: string, userId: number): Promise
   await pool.query(
     `INSERT INTO user_integrations (user_id, provider, access_token, refresh_token, token_expiry, email, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (user_id, provider)
+     ON CONFLICT (user_id, provider, COALESCE(email, ''))
      DO UPDATE SET access_token = $3, refresh_token = COALESCE($4, user_integrations.refresh_token), token_expiry = $5, email = $6, updated_at = $8`,
     [userId, "dropbox", tokens.access_token, tokens.refresh_token || null, expiry, actualEmail, now, now],
   );
