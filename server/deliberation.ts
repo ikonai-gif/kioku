@@ -7205,6 +7205,13 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
             // Tool-use loop (only for Partner Chat on Claude path)
             const maxToolIterations = 10;
             const generatedAssets: string[] = []; // Collect image URLs etc. to append to final reply
+            // LUCA-048 follow-up (PR after #152): track tool results CUMULATIVELY
+            // across all iterations of this turn so the Write Gate can see prior
+            // calls from earlier iterations. Without this, recall in iter 0 and
+            // remember in iter 2 leaves the gate's priorToolResults empty in
+            // iter 2 (false negative). Scope: this single Claude turn — does
+            // not persist across separate triggerAgentResponses calls.
+            const cumulativeToolResults: Array<{ content: string; is_error: boolean }> = [];
             for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
               // Feature #4: stop if user clicked Stop
               if (__isAborted()) { reply = reply || "[остановлено]"; break; }
@@ -7291,22 +7298,25 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               for (const block of toolUseBlocks) {
                 if (block.type !== "tool_use") continue;
                 if (__isAborted()) break; // Feature #4
-                // LUCA-048 Write Gate ([BRO2-275] spec): pass the results
-                // already collected in this turn to executePartnerTool so the
-                // `remember` case can verify a real prior tool call exists.
-                // Each block is processed sequentially in turn order, so by
-                // the time `remember` fires, all preceding tool outputs are
-                // in `toolResults`.
-                const priorToolResults = toolResults.map((r) => ({
-                  content: typeof r.content === "string"
-                    ? r.content
-                    : Array.isArray(r.content)
+                // LUCA-048 Write Gate ([BRO2-275] spec, refined post PR #152):
+                // pass the CUMULATIVE results from all previous iterations of
+                // this turn PLUS results already collected in this iteration.
+                // The `remember` case checks any of these as proof of a real
+                // prior tool call. Without cumulative tracking, recall in iter 0
+                // + remember in iter 2 caused false-negative blocks.
+                const priorToolResults = [
+                  ...cumulativeToolResults,
+                  ...toolResults.map((r) => ({
+                    content: typeof r.content === "string"
                       ? r.content
-                          .map((c: any) => (typeof c === "object" && c.type === "text" && typeof c.text === "string") ? c.text : "")
-                          .join("\n")
-                      : "",
-                  is_error: r.is_error === true,
-                }));
+                      : Array.isArray(r.content)
+                        ? r.content
+                            .map((c: any) => (typeof c === "object" && c.type === "text" && typeof c.text === "string") ? c.text : "")
+                            .join("\n")
+                        : "",
+                    is_error: r.is_error === true,
+                  })),
+                ];
                 const result = await executePartnerTool(
                   block.name,
                   block.input as Record<string, any>,
@@ -7324,6 +7334,13 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                   type: "tool_result",
                   tool_use_id: block.id,
                   content: result,
+                });
+                // LUCA-048 follow-up: also push to cumulative so the next
+                // iteration sees this result. Excludes nothing — gate logic
+                // does its own filtering (is_error, self-referential remembers).
+                cumulativeToolResults.push({
+                  content: result,
+                  is_error: false,
                 });
               }
 
