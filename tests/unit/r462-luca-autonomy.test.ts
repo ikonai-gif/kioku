@@ -128,20 +128,22 @@ describe("R462 — luca_recall_self tool (deliberation)", () => {
     );
   });
 
-  it("dispatch handler: rate-limited, scoped to {userId, agentId}, vector with ILIKE fallback, hard cap 10", () => {
+  it("dispatch handler: rate-limited, scoped to {userId, agentId}, vector with FTS fallback, hard cap 10", () => {
     // Two case statements share the prefix: pretty-print at ~1489 and main
     // dispatch at ~5777. Find the SECOND occurrence (the dispatch body).
+    // [BRO2-280] CCP Phase 1.0 added a third recall branch (cube proximity)
+    // before vector/FTS, enlarging the dispatch body. Widened 4000 → 9000.
     const firstCase = delib.indexOf('case "luca_recall_self":');
     const caseStart = delib.indexOf('case "luca_recall_self":', firstCase + 1);
     expect(caseStart).toBeGreaterThan(-1);
-    const window = delib.slice(caseStart, caseStart + 4000);
+    const window = delib.slice(caseStart, caseStart + 9000);
     // Closure-scoped, not from toolInput
     expect(window).toMatch(/checkAuthRateLimit\(`luca_recall_self:burst:\$\{agentId\}`/);
     expect(window).toMatch(/user_id\s*=\s*\$2\s+AND\s+agent_id\s*=\s*\$3/);
     // vector path
     expect(window).toMatch(/embedding_vec\s*<=>\s*\$1::vector/);
-    // ILIKE fallback
-    expect(window).toMatch(/ILIKE/);
+    // [BRO2-278] FTS replaced ILIKE as keyword fallback. Source-pin updated.
+    expect(window).toMatch(/content_tsv @@ plainto_tsquery/);
     // limit clamp
     expect(window).toMatch(/Math\.min\(\s*10\s*,/);
   });
