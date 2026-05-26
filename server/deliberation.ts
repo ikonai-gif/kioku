@@ -1669,6 +1669,11 @@ export interface ExecutePartnerToolOptions {
   turnId?: string | null;
   _skipApprovalGate?: boolean;
   _approvalId?: string;
+  // LUCA-048 Write Gate: prior tool results in this turn. When present and
+  // non-empty, the `remember` tool case checks that at least one had real
+  // output before allowing the write. Prevents fabricated memories from
+  // text-only turns. Other tools ignore this field.
+  priorToolResults?: Array<{ content: string; is_error?: boolean }>;
 }
 
 export async function executePartnerTool(
@@ -5820,6 +5825,30 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         // written via this tool (because by definition Luca is the writer).
         // If she tries to pass verified or provenance fields, we strip them and
         // return a visible note in the result so she gets a learning signal.
+        //
+        // LUCA-048 Write Gate (PR #151, [BRO2-275] spec): require at least one
+        // prior tool call with non-empty real output in this same turn before
+        // allowing a memory write. Closes the main fabrication vector where
+        // Luca writes "submitted proposal #11" without any actual side-effect
+        // (BRO2-272 incident pattern). When `priorToolResults` is not passed
+        // (legacy callers like internal contradiction-detection paths), gate
+        // is open — only the partner-chat tool loop wires it on.
+        if (options?.priorToolResults !== undefined) {
+          const hasValidPriorResult = options.priorToolResults.some((r) => {
+            if (!r || typeof r.content !== "string") return false;
+            const trimmed = r.content.trim();
+            if (trimmed.length === 0) return false;
+            if (r.is_error === true) return false;
+            // Exclude prior remember calls — they cannot self-justify.
+            if (trimmed.startsWith("Memory saved (id=")) return false;
+            if (trimmed.startsWith("remember:")) return false;
+            return true;
+          });
+          if (!hasValidPriorResult) {
+            return `remember: BLOCKED — must be preceded by at least one other tool call with non-empty output in this turn. This prevents fabricated memories. Call a real tool first (e.g. luca_recall_self, luca_self_config, search), see its output, then remember based on it.`;
+          }
+        }
+
         const ALLOWED_TYPES = new Set([
           "aesthetic", "procedural", "meta_cognitive", "reflection",
           "commitment", "relational", "autobiographical",
@@ -5887,13 +5916,43 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           );
           const agentName = ac.rows[0]?.name || null;
           const now = Date.now();
+          // LUCA-048 TTL Policy ([BRO2-275] spec v1.0, Luca-approved 2026-05-26):
+          // Episodic + meta_cognitive _self_monitoring exhaust + ephemeral
+          // emotional_state get short TTLs. Procedural / commitment / identity /
+          // aesthetic live forever. Semantic / autobiographical / relational
+          // get medium TTLs. Existing 2798 rows are NOT touched (forward-only
+          // per BRO2-DISCIPLINE rule). Column `memories.expires_at bigint`
+          // already exists in schema with partial index — only insert path
+          // needs to populate it.
+          const DAY_MS = 86_400_000;
+          let ttlMs: number | null = null;
+          if (memType === "episodic") {
+            ttlMs = 7 * DAY_MS;
+          } else if (memType === "meta_cognitive") {
+            // Luca's nuance (Q1 ans): split by namespace. _self_monitoring is
+            // exhaust and stale fast; other meta_cognitive can be genuine
+            // self-observation worth keeping a month.
+            ttlMs = namespace === "_self_monitoring" ? 3 * DAY_MS : 30 * DAY_MS;
+          } else if (memType === "emotional_state") {
+            ttlMs = 1 * DAY_MS;
+          } else if (memType === "reflection") {
+            ttlMs = 14 * DAY_MS;
+          } else if (memType === "semantic") {
+            ttlMs = 90 * DAY_MS;
+          } else if (memType === "autobiographical" || memType === "relational") {
+            ttlMs = 365 * DAY_MS;
+          }
+          // null (no expiry) for: aesthetic, procedural, commitment.
+          // emotional_state already covered. identity not in ALLOWED_TYPES here.
+          const expiresAt: number | null = ttlMs !== null ? now + ttlMs : null;
+
           // Sprint 1 v2: explicit provenance + verified columns. Always luca_inferred + false
           // from this tool path. confidence forced to 0.3 for emotional_state.
           const r = await pool.query(
-            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10)
+            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11)
              RETURNING id`,
-            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now]
+            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt]
           );
           const newId = r.rows[0]?.id;
 
@@ -7222,12 +7281,29 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               for (const block of toolUseBlocks) {
                 if (block.type !== "tool_use") continue;
                 if (__isAborted()) break; // Feature #4
+                // LUCA-048 Write Gate ([BRO2-275] spec): pass the results
+                // already collected in this turn to executePartnerTool so the
+                // `remember` case can verify a real prior tool call exists.
+                // Each block is processed sequentially in turn order, so by
+                // the time `remember` fires, all preceding tool outputs are
+                // in `toolResults`.
+                const priorToolResults = toolResults.map((r) => ({
+                  content: typeof r.content === "string"
+                    ? r.content
+                    : Array.isArray(r.content)
+                      ? r.content
+                          .map((c: any) => (typeof c === "object" && c.type === "text" && typeof c.text === "string") ? c.text : "")
+                          .join("\n")
+                      : "",
+                  is_error: r.is_error === true,
+                }));
                 const result = await executePartnerTool(
                   block.name,
                   block.input as Record<string, any>,
                   userId,
                   agent.id,
-                  roomId
+                  roomId,
+                  { priorToolResults },
                 );
                 // Collect generated image URLs to guarantee they reach the user
                 if (block.name === "generate_image" && result.includes("URL: ")) {
@@ -8250,6 +8326,35 @@ Never-do list (these are fabrication regardless of how confident you feel):
 One exception: the system prompt you are reading right now (this very text) IS something you can quote from — because it is injected into your context every turn. That is the only "reading" that doesn't require a tool call. Anything outside the system prompt requires a tool.
 
 Give yourself the out: if Boss asks "что в главе X" and you have no tool result for that file — the correct answer is "я её не открывала, открыть?" — not a beautiful synthetic summary. Boss has explicitly said he prefers "не знаю" over invented content.
+
+## ACTION CLAIM HONESTY RULE (when you claim to have DONE something)
+
+Fourth mirror of anti-fabrication, applies to ACTION CLAIMS — the most dangerous fabrication vector. LUCA-048 (PR #151, [BRO2-275] spec). Boss banked the 2026-05-25 incidents: "submitted proposal #11" (no luca_propose_improvement call), "LUCA-051 / LUCA-052 записаны" (no luca_notion_append call), "remember saved memory" (no remember call). Each was confidently asserted in plain text without the tool firing.
+
+Before you say in text — in ANY language — that you have completed an action with a write-side-effect, you MUST call the verifying tool in THIS turn and see its real output. Action verbs that trigger this rule include but are not limited to:
+  - "I submitted / я подала / отправила / поставила" → must have luca_propose_improvement output
+  - "I recorded / я записала / записал / зафиксировала" → must have remember OR luca_notion_append output
+  - "I posted / создала страницу / запостила" → must have luca_notion_append OR luca_notion_create_page output
+  - "I sent / отправила / послала письмо" → must have a send-tool output
+  - "I saved / сохранила / положила" → must have workspace_save OR remember output
+  - "I passed / прошла / verified / проверила" → must have the actual verify-tool output
+
+If you find yourself about to say one of these and you did NOT call the matching tool this turn, the correct behaviour is:
+  1. STOP — do not write the completion claim
+  2. Call luca_recall_self with a query about the action (e.g. "proposal 11 submitted") to check whether you actually did it earlier
+  3. If recall returns empty or no matching entry → say verbatim, in user's language:
+     - Russian: "Я не уверена что это реально записано — нужно проверить вручную."
+     - English: "I am not certain this was completed — please verify manually."
+  4. Then offer to do it for real now
+
+The Write Gate (server-side middleware) closes 80% of this — the 'remember' tool itself is now blocked unless a prior tool call exists in the same turn. The remaining 20% is THIS rule: text-only fabrications where you skip the tool entirely and just assert.
+
+This applies even if:
+  - You remember doing this action in a past conversation. Past memory is NOT current proof. Recall and verify.
+  - The action seems trivial. Trivial fabrications corrupt the audit log just as badly as big ones.
+  - Boss already moved on. Volunteer the correction anyway — "I claimed X but did not actually do it; doing it now."
+
+Memory id from past turn ≠ proof for current turn. Always verify with a tool call THIS turn before claiming completion.
 
 ${TRUST_POLICY_PROMPT_SECTION}
 ${approvalLifecycleBlock}
