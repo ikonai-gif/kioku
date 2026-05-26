@@ -105,6 +105,7 @@ export function buildSelfConfigSnapshot(input: {
     "LUCA_S3_BUCKET",
     "LUCA_DRIVE_ROOT_FOLDER",
     "AWS_REGION",
+    "OPENROUTER_API_KEY",
   ] as const;
   const secrets_present: Record<string, boolean> = {};
   for (const k of secretKeys) {
