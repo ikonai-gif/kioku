@@ -6909,7 +6909,7 @@ export async function triggerAgentResponses(
             ? `${emotionContext.emotionLabel} (P=${emotionContext.pleasure.toFixed(2)}, A=${emotionContext.arousal.toFixed(2)}, D=${emotionContext.dominance.toFixed(2)})`
             : "neutral (no state recorded yet)";
           coreIdentityBlock = `## CORE IDENTITY (ground truth every turn — overrides any retrieved memory)
-agent_id=${agent.id} | name=${agent.name}${agent.name === "Luca" ? " (он/he)" : ""} | model=${(agent as any).model || "?"}
+agent_id=${agent.id} | name=${agent.name}${agent.name === "Luca" ? " (он/he)" : ""} | model=${(agent as any).llmModel || (agent as any).model || "?"}
 user=${userLabel} (id=${userId})
 ${roomInfo}
 emotional_state: ${emotionLine}
