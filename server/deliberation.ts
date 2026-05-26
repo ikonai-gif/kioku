@@ -6091,9 +6091,14 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
             );
             rows = r.rows;
           } else {
-            // Keyword fallback — ILIKE on content.
-            const pattern = `%${query.replace(/[%_]/g, "\\$&")}%`;
-            const params: any[] = [userId, agentId, pattern];
+            // [BRO2-278] Full-text search fallback. Previous ILIKE '%query%'
+            // was a substring match and could not handle multi-word queries —
+            // e.g. "Котэ решение архитектура память" required all 4 words
+            // adjacent in one memory row, which never happens. plainto_tsquery
+            // splits the query into ANDed terms; GIN index on content_tsv
+            // (added in storage.ts migration block) gives O(log n) lookup.
+            // ts_rank provides relevance ordering.
+            const params: any[] = [userId, agentId, query];
             let typeClause = "";
             if (typeFilter) { params.push(typeFilter); typeClause = `AND type = $${params.length}`; }
             let nsClause = "";
@@ -6103,10 +6108,13 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
             }
             params.push(limit);
             const r = await pool.query(
-              `SELECT id, type, namespace, importance, content, created_at
+              `SELECT id, type, namespace, importance, content, created_at,
+                      ts_rank(content_tsv, plainto_tsquery('simple', $3)) AS rank
                FROM memories
-               WHERE user_id = $1 AND agent_id = $2 AND content ILIKE $3 ${typeClause} ${nsClause}
-               ORDER BY COALESCE(importance, 0) DESC, created_at DESC
+               WHERE user_id = $1 AND agent_id = $2
+                 AND content_tsv @@ plainto_tsquery('simple', $3)
+                 ${typeClause} ${nsClause}
+               ORDER BY rank DESC, COALESCE(importance, 0) DESC, created_at DESC
                LIMIT $${params.length}`,
               params,
             );

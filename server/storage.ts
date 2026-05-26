@@ -324,6 +324,24 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_memories_expires_at ON memories(expires_at) WHERE expires_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_memories_cause_id ON memories(cause_id) WHERE cause_id IS NOT NULL;
   `);
+  // [BRO2-278] Full-text search column + GIN index for luca_recall_self
+  // keyword fallback. The previous ILIKE '%query%' fallback could not handle
+  // multi-word queries — substring match required all words to appear adjacent
+  // in one row, which is rare. tsvector splits content into searchable terms,
+  // plainto_tsquery splits the query into ANDed terms, and GIN gives O(log n)
+  // lookup. Uses 'simple' config (no stemming) because content mixes Russian
+  // and English. Generated column auto-fills on insert/update and backfills
+  // existing rows on first ALTER. Idempotent: ADD COLUMN IF NOT EXISTS and
+  // CREATE INDEX IF NOT EXISTS make the migration safe on re-deploys.
+  await pool.query(`
+    ALTER TABLE memories
+      ADD COLUMN IF NOT EXISTS content_tsv tsvector
+      GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_memories_content_tsv
+      ON memories USING GIN (content_tsv);
+  `);
   // Set last_reinforced_at for existing memories
   await pool.query(`UPDATE memories SET last_reinforced_at = created_at WHERE last_reinforced_at IS NULL`);
   // Phase 3: External agent connection modes — agent type + webhook fields on agents
