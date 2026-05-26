@@ -1289,6 +1289,10 @@ const partnerTools: Anthropic.Messages.Tool[] = [
           type: "number",
           description: "Emotional charge (-1..+1). -1 = strong dislike/aversion, 0 = neutral, +1 = strong positive. Use for aesthetic and emotional_state types primarily.",
         },
+        temporal_stance: {
+          type: "number",
+          description: "[CCP v2.1 Y axis] Temporal orientation of this memory (-1..+1). -1 = pure past (retrospective: 'what happened'), 0 = present (current observation), +1 = pure future (commitment, plan, prediction). Examples: reflection on past mistake → -0.8; current emotional state → 0; commitment to future action → +0.9. Default 0 if omitted. Used by cube proximity recall (third path alongside FTS + vector).",
+        },
         emotions: {
           type: "object",
           description: "Optional: current emotional state snapshot when writing this memory. Fields are scalars 0..1 (except trust which is -1..+1). Only include fields you actually want to record — skip ones that are neutral/default.",
@@ -1349,6 +1353,17 @@ const partnerTools: Anthropic.Messages.Tool[] = [
           type: "array",
           items: { type: "string" },
           description: "Optional: namespaces to exclude from results. Default ['_self_monitoring'] (suppresses audit-noise self-monitoring rows that otherwise dominate recall). Pass [] to disable suppression (escape hatch — returns all namespaces). Pass a custom list to widen the exclusion.",
+        },
+        cube_query: {
+          type: "object",
+          description: "[CCP v2.1 Phase 1.0] Optional: search by 4D cube proximity instead of text. When present, ignores `query` text matching and ranks memories by Euclidean distance in the CCP cube space (V/Z/Y/D). All 4 fields optional — missing dimensions are wildcards (not penalized). V = valence (-1..+1, from emotional_valence), Z = weight (0..1, from importance), Y = temporal stance (-1..+1, from ccp_y), D = domain (string, matched against `type` exactly). Use when you want 'similar in feel/weight/time/domain' rather than 'similar in text'. Examples: {v: -0.8, z: 0.9} = 'critical errors I felt bad about'; {y: +0.8, d: 'commitment'} = 'future obligations'.",
+          properties: {
+            v: { type: "number", description: "Valence target -1..+1" },
+            z: { type: "number", description: "Weight target 0..1" },
+            y: { type: "number", description: "Temporal stance target -1..+1" },
+            d: { type: "string", description: "Domain (matches `type` column exactly)" },
+          },
+          additionalProperties: false,
         },
       },
       required: ["query"],
@@ -5908,6 +5923,13 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           const valence = typeof toolInput.emotional_valence === "number"
             ? Math.max(-1, Math.min(1, toolInput.emotional_valence))
             : null;
+          // [BRO2-280] CCP v2.1 Phase 1.0 — Y axis (temporal stance) from tool args.
+          // Optional, default 0.0 (present). Clamped to [-1, +1]. Other 3 CCP
+          // axes reuse existing columns: emotional_valence → V, importance → Z,
+          // type → D (12 Lukin types serve as her domain taxonomy).
+          const temporalStance = typeof toolInput.temporal_stance === "number"
+            ? Math.max(-1, Math.min(1, toolInput.temporal_stance))
+            : 0.0;
           // Store optional emotions object + related_ids as JSON suffix on content
           // so it survives without a schema migration. Retrieval parses if needed.
           let enrichedContent = content;
@@ -5958,11 +5980,12 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
 
           // Sprint 1 v2: explicit provenance + verified columns. Always luca_inferred + false
           // from this tool path. confidence forced to 0.3 for emotional_state.
+          // [BRO2-280] CCP Phase 1.0: ccp_y populated from temporalStance arg.
           const r = await pool.query(
-            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11)
+            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at, ccp_y)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11, $12)
              RETURNING id`,
-            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt]
+            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance]
           );
           const newId = r.rows[0]?.id;
 
@@ -6061,11 +6084,85 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         // R475 — suppress noisy namespaces (default _self_monitoring). Pass
         // [] explicitly to disable; pass a custom list to widen.
         const suppressNamespaces = parseSuppressNamespaces(toolInput.suppress_namespaces);
+        // [BRO2-280] CCP Phase 1.0 — optional cube_query mode. When present,
+        // takes precedence over text matching (vector + FTS). Linear scan of
+        // 4D Euclidean distance with NULL-as-wildcard semantics (missing
+        // dimensions don't penalize). Cap 2810 rows × 4 floats = ~11K compares
+        // < 5ms without index. Backward compat: when absent, behaves exactly
+        // as before (vector → FTS fallback chain).
+        const cubeQuery = (toolInput && typeof toolInput.cube_query === "object" && toolInput.cube_query !== null)
+          ? (toolInput.cube_query as { v?: number; z?: number; y?: number; d?: string })
+          : null;
         try {
           const { pool } = await import("./storage");
           const { embedText } = await import("./embeddings");
           let rows: any[] = [];
           let mode = "keyword";
+          // [BRO2-280] Cube proximity branch — third recall path, runs BEFORE
+          // text-search branches because explicit user signal beats inferred
+          // semantic match. Returns rows ordered by Euclidean distance in the
+          // 4D cube space, with NULL fields treated as wildcards.
+          if (cubeQuery && (
+            typeof cubeQuery.v === "number" ||
+            typeof cubeQuery.z === "number" ||
+            typeof cubeQuery.y === "number" ||
+            typeof cubeQuery.d === "string"
+          )) {
+            mode = "cube";
+            // Build distance expression — only include dimensions that are
+            // specified in the query. Missing dimensions contribute 0
+            // (acting as wildcards). All target columns can be NULL; treat
+            // NULL target as +Infinity distance for that axis (skip row).
+            const distParts: string[] = [];
+            const params: any[] = [userId, agentId];
+            // V axis = emotional_valence
+            if (typeof cubeQuery.v === "number") {
+              params.push(Math.max(-1, Math.min(1, cubeQuery.v)));
+              distParts.push(`COALESCE(POWER(emotional_valence - $${params.length}, 2), 4)`);
+              // worst-case dist² for V axis is (1 - (-1))² = 4
+            }
+            // Z axis = importance (always non-NULL by schema default)
+            if (typeof cubeQuery.z === "number") {
+              params.push(Math.max(0, Math.min(1, cubeQuery.z)));
+              distParts.push(`POWER(COALESCE(importance, 0.5) - $${params.length}, 2)`);
+            }
+            // Y axis = ccp_y
+            if (typeof cubeQuery.y === "number") {
+              params.push(Math.max(-1, Math.min(1, cubeQuery.y)));
+              distParts.push(`COALESCE(POWER(ccp_y - $${params.length}, 2), 4)`);
+            }
+            // D axis = type — exact string match; distance is 0 (match) or 1 (no match)
+            let dClause = "";
+            if (typeof cubeQuery.d === "string" && cubeQuery.d.length > 0) {
+              params.push(cubeQuery.d);
+              // Hard filter — only matching domain rows; D contributes nothing to distance
+              dClause = `AND type = $${params.length}`;
+            }
+            let typeClause = "";
+            if (typeFilter) {
+              params.push(typeFilter);
+              typeClause = `AND type = $${params.length}`;
+            }
+            let nsClause = "";
+            if (suppressNamespaces.length > 0) {
+              params.push(suppressNamespaces);
+              nsClause = `AND (namespace IS NULL OR namespace <> ALL($${params.length}::text[]))`;
+            }
+            params.push(limit);
+            const distExpr = distParts.length > 0 ? distParts.join(" + ") : "0";
+            const r = await pool.query(
+              `SELECT id, type, namespace, importance, content, created_at,
+                      (${distExpr}) AS cube_dist_sq
+               FROM memories
+               WHERE user_id = $1 AND agent_id = $2
+                 ${dClause} ${typeClause} ${nsClause}
+               ORDER BY cube_dist_sq ASC, COALESCE(importance, 0) DESC, created_at DESC
+               LIMIT $${params.length}`,
+              params,
+            );
+            rows = r.rows;
+          } else {
+          // ── original text-search path begins here ──
           let queryEmbedding: number[] | null = null;
           try { queryEmbedding = await embedText(query); } catch { queryEmbedding = null; }
           if (queryEmbedding) {
@@ -6120,12 +6217,15 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
             );
             rows = r.rows;
           }
+          } // ── close [BRO2-280] cube_query else (text-search path) ──
           const out = rows.map((r) => ({
             id: r.id,
             type: r.type,
             namespace: r.namespace,
             importance: r.importance,
-            similarity: r.similarity != null ? parseFloat(r.similarity) : null,
+            similarity: r.similarity != null ? parseFloat(r.similarity)
+              : r.cube_dist_sq != null ? Math.max(0, 1 - Math.sqrt(parseFloat(r.cube_dist_sq)) / 2) // [BRO2-280] map cube dist → 0..1 similarity-like score
+              : null,
             excerpt:
               typeof r.content === "string"
                 ? r.content.replace(/\n\n\[meta: \{[\s\S]*?\}\]\s*$/, "").slice(0, 240)

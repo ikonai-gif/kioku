@@ -342,6 +342,15 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_memories_content_tsv
       ON memories USING GIN (content_tsv);
   `);
+  // [BRO2-280] CCP v2.1 Phase 1.0 minimal — add ccp_y (temporal stance).
+  // 3 of 4 CCP axes already exist in `memories`: emotional_valence → V,
+  // importance → Z, type → D. Only Y (past=-1 → future=+1 temporal stance)
+  // is novel. Encoded server-side in `case "remember"` from optional
+  // `temporal_stance` tool arg (default 0.0 = present). Used as a third
+  // recall path (cube proximity) alongside FTS + vector. Idempotent.
+  await pool.query(`
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS ccp_y REAL;
+  `);
   // Set last_reinforced_at for existing memories
   await pool.query(`UPDATE memories SET last_reinforced_at = created_at WHERE last_reinforced_at IS NULL`);
   // Phase 3: External agent connection modes — agent type + webhook fields on agents

@@ -63,7 +63,9 @@ describe("R475 — luca_recall_self handler wires suppression into both SQL path
     expect(firstCase).toBeGreaterThan(-1);
     const caseStart = source.indexOf('case "luca_recall_self":', firstCase + 1);
     expect(caseStart).toBeGreaterThan(-1);
-    return source.slice(caseStart, caseStart + 5000);
+    // [BRO2-280] CCP Phase 1.0 added a third recall branch (cube proximity)
+    // before vector/FTS, enlarging the dispatch body. Widened from 5000 → 9000.
+    return source.slice(caseStart, caseStart + 9000);
   }
 
   it("handler parses suppress_namespaces via parseSuppressNamespaces(toolInput.suppress_namespaces)", () => {
