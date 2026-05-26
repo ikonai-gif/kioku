@@ -6093,6 +6093,14 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         const cubeQuery = (toolInput && typeof toolInput.cube_query === "object" && toolInput.cube_query !== null)
           ? (toolInput.cube_query as { v?: number; z?: number; y?: number; d?: string })
           : null;
+        // [BRO2-282] Expired-memory filter. PR #151 added per-type TTLs via
+        // expires_at; PR #152 added inline TTL for R462 self-monitoring
+        // writes. But the recall paths never filtered by expires_at, so
+        // expired rows could resurface even after Luca's prompt told her
+        // they should be gone. Adds `(expires_at IS NULL OR expires_at > $now)`
+        // to all three SQL paths (cube / vector / FTS). NULL means "no TTL,
+        // permanent" — preserved. Anything past its expires_at is excluded.
+        const nowMs = Date.now();
         try {
           const { pool } = await import("./storage");
           const { embedText } = await import("./embeddings");
@@ -6149,15 +6157,19 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
               nsClause = `AND (namespace IS NULL OR namespace <> ALL($${params.length}::text[]))`;
             }
             params.push(limit);
+            const limitParamIndex = params.length;
             const distExpr = distParts.length > 0 ? distParts.join(" + ") : "0";
+            // [BRO2-282] expired memories excluded from cube path too.
+            params.push(nowMs);
+            const expiryClause = `AND (expires_at IS NULL OR expires_at > $${params.length})`;
             const r = await pool.query(
               `SELECT id, type, namespace, importance, content, created_at,
                       (${distExpr}) AS cube_dist_sq
                FROM memories
                WHERE user_id = $1 AND agent_id = $2
-                 ${dClause} ${typeClause} ${nsClause}
+                 ${dClause} ${typeClause} ${nsClause} ${expiryClause}
                ORDER BY cube_dist_sq ASC, COALESCE(importance, 0) DESC, created_at DESC
-               LIMIT $${params.length}`,
+               LIMIT $${limitParamIndex}`,
               params,
             );
             rows = r.rows;
@@ -6177,13 +6189,17 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
               nsClause = `AND (namespace IS NULL OR namespace <> ALL($${params.length}::text[]))`;
             }
             params.push(limit);
+            const limitParamIndex = params.length;
+            // [BRO2-282] expired filter.
+            params.push(nowMs);
+            const expiryClause = `AND (expires_at IS NULL OR expires_at > $${params.length})`;
             const r = await pool.query(
               `SELECT id, type, namespace, importance, content, created_at,
                       1 - (embedding_vec <=> $1::vector) AS similarity
                FROM memories
-               WHERE user_id = $2 AND agent_id = $3 AND embedding_vec IS NOT NULL ${typeClause} ${nsClause}
+               WHERE user_id = $2 AND agent_id = $3 AND embedding_vec IS NOT NULL ${typeClause} ${nsClause} ${expiryClause}
                ORDER BY embedding_vec <=> $1::vector
-               LIMIT $${params.length}`,
+               LIMIT $${limitParamIndex}`,
               params,
             );
             rows = r.rows;
@@ -6204,15 +6220,19 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
               nsClause = `AND (namespace IS NULL OR namespace <> ALL($${params.length}::text[]))`;
             }
             params.push(limit);
+            const limitParamIndex = params.length;
+            // [BRO2-282] expired filter.
+            params.push(nowMs);
+            const expiryClause = `AND (expires_at IS NULL OR expires_at > $${params.length})`;
             const r = await pool.query(
               `SELECT id, type, namespace, importance, content, created_at,
                       ts_rank(content_tsv, plainto_tsquery('simple', $3)) AS rank
                FROM memories
                WHERE user_id = $1 AND agent_id = $2
                  AND content_tsv @@ plainto_tsquery('simple', $3)
-                 ${typeClause} ${nsClause}
+                 ${typeClause} ${nsClause} ${expiryClause}
                ORDER BY rank DESC, COALESCE(importance, 0) DESC, created_at DESC
-               LIMIT $${params.length}`,
+               LIMIT $${limitParamIndex}`,
               params,
             );
             rows = r.rows;

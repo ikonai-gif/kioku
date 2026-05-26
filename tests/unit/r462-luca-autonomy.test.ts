@@ -132,11 +132,12 @@ describe("R462 — luca_recall_self tool (deliberation)", () => {
     // Two case statements share the prefix: pretty-print at ~1489 and main
     // dispatch at ~5777. Find the SECOND occurrence (the dispatch body).
     // [BRO2-280] CCP Phase 1.0 added a third recall branch (cube proximity)
-    // before vector/FTS, enlarging the dispatch body. Widened 4000 → 9000.
+    // before vector/FTS. [BRO2-282] added expiry clause to all 3 paths.
+    // Widened 4000 → 9000 → 12000.
     const firstCase = delib.indexOf('case "luca_recall_self":');
     const caseStart = delib.indexOf('case "luca_recall_self":', firstCase + 1);
     expect(caseStart).toBeGreaterThan(-1);
-    const window = delib.slice(caseStart, caseStart + 9000);
+    const window = delib.slice(caseStart, caseStart + 12000);
     // Closure-scoped, not from toolInput
     expect(window).toMatch(/checkAuthRateLimit\(`luca_recall_self:burst:\$\{agentId\}`/);
     expect(window).toMatch(/user_id\s*=\s*\$2\s+AND\s+agent_id\s*=\s*\$3/);
