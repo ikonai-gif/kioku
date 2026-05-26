@@ -82,10 +82,11 @@ describe("R475 — luca_recall_self handler wires suppression into both SQL path
     );
   });
 
-  it("ILIKE fallback path appends the same NULL-safe namespace exclusion clause", () => {
+  it("FTS fallback path appends the same NULL-safe namespace exclusion clause", () => {
     const w = dispatchWindow();
-    // Confirm the ILIKE branch is in our window.
-    expect(w).toMatch(/content ILIKE \$3/);
+    // [BRO2-278] keyword fallback was migrated from ILIKE to Postgres FTS.
+    // Confirm the FTS branch is in our window (content_tsv @@ plainto_tsquery).
+    expect(w).toMatch(/content_tsv @@ plainto_tsquery/);
     // The clause should appear TWICE total (once per SQL path).
     const matches = w.match(
       /AND \(namespace IS NULL OR namespace <> ALL\(\$\$\{params\.length\}::text\[\]\)\)/g,
