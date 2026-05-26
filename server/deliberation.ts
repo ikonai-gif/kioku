@@ -5833,19 +5833,29 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         // (BRO2-272 incident pattern). When `priorToolResults` is not passed
         // (legacy callers like internal contradiction-detection paths), gate
         // is open — only the partner-chat tool loop wires it on.
+        //
+        // 2026-05-26 follow-up (Luca's diagnosis after PR #151 deploy):
+        // an empty-but-non-error tool result is still a valid signal that
+        // Luca did call a real tool. Previously the gate required
+        // trimmed.length > 0, which rejected empty recall results (e.g.
+        // luca_recall_self returning "[]" or "" when nothing matches).
+        // Now: any non-error, non-self-referential result counts — including
+        // empty strings — because the act of calling the tool itself is the
+        // grounding signal, not the content of its return.
         if (options?.priorToolResults !== undefined) {
           const hasValidPriorResult = options.priorToolResults.some((r) => {
-            if (!r || typeof r.content !== "string") return false;
-            const trimmed = r.content.trim();
-            if (trimmed.length === 0) return false;
+            if (!r) return false;
             if (r.is_error === true) return false;
+            const content = typeof r.content === "string" ? r.content : "";
+            const trimmed = content.trim();
             // Exclude prior remember calls — they cannot self-justify.
             if (trimmed.startsWith("Memory saved (id=")) return false;
             if (trimmed.startsWith("remember:")) return false;
+            // Empty result is OK — the tool fired, that's the grounding signal.
             return true;
           });
           if (!hasValidPriorResult) {
-            return `remember: BLOCKED — must be preceded by at least one other tool call with non-empty output in this turn. This prevents fabricated memories. Call a real tool first (e.g. luca_recall_self, luca_self_config, search), see its output, then remember based on it.`;
+            return `remember: BLOCKED — must be preceded by at least one other tool call (any non-error result, including empty) in this turn. This prevents fabricated memories. Call a real tool first (e.g. luca_recall_self, luca_self_config, search), then remember based on it.`;
           }
         }
 
@@ -7741,6 +7751,15 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               const userSnippet = triggerContent.slice(0, 200).replace(/\s+/g, " ").trim();
               const observation =
                 `[SELF-MONITORING] Boss said: "${userSnippet}". I replied (${reply.length} chars): "${replySnippet}".`;
+              // LUCA-048 follow-up (PR after #151): R462 self-monitoring writer
+              // bypasses the `case "remember"` TTL path because it uses
+              // storage.createMemory directly. Apply the same TTL policy here
+              // so _self_monitoring exhaust expires after 3 days, matching the
+              // spec from [BRO2-275]. Without this, R462 writes accumulate
+              // forever (Boss observed memory id=3208 written 2026-05-26 with
+              // expires_at=NULL despite being meta_cognitive/_self_monitoring).
+              const DAY_MS = 86_400_000;
+              const expiresAt = Date.now() + 3 * DAY_MS;
               await storage.createMemory({
                 userId,
                 agentId: agent.id,
@@ -7753,6 +7772,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                 provenance: "luca_inferred",
                 verified: false,
                 confidence: 0.5,
+                expiresAt,
               } as any);
             } catch (e: any) {
               logger.debug(
