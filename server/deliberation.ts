@@ -7881,14 +7881,6 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           summarizeConversation(userId, agent.id, roomId).catch(() => {});
         }
 
-        // R462 — Fire-and-forget self-monitoring write. After each Luca turn,
-        // record a meta-cognitive observation in namespace _self_monitoring so
-        // the namespace stops being empty (luca_memory_schema reported _self=0,
-        // _self_monitoring=0). Heuristic, not LLM-driven — cheap, deterministic.
-        // Only fires for partner-chat (Luca ↔ Boss) and only when both sides
-        // produced content. Stripped to luca_inferred + verified=false by
-        // remember-tool conventions; we use storage.createMemory directly to
-        // avoid invoking the LLM-tool path.
         // [BRO2-285] R462 self-monitoring writer DISABLED per BOSS direction
         // 2026-05-26. 60% of LUCA's memory was _self_monitoring exhaust
         // (1725/2886 rows), drowning out content. Suppress filter in recall
@@ -7898,6 +7890,15 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // (3-day backfill applied 2026-05-26). Do not delete this code path,
         // it remains valid and can be re-armed via env flag.
         const SELF_MON_ENABLED = process.env.LUCA_SELF_MONITORING_ENABLED === "true";
+
+        // R462 — Fire-and-forget self-monitoring write. After each Luca turn,
+        // record a meta-cognitive observation in namespace _self_monitoring so
+        // the namespace stops being empty (luca_memory_schema reported _self=0,
+        // _self_monitoring=0). Heuristic, not LLM-driven — cheap, deterministic.
+        // Only fires for partner-chat (Luca ↔ Boss) and only when both sides
+        // produced content. Stripped to luca_inferred + verified=false by
+        // remember-tool conventions; we use storage.createMemory directly to
+        // avoid invoking the LLM-tool path.
         if (SELF_MON_ENABLED && isPartnerChat && triggerContent && reply) {
           void (async () => {
             try {
