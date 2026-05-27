@@ -70,11 +70,13 @@ describe("R462 — alwaysInject Boss profile (memory-injection)", () => {
 });
 
 describe("R462 — post-response _self_monitoring auto-write (deliberation)", () => {
-  it("fire-and-forget hook only fires for partner-chat with both sides present", () => {
+  it("fire-and-forget hook only fires when env flag enabled + partner-chat + both sides present", () => {
     const start = delib.indexOf("R462 — Fire-and-forget self-monitoring write");
     expect(start).toBeGreaterThan(-1);
     const window = delib.slice(start, start + 2000);
-    expect(window).toMatch(/if\s*\(\s*isPartnerChat\s*&&\s*triggerContent\s*&&\s*reply\s*\)/);
+    // [BRO2-285] writer is now gated behind LUCA_SELF_MONITORING_ENABLED env
+    // flag (default false). Condition prefix must include SELF_MON_ENABLED.
+    expect(window).toMatch(/if\s*\(\s*SELF_MON_ENABLED\s*&&\s*isPartnerChat\s*&&\s*triggerContent\s*&&\s*reply\s*\)/);
     expect(window).toMatch(/void\s*\(\s*async\s*\(\)\s*=>/);
   });
 
