@@ -917,9 +917,20 @@ export function formatMemoryContext(memories: InjectedMemory[], links?: MemoryLi
 
   if (topicMems.length > 0) {
     const lines = topicMems.map((m, i) => {
-      const expiryTag = m.expiresAt
-        ? `, expires: ${new Date(m.expiresAt).toISOString().split("T")[0]}`
-        : "";
+      // [BRO2-286] Defensive date guard. m.expiresAt may be truthy but coerce
+      // to Invalid Date (e.g. bigint serialized as string, or value outside
+      // JS Date range). Without this, Date.toISOString() throws
+      // RangeError: Invalid time value, propagating up through Array.map and
+      // crashing triggerAgentResponses → LUCA stops replying (observed
+      // 2026-05-27 16:07 UTC after #157 redeploy).
+      let expiryTag = "";
+      if (m.expiresAt) {
+        const raw = typeof m.expiresAt === "string" ? Number(m.expiresAt) : m.expiresAt;
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) {
+          expiryTag = `, expires: ${d.toISOString().split("T")[0]}`;
+        }
+      }
       let emotionTag = "";
       if (m.emotionVector) {
         try {
