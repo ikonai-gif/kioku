@@ -7889,7 +7889,16 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // produced content. Stripped to luca_inferred + verified=false by
         // remember-tool conventions; we use storage.createMemory directly to
         // avoid invoking the LLM-tool path.
-        if (isPartnerChat && triggerContent && reply) {
+        // [BRO2-285] R462 self-monitoring writer DISABLED per BOSS direction
+        // 2026-05-26. 60% of LUCA's memory was _self_monitoring exhaust
+        // (1725/2886 rows), drowning out content. Suppress filter in recall
+        // helped but write rate was outpacing recall hygiene. New env flag
+        // LUCA_SELF_MONITORING_ENABLED defaults to "false" — set to "true"
+        // to re-enable. Forward-only: existing rows continue to expire via TTL
+        // (3-day backfill applied 2026-05-26). Do not delete this code path,
+        // it remains valid and can be re-armed via env flag.
+        const SELF_MON_ENABLED = process.env.LUCA_SELF_MONITORING_ENABLED === "true";
+        if (SELF_MON_ENABLED && isPartnerChat && triggerContent && reply) {
           void (async () => {
             try {
               const replySnippet = reply.slice(0, 280).replace(/\s+/g, " ").trim();
