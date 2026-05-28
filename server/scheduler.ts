@@ -369,12 +369,45 @@ async function processDueTasks() {
   }
 }
 
+// ── Expired Memory Sweeper ───────────────────────────────────────────────────
+// Forward-only enforcement of memory TTL. Rows whose expires_at has passed are
+// deleted. TTL is set at write time (the agent's own decision), so this only
+// enforces what was already decided. Runs at most once per 24h. Approved by
+// LUCA + BOSS 2026-05-27 [BRO2-292]. Idempotent: deletes only already-expired
+// rows, never touches rows without expires_at or with a future expires_at.
+
+const SWEEP_MIN_INTERVAL_MS = 24 * 60 * 60_000; // at most once per 24h
+let lastMemorySweepAt = 0;
+
+async function sweepExpiredMemories(): Promise<void> {
+  const now = Date.now();
+  if (now - lastMemorySweepAt < SWEEP_MIN_INTERVAL_MS) return;
+  lastMemorySweepAt = now;
+  try {
+    const res = await pool.query(
+      `DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < $1`,
+      [now],
+    );
+    const deleted = res.rowCount ?? 0;
+    if (deleted > 0) {
+      logger.info({ deleted }, "[scheduler] expired memory sweep removed rows");
+    }
+  } catch (err: any) {
+    logger.error({ err: err?.message }, "[scheduler] expired memory sweep failed");
+  }
+}
+
 export function startScheduler() {
   setInterval(async () => {
     try {
       await processDueTasks();
     } catch (err: any) {
       logger.error({ err: err?.message }, "[scheduler] error processing due tasks");
+    }
+    try {
+      await sweepExpiredMemories();
+    } catch (err: any) {
+      logger.error({ err: err?.message }, "[scheduler] error sweeping expired memories");
     }
   }, CHECK_INTERVAL);
   logger.info("[scheduler] started — checking every 60s");
