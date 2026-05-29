@@ -116,6 +116,9 @@ describe("Build#1 — normalizeOpenRouterModel slug handling", () => {
   it("prefixes bare kimi-* with moonshotai/", () => {
     expect(normalizeOpenRouterModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.6");
   });
+  it("prefixes bare claude-* with anthropic/", () => {
+    expect(normalizeOpenRouterModel("claude-sonnet-4-6")).toBe("anthropic/claude-sonnet-4-6");
+  });
   it("defaults unknown bare slug to moonshotai/kimi-k2.6", () => {
     expect(normalizeOpenRouterModel("mystery")).toBe("moonshotai/kimi-k2.6");
   });
@@ -152,6 +155,24 @@ describe("Build#1 — callLLM routes OpenRouter models to OpenRouter", () => {
     });
 
     expect(reply).toBe("claude-says-hi");
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" }),
+      expect.anything(),
+    );
+  });
+
+  it("Luca's exact config (bare claude-sonnet-4-6 + provider=openrouter) routes to OpenRouter with anthropic/ prefix", async () => {
+    __setOpenRouterClientForTest(null);
+    createMock.mockResolvedValue({ choices: [{ message: { content: "luca-real-claude" } }] });
+
+    const reply = await callLLM("claude-sonnet-4-6", "sys", "user", {
+      agentLlm: { provider: "openrouter", apiKey: null },
+      agentId: 16,
+    });
+
+    expect(reply).toBe("luca-real-claude");
+    // The bare slug must be normalized to anthropic/ before hitting OpenRouter,
+    // and it must NOT fall through to gpt-4o on OpenAI.
     expect(createMock).toHaveBeenCalledWith(
       expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" }),
       expect.anything(),
