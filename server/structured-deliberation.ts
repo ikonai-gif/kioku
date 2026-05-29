@@ -1008,7 +1008,10 @@ async function collectPositions(
           {
             maxTokens: 400,
             temperature: phase === "debate" ? 0.8 : 0.6,
-            agentLlm: (agent.llmApiKey) ? { provider: agent.llmProvider, apiKey: agent.llmApiKey } : undefined,
+            // BUG A fix [BRO2-313]: pass provider ALWAYS, gate only the key.
+            // Shared-key agents have llmApiKey=NULL by design (keys in Railway env);
+            // previously agentLlm was undefined for them => provider lost => gpt-4o fallback.
+            agentLlm: { provider: agent.llmProvider, apiKey: agent.llmApiKey ?? null },
             // W7 Item 1d F2: per-agent breaker keying for custom-key isolation.
             agentId: agent.id,
           }
