@@ -150,6 +150,7 @@ export function registerHealthRoutes(app: Express): void {
     const redisUrl = process.env.REDIS_URL;
     const redisStatus: "connected" | "not_configured" = redisUrl ? "connected" : "not_configured";
     const openaiStatus = process.env.OPENAI_API_KEY ? "configured" : "not_configured";
+    const openrouterStatus = process.env.OPENROUTER_API_KEY ? "configured" : "not_configured";
     const stripeStatus = process.env.STRIPE_SECRET_KEY ? "configured" : "not_configured";
     // Studio API keys (exposed status only, never values)
     const kieStatus = process.env.KIE_API_KEY ? "configured" : "not_configured";
@@ -187,6 +188,7 @@ export function registerHealthRoutes(app: Express): void {
       database: dbStatus,
       redis: redisStatus,
       openai: openaiStatus,
+      openrouter: openrouterStatus,
       stripe: stripeStatus,
       studio: {
         kie: kieStatus,
