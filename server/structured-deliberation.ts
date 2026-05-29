@@ -29,6 +29,7 @@ import { checkSycophancy } from "./sycophancy-checker";
 import { autoLinkDeliberation as provenanceAutoLink } from "./provenance";
 import { withOpenAIBreaker } from "./lib/openai-client";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
+import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY } from "./lib/openrouter-client";
 import logger from "./logger";
 
 // Strip common prompt injection patterns from user-provided content
@@ -64,10 +65,27 @@ function isOpenAIModel(model: string): boolean {
   return OPENAI_MODELS.includes(model) || model.startsWith("gpt-");
 }
 
-/** Resolve agent model to a supported one — unsupported models (e.g. claude-*) use DEFAULT_MODEL */
-function resolveModel(model: string): string {
+/**
+ * OpenRouter routing is provider-driven, not name-driven: any model can be
+ * served via OpenRouter when the agent's llmProvider === "openrouter". We also
+ * treat vendor-prefixed slugs (e.g. "moonshotai/...", "anthropic/...",
+ * "deepseek/...", "meta-llama/...") as OpenRouter so a misconfigured provider
+ * field still routes correctly instead of silently downgrading to gpt-4o.
+ */
+function isOpenRouterModel(model: string, provider?: string | null): boolean {
+  if (provider === "openrouter") return true;
+  return /^(moonshotai|anthropic|deepseek|meta-llama|mistralai|qwen|google|x-ai|cohere)\//.test(model);
+}
+
+/**
+ * Resolve agent model to a supported one. OpenRouter-routed models pass through
+ * untouched (they are validated by OpenRouter, not by our model lists).
+ * Only genuinely unroutable models fall back to DEFAULT_MODEL.
+ */
+function resolveModel(model: string, provider?: string | null): string {
+  if (isOpenRouterModel(model, provider)) return model;
   if (isGeminiModel(model) || isOpenAIModel(model)) return model;
-  console.warn(`[deliberation] Unsupported model "${model}", falling back to ${DEFAULT_MODEL}`);
+  console.warn(`[deliberation] Unsupported model "${model}" (provider=${provider ?? "none"}), falling back to ${DEFAULT_MODEL}`);
   return DEFAULT_MODEL;
 }
 
@@ -166,6 +184,54 @@ async function callGemini(
 const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 
 /**
+ * Normalize a model slug for OpenRouter. Bare "kimi-*" gets the moonshotai/
+ * vendor prefix (matches chat-mode behavior); already-prefixed slugs pass
+ * through; a provider=openrouter agent with no usable slug defaults to k2.6.
+ */
+function normalizeOpenRouterModel(model: string): string {
+  if (model.includes("/")) return model; // already vendor-prefixed
+  if (model.startsWith("kimi-")) return `moonshotai/${model}`;
+  return "moonshotai/kimi-k2.6";
+}
+
+/**
+ * Call an OpenRouter-hosted model (OpenAI-compatible Chat Completions).
+ * Shared-key calls go through the process-wide OpenRouter breaker; custom-key
+ * agents use an isolated client so a bad tenant key can't open the shared
+ * breaker. Mirrors callOpenAI's shape so callLLM can treat it uniformly.
+ *
+ * @param customApiKey — per-agent OpenRouter key override (falls back to shared env key)
+ */
+async function callOpenRouter(
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens: number,
+  temperature: number,
+  customApiKey?: string | null,
+): Promise<string> {
+  if (!customApiKey && !HAS_OPENROUTER_KEY) throw new Error("OPENROUTER_API_KEY not configured");
+
+  const orModel = normalizeOpenRouterModel(model);
+  const params = {
+    model: orModel,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userMessage },
+    ],
+  };
+  const reqOpts = { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) };
+
+  const completion = customApiKey
+    ? await makeOpenRouterClient(customApiKey).chat.completions.create(params, reqOpts)
+    : await withOpenRouterBreaker((client) => client.chat.completions.create(params, reqOpts));
+
+  return completion.choices[0]?.message?.content?.trim() || "";
+}
+
+/**
  * Call appropriate LLM based on model name, with provider fallback.
  * If the primary provider fails, falls back to the other provider.
  * Supports per-agent API keys via agentLlm option.
@@ -183,14 +249,43 @@ async function callLLM(
 ): Promise<string> {
   const maxTokens = options?.maxTokens ?? 400;
   const temperature = options?.temperature ?? 0.7;
-  const model = resolveModel(requestedModel);
   const agentApiKey = options?.agentLlm?.apiKey || null;
   const agentProvider = options?.agentLlm?.provider || null;
   const agentId = options?.agentId;
+  const model = resolveModel(requestedModel, agentProvider);
 
   // Determine which API key to use for each provider
   const openaiKey = (agentProvider === "openai" && agentApiKey) ? agentApiKey : null;
   const geminiKey = (agentProvider === "gemini" && agentApiKey) ? agentApiKey : null;
+  const openrouterKey = (agentProvider === "openrouter" && agentApiKey) ? agentApiKey : null;
+
+  // OpenRouter models — try OpenRouter first, fall back to shared providers.
+  // This is the heterogeneity path: Claude/Kimi/Llama/DeepSeek route here
+  // instead of being silently downgraded to DEFAULT_MODEL on OpenAI.
+  if (isOpenRouterModel(model, agentProvider)) {
+    try {
+      return await callOpenRouter(model, systemPrompt, userMessage, maxTokens, temperature, openrouterKey);
+    } catch (err: any) {
+      // Fallback chain: prefer OpenAI (shared), then Gemini, so a transient
+      // OpenRouter failure still yields an answer rather than aborting the agent.
+      if (HAS_OPENAI_KEY) {
+        console.warn(`[deliberation] OpenRouter (${model}) failed, falling back to OpenAI:`, err.message);
+        try {
+          return await callOpenAI({ model: DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, agentId });
+        } catch (oaErr: any) {
+          if (GEMINI_API_KEY) {
+            return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature);
+          }
+          throw new Error(`All AI providers failed. OpenRouter: ${err.message}, OpenAI: ${oaErr.message}`);
+        }
+      }
+      if (GEMINI_API_KEY) {
+        console.warn(`[deliberation] OpenRouter (${model}) failed, falling back to Gemini:`, err.message);
+        return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature);
+      }
+      throw new Error(`All AI providers failed. OpenRouter: ${err.message}`);
+    }
+  }
 
   if (isGeminiModel(model)) {
     try {
@@ -236,7 +331,7 @@ async function callLLM(
 
 // W7 Item 1d tests: access internals without plumbing real stacks. Production
 // code must not import these paths.
-export const __testOnly__ = { callLLM, callOpenAI };
+export const __testOnly__ = { callLLM, callOpenAI, callOpenRouter, resolveModel, isOpenRouterModel, normalizeOpenRouterModel };
 
 // ── Webhook Dispatcher ─────────────────────────────────────────────
 
