@@ -193,6 +193,7 @@ const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 function normalizeOpenRouterModel(model: string): string {
   if (model.includes("/")) return model; // already vendor-prefixed
   if (model.startsWith("claude-")) return `anthropic/${model}`;
+  if (model.startsWith("gemini-")) return `google/${model}`; // [BRO2-313] defensive: gemini via openrouter
   if (model.startsWith("kimi-")) return `moonshotai/${model}`;
   return "moonshotai/kimi-k2.6";
 }
