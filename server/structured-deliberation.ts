@@ -184,12 +184,15 @@ async function callGemini(
 const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 
 /**
- * Normalize a model slug for OpenRouter. Bare "kimi-*" gets the moonshotai/
- * vendor prefix (matches chat-mode behavior); already-prefixed slugs pass
- * through; a provider=openrouter agent with no usable slug defaults to k2.6.
+ * Normalize a model slug for OpenRouter. Bare vendor models get their
+ * OpenRouter vendor prefix (matches chat-mode behavior): "claude-*" →
+ * "anthropic/claude-*", "kimi-*" → "moonshotai/kimi-*". Already-prefixed
+ * slugs pass through; a provider=openrouter agent with no usable slug
+ * defaults to k2.6.
  */
 function normalizeOpenRouterModel(model: string): string {
   if (model.includes("/")) return model; // already vendor-prefixed
+  if (model.startsWith("claude-")) return `anthropic/${model}`;
   if (model.startsWith("kimi-")) return `moonshotai/${model}`;
   return "moonshotai/kimi-k2.6";
 }
