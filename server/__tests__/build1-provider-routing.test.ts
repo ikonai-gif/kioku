@@ -111,13 +111,16 @@ describe("Build#1 — isOpenRouterModel detection", () => {
 
 describe("Build#1 — normalizeOpenRouterModel slug handling", () => {
   it("passes through already-prefixed slugs", () => {
-    expect(normalizeOpenRouterModel("anthropic/claude-sonnet-4-6")).toBe("anthropic/claude-sonnet-4-6");
+    expect(normalizeOpenRouterModel("anthropic/claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
   });
   it("prefixes bare kimi-* with moonshotai/", () => {
     expect(normalizeOpenRouterModel("kimi-k2.6")).toBe("moonshotai/kimi-k2.6");
   });
-  it("prefixes bare claude-* with anthropic/", () => {
-    expect(normalizeOpenRouterModel("claude-sonnet-4-6")).toBe("anthropic/claude-sonnet-4-6");
+  it("prefixes bare claude-* with anthropic/ (valid dot slug)", () => {
+    expect(normalizeOpenRouterModel("claude-sonnet-4.6")).toBe("anthropic/claude-sonnet-4.6");
+  });
+  it("prefixes bare gemini-* with google/", () => {
+    expect(normalizeOpenRouterModel("gemini-2.5-flash")).toBe("google/gemini-2.5-flash");
   });
   it("defaults unknown bare slug to moonshotai/kimi-k2.6", () => {
     expect(normalizeOpenRouterModel("mystery")).toBe("moonshotai/kimi-k2.6");
@@ -149,32 +152,31 @@ describe("Build#1 — callLLM routes OpenRouter models to OpenRouter", () => {
     __setOpenRouterClientForTest(null);
     createMock.mockResolvedValue({ choices: [{ message: { content: "claude-says-hi" } }] });
 
-    const reply = await callLLM("anthropic/claude-sonnet-4-6", "sys", "user", {
+    const reply = await callLLM("anthropic/claude-sonnet-4.6", "sys", "user", {
       agentLlm: { provider: "openrouter", apiKey: null },
       agentId: 16,
     });
 
     expect(reply).toBe("claude-says-hi");
     expect(createMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" }),
+      expect.objectContaining({ model: "anthropic/claude-sonnet-4.6" }),
       expect.anything(),
     );
   });
 
-  it("Luca's exact config (bare claude-sonnet-4-6 + provider=openrouter) routes to OpenRouter with anthropic/ prefix", async () => {
+  it("Luca's real config (anthropic/claude-sonnet-4.6 + provider=openrouter) routes to OpenRouter, NOT gpt-4o", async () => {
     __setOpenRouterClientForTest(null);
     createMock.mockResolvedValue({ choices: [{ message: { content: "luca-real-claude" } }] });
 
-    const reply = await callLLM("claude-sonnet-4-6", "sys", "user", {
+    const reply = await callLLM("anthropic/claude-sonnet-4.6", "sys", "user", {
       agentLlm: { provider: "openrouter", apiKey: null },
       agentId: 16,
     });
 
     expect(reply).toBe("luca-real-claude");
-    // The bare slug must be normalized to anthropic/ before hitting OpenRouter,
-    // and it must NOT fall through to gpt-4o on OpenAI.
+    // Prefixed valid slug must pass through unchanged and hit OpenRouter, NOT fall to gpt-4o.
     expect(createMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" }),
+      expect.objectContaining({ model: "anthropic/claude-sonnet-4.6" }),
       expect.anything(),
     );
   });
