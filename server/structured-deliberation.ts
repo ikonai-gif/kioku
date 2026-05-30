@@ -281,11 +281,15 @@ async function callLLM(
     agentId?: number; // W7 Item 1d F2: threaded to callOpenAI for per-agent breaker keying
   }
 ): Promise<string> {
-  // PR #167b: bump default 400→1024. Reasoning-models like Kimi K2.6 consume
-  // 200-400 reasoning tokens before emitting visible content; at 400 the agent
-  // returns an empty string. 1024 keeps cost reasonable while leaving headroom
-  // for both reasoning chains and a normal position+rationale.
-  const maxTokens = options?.maxTokens ?? 1024;
+  // PR #167b → PR #170 progression: default rose 400 → 1024 → 2048.
+  // Empirical Pilot #5 (2026-05-30, dlb_10_1780152336240) showed Kimi K2.6 on
+  // structured-deliberation prompts hit finish_reason=length at 1024 tokens
+  // with reasoning_tokens=1024-1653 and content="". The reasoning fallback in
+  // PR #169 surfaced placeholder text instead of a real position. Bumping the
+  // default to 2048 leaves ~1024 headroom for reasoning AND ~1024 for the
+  // visible content write-up, which diag_kimi_raw.ts probes confirmed Kimi
+  // can fill (content=234 chars at max_tokens=2048, finish_reason=stop).
+  const maxTokens = options?.maxTokens ?? 2048;
   const temperature = options?.temperature ?? 0.7;
   const agentApiKey = options?.agentLlm?.apiKey || null;
   const agentProvider = options?.agentLlm?.provider || null;
@@ -1041,9 +1045,10 @@ async function collectPositions(
           fittedSystemPrompt,
           userMsg,
           {
-            // PR #167b: 400→1024 to accommodate reasoning-model token usage
-            // (Kimi K2.6 consumes 200-400 reasoning tokens before visible content).
-            maxTokens: 1024,
+            // PR #167b → PR #170: 400 → 1024 → 2048. See callLLM default-resolution
+            // comment for empirical rationale. Kimi K2.6 needs ~1024 tokens for
+            // reasoning and another ~500-1024 for the visible position+rationale.
+            maxTokens: 2048,
             temperature: phase === "debate" ? 0.8 : 0.6,
             // BUG A fix [BRO2-313]: pass provider ALWAYS, gate only the key.
             // Shared-key agents have llmApiKey=NULL by design (keys in Railway env);
