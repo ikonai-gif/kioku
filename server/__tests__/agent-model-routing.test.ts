@@ -279,3 +279,39 @@ describe("PR #167b — structured-deliberation maxTokens bump (Kimi reasoning he
     expect(value).not.toBe(400);
   });
 });
+
+describe("PR #168a — OpenRouter circuit-breaker timeoutMs bump (Kimi reasoning headroom)", () => {
+  const orSrc = readFileSync(join(serverDir, "lib", "openrouter-client.ts"), "utf8");
+  const oaSrc = readFileSync(join(serverDir, "lib", "openai-client.ts"), "utf8");
+
+  it("OpenRouter breaker timeoutMs is 60_000 (not 30_000) — reasoning models need headroom", () => {
+    // Locate the CircuitBreaker config and read the timeoutMs literal.
+    const m = orSrc.match(
+      /new\s+CircuitBreaker\(\{[^}]*?name:\s*"openrouter"[^}]*?timeoutMs:\s*([0-9_]+)/,
+    );
+    expect(m, "openrouter breaker timeoutMs not found").toBeTruthy();
+    const literal = m![1].replace(/_/g, "");
+    expect(parseInt(literal, 10)).toBe(60_000);
+    expect(parseInt(literal, 10)).not.toBe(30_000);
+  });
+
+  it("OpenAI breaker timeoutMs stays at 30_000 — gpt-4o is non-reasoning, no bump needed", () => {
+    // Defensive guard: an accidental bump on the OpenAI side would extend
+    // failure-detection latency for the most-used provider with no benefit.
+    const m = oaSrc.match(/timeoutMs:\s*([0-9_]+)/);
+    expect(m, "openai breaker timeoutMs not found").toBeTruthy();
+    const literal = m![1].replace(/_/g, "");
+    expect(parseInt(literal, 10)).toBe(30_000);
+  });
+
+  it("OpenRouter and OpenAI breakers have ASYMMETRIC timeoutMs (60s vs 30s) by design", () => {
+    const orM = orSrc.match(
+      /new\s+CircuitBreaker\(\{[^}]*?name:\s*"openrouter"[^}]*?timeoutMs:\s*([0-9_]+)/,
+    );
+    const oaM = oaSrc.match(/timeoutMs:\s*([0-9_]+)/);
+    const orVal = parseInt(orM![1].replace(/_/g, ""), 10);
+    const oaVal = parseInt(oaM![1].replace(/_/g, ""), 10);
+    expect(orVal).toBeGreaterThan(oaVal);
+    expect(orVal - oaVal).toBeGreaterThanOrEqual(30_000);
+  });
+});

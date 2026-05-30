@@ -34,13 +34,20 @@ const OPENROUTER_HEADERS = {
 
 export const HAS_OPENROUTER_KEY = Boolean(process.env.OPENROUTER_API_KEY);
 
-// Single process-wide breaker — same thresholds as the OpenAI shared breaker.
+// Single process-wide breaker — thresholds tuned for OpenRouter specifically.
+// timeoutMs is 60s (not 30s like OpenAI breaker) because OpenRouter hosts
+// reasoning-models like Kimi K2.6 that consistently spend 30-50s in their
+// hidden reasoning chain before emitting visible content. At 30s the breaker
+// would mark every Kimi call a timeout-failure (causing LLMAbstainError on
+// every turn — verified empirically via PR #167 Variant A pilots #1, #2, #3
+// where Ops-Agent abstained or returned empty across all rounds). OpenAI's
+// breaker stays at 30s — gpt-4o is non-reasoning and finishes well under it.
 const openrouterBreaker = new CircuitBreaker({
   name: "openrouter",
   failureThreshold: 5,
   cooldownMs: 30_000,
   successThreshold: 2,
-  timeoutMs: 30_000,
+  timeoutMs: 60_000, // bumped 30s→60s for reasoning-model headroom (Kimi K2.6) [BRO2-317]
   isFailure: isOpenAIFailure, // identical HTTP failure policy (4xx≠429 = caller error)
   onStateChange: (from, to, reason) => {
     logger.warn(
