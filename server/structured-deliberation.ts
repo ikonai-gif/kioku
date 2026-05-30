@@ -233,7 +233,36 @@ async function callOpenRouter(
     ? await makeOpenRouterClient(customApiKey).chat.completions.create(params, reqOpts)
     : await withOpenRouterBreaker((client) => client.chat.completions.create(params, reqOpts));
 
-  return completion.choices[0]?.message?.content?.trim() || "";
+  // PR #169 [BRO2-317]: reasoning-model content+reasoning fallback.
+  // Kimi K2.6 and DeepSeek-R1 split their answer across TWO fields:
+  //   message.content   — final user-facing answer (may be empty if budget ran out)
+  //   message.reasoning — model's thinking (always populated for reasoning models)
+  // When max_tokens is just enough for reasoning but not the final write-up,
+  // OpenAI SDK returns content="" with finish_reason="length" while reasoning
+  // holds the actual answer. The previous callOpenRouter discarded reasoning
+  // and returned "", which caused Ops-Agent to give an empty position in every
+  // round (verified empirically in Pilot #4 after PR #168 deploy).
+  // Falling back to reasoning is the most truthful interpretation: it IS the
+  // model's answer, just structured differently.
+  const choice = completion.choices[0];
+  const msg: any = choice?.message ?? {};
+  const content = (msg.content ?? "").trim();
+  if (content) return content;
+  const reasoning = ((msg.reasoning ?? msg.reasoning_content) ?? "").trim();
+  if (reasoning) {
+    logger.warn(
+      {
+        event: "openrouter_reasoning_fallback",
+        model: orModel,
+        finishReason: choice?.finish_reason ?? null,
+        usage: completion.usage ?? null,
+        reasoningLen: reasoning.length,
+      },
+      `[deliberation] callOpenRouter: empty content from ${orModel} — falling back to reasoning field (len=${reasoning.length})`,
+    );
+    return reasoning;
+  }
+  return "";
 }
 
 /**

@@ -315,3 +315,49 @@ describe("PR #168a — OpenRouter circuit-breaker timeoutMs bump (Kimi reasoning
     expect(orVal - oaVal).toBeGreaterThanOrEqual(30_000);
   });
 });
+
+describe("PR #169 — OpenRouter content+reasoning fallback (reasoning-model recovery)", () => {
+  const structSrc = readFileSync(join(serverDir, "structured-deliberation.ts"), "utf8");
+  const chatSrc = readFileSync(join(serverDir, "deliberation.ts"), "utf8");
+
+  it("Test J: structured-deliberation callOpenRouter falls back to message.reasoning when content is empty", () => {
+    // Locate the post-completion handling in callOpenRouter and confirm it
+    // checks message.reasoning / message.reasoning_content before returning "".
+    // Pattern intentionally loose: we want to know the keys are referenced
+    // anywhere in the body, not pin the exact ternary shape.
+    const fnStart = structSrc.indexOf("async function callOpenRouter(");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnEnd = structSrc.indexOf("\nasync function ", fnStart + 1);
+    const body = structSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 4000);
+    expect(body).toMatch(/msg\.reasoning\b/);
+    expect(body).toMatch(/msg\.reasoning_content\b/);
+    expect(body).toMatch(/openrouter_reasoning_fallback/); // log event present
+  });
+
+  it("Test K: chat-path Claude-via-OR branch also has the reasoning fallback", () => {
+    // The new branch added in PR #166 (anthropic/* via OpenRouter) must also
+    // handle empty-content with reasoning fallback for future reasoning-class
+    // Anthropic slugs (e.g. claude-sonnet-thinking).
+    const branchStart = chatSrc.search(
+      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+    );
+    expect(branchStart).toBeGreaterThan(-1);
+    const kimiStart = chatSrc.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
+    expect(kimiStart).toBeGreaterThan(branchStart);
+    const claudeBody = chatSrc.slice(branchStart, kimiStart);
+    expect(claudeBody).toMatch(/msg\.reasoning\b/);
+    expect(claudeBody).toMatch(/Claude\/OR empty content/);
+  });
+
+  it("Test L: chat-path Kimi-OR branch has the reasoning fallback", () => {
+    // The original Kimi branch must extract reasoning when content is empty.
+    // This is the path that empirically failed in Pilot #4 — Ops-Agent (Kimi)
+    // had message.content="" with non-empty message.reasoning.
+    const kimiStart = chatSrc.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
+    expect(kimiStart).toBeGreaterThan(-1);
+    // Find the matching close (heuristic: scan forward ~3000 chars — branch is ~120 lines).
+    const kimiBody = chatSrc.slice(kimiStart, kimiStart + 4000);
+    expect(kimiBody).toMatch(/msg\.reasoning\b/);
+    expect(kimiBody).toMatch(/Kimi\/OR empty content/);
+  });
+});
