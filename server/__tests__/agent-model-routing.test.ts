@@ -187,3 +187,69 @@ describe("Kimi/OpenRouter routing", () => {
   });
 });
 
+describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
+  const src = readFileSync(join(serverDir, "deliberation.ts"), "utf8");
+
+  it("Test F: there IS a chat-dispatch branch that routes provider=openrouter + model anthropic/* through OpenRouter", () => {
+    // Locate a guarded `if` whose condition references llmProvider === "openrouter"
+    // AND chatModel.startsWith("anthropic/"). This is the new branch.
+    expect(src).toMatch(
+      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+    );
+  });
+
+  it("Test F-payload: the new branch calls OpenRouter with chatModel as-is (NOT moonshotai/kimi-k2.6)", () => {
+    // Find the new branch block (between the openrouter+anthropic guard and
+    // the existing isKimi block) and confirm it passes chatModel through.
+    const newBranchStart = src.search(
+      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+    );
+    expect(newBranchStart).toBeGreaterThan(-1);
+    const kimiBranchStart = src.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
+    expect(kimiBranchStart).toBeGreaterThan(newBranchStart);
+    const newBranchBody = src.slice(newBranchStart, kimiBranchStart);
+    // Within the new branch, OpenRouter chat completions are invoked with
+    // model: chatModel (not the kimi default).
+    expect(newBranchBody).toMatch(/orClient\.chat\.completions\.create\(/);
+    expect(newBranchBody).toMatch(/model:\s*chatModel,/);
+    expect(newBranchBody).not.toMatch(/moonshotai\/kimi-k2\.6/);
+  });
+
+  it("Test G: Kimi default `moonshotai/kimi-k2.6` is no longer the catch-all fallback for unknown slugs", () => {
+    // The old buggy default was: `: "moonshotai/kimi-k2.6"` at the end of the
+    // ternary that resolves `kimiModel`. The fix replaces this with `: null`
+    // so unknown OpenRouter slugs do NOT get silently routed to Kimi.
+    // Strategy: locate the kimiModel ternary and assert the final `:` arm is
+    // not the literal default we want to be rid of.
+    const kimiModelTernary = src.match(
+      /const\s+kimiModel\s*=\s*chatModel\.startsWith\("moonshotai\/[\s\S]{0,400}?;/,
+    );
+    expect(kimiModelTernary, "kimiModel ternary not found").toBeTruthy();
+    expect(kimiModelTernary![0]).not.toMatch(/:\s*"moonshotai\/kimi-k2\.6"\s*\)?;?\s*$/);
+    // And the final arm should now be `null` (skip-branch path).
+    expect(kimiModelTernary![0]).toMatch(/:\s*null\b/);
+  });
+
+  it("Test H: new Claude-via-OpenRouter branch inherits the kimiBlockedByPrivacy gate (K12-K20 / patent)", () => {
+    // The new branch must respect the existing patent-privacy gate so that
+    // K12-K20 / USPTO content does NOT leak to OpenRouter even via Claude.
+    const newBranchStart = src.search(
+      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+    );
+    expect(newBranchStart).toBeGreaterThan(-1);
+    // The condition expression includes !kimiBlockedByPrivacy.
+    const conditionWindow = src.slice(Math.max(0, newBranchStart - 200), newBranchStart + 300);
+    expect(conditionWindow).toMatch(/!kimiBlockedByPrivacy/);
+  });
+
+  it("Order: the new Claude-via-OR branch comes BEFORE the existing isKimi block (so isKimi cannot catch anthropic/* first)", () => {
+    const newBranchStart = src.search(
+      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+    );
+    const kimiBranchStart = src.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
+    expect(newBranchStart).toBeGreaterThan(-1);
+    expect(kimiBranchStart).toBeGreaterThan(-1);
+    expect(newBranchStart).toBeLessThan(kimiBranchStart);
+  });
+});
+
