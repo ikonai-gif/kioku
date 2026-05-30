@@ -7485,6 +7485,49 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           }
         }
 
+        // PR #167-pre (chat-path fix): Claude via OpenRouter with a vendor-
+        // prefixed slug like "anthropic/claude-sonnet-4.6". `isClaude` is false
+        // for this case (the slug doesn't start with `claude-`), so the
+        // existing Claude branch is skipped. Without this branch, the agent
+        // falls into the Kimi block below which used to silently substitute
+        // `moonshotai/kimi-k2.6` for any unknown OpenRouter slug — meaning a
+        // Claude-via-OpenRouter agent would actually answer through Kimi.
+        // The patent-privacy gate (`kimiBlockedByPrivacy`) is shared with the
+        // Kimi block because both share the OpenRouter third-party data path.
+        if (
+          !reply &&
+          (agent as any).llmProvider === "openrouter" &&
+          typeof chatModel === "string" &&
+          chatModel.startsWith("anthropic/") &&
+          !kimiBlockedByPrivacy
+        ) {
+          const orClient = getOpenRouterClient(agent as any);
+          if (orClient) {
+            try {
+              const userMessage = isPartnerChat
+                ? sanitizeForPrompt(triggerContent)
+                : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
+
+              const resp = await orClient.chat.completions.create({
+                model: chatModel, // pass-through, e.g. "anthropic/claude-sonnet-4.6"
+                max_tokens: isPartnerChat ? 8000 : 2000,
+                temperature: isPartnerChat ? 0.85 : 0.75,
+                messages: [
+                  { role: "system" as const, content: systemPrompt },
+                  ...chatHistory.map(h => ({
+                    role: h.role,
+                    content: h.content,
+                  })),
+                  { role: "user" as const, content: userMessage },
+                ],
+              }, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
+              reply = resp.choices[0]?.message?.content?.trim();
+            } catch (err) {
+              console.error(`[deliberation] Claude/OpenRouter error for ${agent.name}:`, err);
+            }
+          }
+        }
+
         if (!reply && isKimi && !kimiBlockedByPrivacy) {
           const orClient = getOpenRouterClient(agent as any);
           if (orClient) {
@@ -7492,12 +7535,19 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               // Normalize model slug. Accepted forms:
               //   "moonshotai/kimi-k2.6" → used as-is
               //   "kimi-k2.6"            → prefixed with moonshotai/
-              //   anything else when llmProvider="openrouter" → default to k2.6
+              //   anything else when llmProvider="openrouter" → SKIP (do NOT
+              //   silently default to k2.6 — that previously swallowed any
+              //   Claude/DeepSeek/etc. slug routed through this provider).
               const kimiModel = chatModel.startsWith("moonshotai/")
                 ? chatModel
                 : (chatModel.startsWith("kimi-")
                     ? `moonshotai/${chatModel}`
-                    : "moonshotai/kimi-k2.6");
+                    : null);
+
+              if (!kimiModel) {
+                // Slug doesn't look Kimi-shaped — let later branches handle
+                // (Claude direct Anthropic / OpenAI fallback).
+              } else {
 
               const userMessage = isPartnerChat
                 ? sanitizeForPrompt(triggerContent)
@@ -7520,6 +7570,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                 ],
               }, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
               reply = resp.choices[0]?.message?.content?.trim();
+              } // end else (kimiModel resolved)
             } catch (err) {
               console.error(`[deliberation] Kimi/OpenRouter error for ${agent.name}:`, err);
             }
