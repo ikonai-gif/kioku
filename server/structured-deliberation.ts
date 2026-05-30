@@ -20,6 +20,7 @@ import { allocateBudget, countTokens } from "./token-budget";
 import {
   classifyLLMError, classifyWebhookError,
   withRetry, checkCircuitBreaker, formatErrorLog,
+  LLMAbstainError, type AbstainReason,
   type ClassifiedError, type RetryResult, type AgentErrorLog,
 } from "./error-retry";
 import { fastAppraisal } from "./fast-appraisal";
@@ -270,24 +271,24 @@ async function callLLM(
     try {
       return await callOpenRouter(model, systemPrompt, userMessage, maxTokens, temperature, openrouterKey);
     } catch (err: any) {
-      // Fallback chain: prefer OpenAI (shared), then Gemini, so a transient
-      // OpenRouter failure still yields an answer rather than aborting the agent.
-      if (HAS_OPENAI_KEY) {
-        console.warn(`[deliberation] OpenRouter (${model}) failed, falling back to OpenAI:`, err.message);
-        try {
-          return await callOpenAI({ model: DEFAULT_MODEL, systemPrompt, userMessage, maxTokens, temperature, agentId });
-        } catch (oaErr: any) {
-          if (GEMINI_API_KEY) {
-            return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature);
-          }
-          throw new Error(`All AI providers failed. OpenRouter: ${err.message}, OpenAI: ${oaErr.message}`);
-        }
-      }
-      if (GEMINI_API_KEY) {
-        console.warn(`[deliberation] OpenRouter (${model}) failed, falling back to Gemini:`, err.message);
-        return await callGemini(GEMINI_FALLBACK_MODEL, systemPrompt, userMessage, maxTokens, temperature);
-      }
-      throw new Error(`All AI providers failed. OpenRouter: ${err.message}`);
+      // PR #166: replace silent cross-provider fallback with explicit abstention.
+      // Previously: OpenRouter failure silently fell back to gpt-4o, so a
+      // Claude or Kimi agent would respond as gpt-4o without anyone knowing
+      // the model had been substituted. That violated UI honesty and broke
+      // the heterogeneity contract. Now: surface a typed LLMAbstainError so
+      // the dispatcher records an explicit abstention in the thread and
+      // excludes the agent from consensus.
+      const reason: AbstainReason =
+        err?.code === "CIRCUIT_OPEN" || err?.name === "CircuitOpenError"
+          ? "CIRCUIT_BREAKER_OPEN"
+          : err?.name === "AbortError" || /timeout|ETIMEDOUT/i.test(err?.message ?? "")
+            ? "TIMEOUT"
+            : "PROVIDER_ERROR";
+      logger.warn(
+        { event: "llm_abstain", agentId, model, reason, err: err?.message?.slice(0, 200) },
+        `[deliberation] OpenRouter (${model}) failed — abstaining instead of silent fallback`,
+      );
+      throw new LLMAbstainError(reason, "openrouter", model, err?.message ?? "unknown error");
     }
   }
 
@@ -1098,6 +1099,55 @@ async function collectPositions(
       }
     } else {
       const err = result.reason as any;
+
+      // PR #166: abstention path — distinct from a generic error. Triggered
+      // when the intended provider (OpenRouter for Claude/Kimi/etc.) refuses
+      // to answer (circuit-breaker open, timeout, provider error). Previously
+      // these would silently fall back to gpt-4o; now they surface as an
+      // explicit abstention in the thread and consensus excludes the agent.
+      // No circuit-breaker increment — abstention is infrastructure-level,
+      // not the agent's fault.
+      if (err?._classified?.isAbstain) {
+        const abstainReason: string = err._classified.abstainReason ?? "PROVIDER_ERROR";
+        const intendedModel: string = err._classified.intendedModel ?? agentModel;
+        const intendedProvider: string = err._classified.intendedProvider ?? "unknown";
+        const details: string = String(err._classified.abstainDetails ?? err.message ?? "").slice(0, 100);
+
+        positions.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          agentColor: agent.color,
+          position: `[abstained — ${abstainReason}]`,
+          confidence: 0,
+          reasoning: `Agent abstained: ${abstainReason}. Intended ${intendedProvider}/${intendedModel}. Details: ${details}`,
+        });
+
+        roundErrors.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          errorType: "ABSTAIN",
+          errorMessage: abstainReason,
+          attempts: 1,
+        });
+
+        await postSystemMessage(
+          roomId,
+          `🟡 ${agent.name} abstained — ${abstainReason} (intended: ${intendedModel})`,
+        );
+
+        await storage.addLog({
+          userId,
+          agentName: agent.name,
+          agentColor: agent.color,
+          operation: "deliberation_abstain",
+          detail: `${phase} r${round}: ${abstainReason} (intended ${intendedProvider}/${intendedModel})`,
+          latencyMs: null,
+        });
+
+        // No circuit-breaker increment for abstention.
+        continue;
+      }
+
       const classified = err?._classified ?? { category: "RETRYABLE", message: err?.message || "unknown error" };
       const errorMsg = classified.message?.slice(0, 200) || "unknown error";
       console.error(`[structured-deliberation] ${agent.name} error (${classified.category}):`, errorMsg);

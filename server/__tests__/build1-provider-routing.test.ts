@@ -63,6 +63,7 @@ import {
   __setOpenRouterClientForTest,
 } from "../lib/openrouter-client";
 import { __resetOpenAIBreakerForTest, __setOpenAIClientForTest } from "../lib/openai-client";
+import { LLMAbstainError } from "../error-retry";
 
 const { callLLM, resolveModel, isOpenRouterModel, normalizeOpenRouterModel } = __testOnly__;
 
@@ -182,18 +183,74 @@ describe("Build#1 — callLLM routes OpenRouter models to OpenRouter", () => {
   });
 });
 
-describe("Build#1 — callLLM falls back to OpenAI when OpenRouter fails", () => {
-  it("OpenRouter throws → OpenAI (gpt-4o) result returned", async () => {
-    // First create() call (OpenRouter) throws; subsequent (OpenAI) resolves.
-    createMock
-      .mockImplementationOnce(() => { throw new Error("openrouter-503"); })
-      .mockResolvedValue({ choices: [{ message: { content: "openai-fallback" } }] });
+describe("PR #166 — callLLM abstains instead of silent gpt-4o fallback on OpenRouter failure", () => {
+  it("Test D: generic OpenRouter failure → LLMAbstainError reason=PROVIDER_ERROR (no silent gpt-4o)", async () => {
+    // First (and only) create() call (OpenRouter) throws a generic 503.
+    // Old behavior: silently fell back to gpt-4o on OpenAI. New behavior:
+    // throws LLMAbstainError so the dispatcher records explicit abstention.
+    createMock.mockImplementationOnce(() => { throw new Error("openrouter-503"); });
 
-    const reply = await callLLM("moonshotai/kimi-k2.6", "sys", "user", {
+    const err = await callLLM("moonshotai/kimi-k2.6", "sys", "user", {
       agentLlm: { provider: "openrouter", apiKey: null },
       agentId: 19,
-    });
+    }).catch((e: unknown) => e);
 
-    expect(reply).toBe("openai-fallback");
+    expect(err).toBeInstanceOf(LLMAbstainError);
+    expect((err as LLMAbstainError).reason).toBe("PROVIDER_ERROR");
+    expect((err as LLMAbstainError).intendedProvider).toBe("openrouter");
+    expect((err as LLMAbstainError).intendedModel).toBe("moonshotai/kimi-k2.6");
+    // Only ONE call — no silent fallback to OpenAI gpt-4o.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("Test F: circuit-breaker open (CircuitOpenError) → LLMAbstainError reason=CIRCUIT_BREAKER_OPEN", async () => {
+    const cbErr: any = new Error("OpenRouter breaker is open");
+    cbErr.name = "CircuitOpenError";
+    cbErr.code = "CIRCUIT_OPEN";
+    createMock.mockImplementationOnce(() => { throw cbErr; });
+
+    const err = await callLLM("anthropic/claude-sonnet-4.6", "sys", "user", {
+      agentLlm: { provider: "openrouter", apiKey: null },
+      agentId: 13,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LLMAbstainError);
+    expect((err as LLMAbstainError).reason).toBe("CIRCUIT_BREAKER_OPEN");
+    expect((err as LLMAbstainError).intendedModel).toBe("anthropic/claude-sonnet-4.6");
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("Test G: AbortError / timeout → LLMAbstainError reason=TIMEOUT", async () => {
+    const toErr: any = new Error("Request aborted: timeout after 60000ms");
+    toErr.name = "AbortError";
+    createMock.mockImplementationOnce(() => { throw toErr; });
+
+    const err = await callLLM("anthropic/claude-sonnet-4.6", "sys", "user", {
+      agentLlm: { provider: "openrouter", apiKey: null },
+      agentId: 13,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LLMAbstainError);
+    expect((err as LLMAbstainError).reason).toBe("TIMEOUT");
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifyLLMError preserves LLMAbstainError as PERMANENT with metadata (no retry)", async () => {
+    // Indirect: confirm `classifyLLMError(new LLMAbstainError(...))` carries
+    // the abstain fields the dispatcher relies on, and is PERMANENT so
+    // withRetry will not retry the abstention.
+    const { classifyLLMError } = await import("../error-retry");
+    const absErr = new LLMAbstainError(
+      "CIRCUIT_BREAKER_OPEN",
+      "openrouter",
+      "anthropic/claude-sonnet-4.6",
+      "breaker open: 3 consecutive failures",
+    );
+    const classified = classifyLLMError(absErr);
+    expect(classified.category).toBe("PERMANENT");
+    expect(classified.isAbstain).toBe(true);
+    expect(classified.abstainReason).toBe("CIRCUIT_BREAKER_OPEN");
+    expect(classified.intendedProvider).toBe("openrouter");
+    expect(classified.intendedModel).toBe("anthropic/claude-sonnet-4.6");
   });
 });

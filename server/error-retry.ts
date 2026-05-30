@@ -12,12 +12,63 @@ export interface ClassifiedError {
   message: string;
   statusCode?: number;
   retryAfterMs?: number; // for RATE_LIMITED — from Retry-After header
+  // PR #166: abstention metadata — populated when classifier sees an LLMAbstainError.
+  isAbstain?: boolean;
+  abstainReason?: AbstainReason;
+  intendedProvider?: string | null;
+  intendedModel?: string;
+  abstainDetails?: string;
+}
+
+// ── Abstention (PR #166) ─────────────────────────────────────────
+
+export type AbstainReason =
+  | "CIRCUIT_BREAKER_OPEN"
+  | "TIMEOUT"
+  | "ALL_PROVIDERS_FAILED"
+  | "PROVIDER_ERROR";
+
+/**
+ * LLMAbstainError — signals that an LLM call cannot be completed by the
+ * intended provider and the agent must abstain rather than silently using
+ * a different model. The dispatcher records the abstention, surfaces it
+ * in the thread, and excludes the agent from consensus. Distinct from a
+ * generic error — does NOT increment the agent's circuit-breaker counter.
+ *
+ * Introduced to replace the silent cross-provider fallback (OpenRouter →
+ * gpt-4o) so a Claude/Kimi agent never silently speaks as gpt-4o.
+ */
+export class LLMAbstainError extends Error {
+  public readonly name = "LLMAbstainError";
+  constructor(
+    public readonly reason: AbstainReason,
+    public readonly intendedProvider: string | null,
+    public readonly intendedModel: string,
+    public readonly details: string,
+  ) {
+    super(`Agent abstained — ${reason} (intended: ${intendedProvider}/${intendedModel}): ${details}`);
+  }
 }
 
 /**
  * Classify an error thrown by an internal LLM call (OpenAI / Gemini).
  */
 export function classifyLLMError(err: any): ClassifiedError {
+  // PR #166: abstention — provider explicitly cannot answer. Treat as PERMANENT
+  // (no retry) and preserve abstain metadata so the dispatcher can surface it.
+  if (err instanceof LLMAbstainError || err?.name === "LLMAbstainError") {
+    return {
+      category: "PERMANENT",
+      message: err.message,
+      statusCode: 503,
+      isAbstain: true,
+      abstainReason: err.reason,
+      intendedProvider: err.intendedProvider,
+      intendedModel: err.intendedModel,
+      abstainDetails: err.details,
+    };
+  }
+
   const message = err?.message || String(err);
   const status = err?.status ?? err?.statusCode ?? extractStatusFromMessage(message);
 
