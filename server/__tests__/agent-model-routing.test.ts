@@ -253,3 +253,29 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
   });
 });
 
+
+describe("PR #167b — structured-deliberation maxTokens bump (Kimi reasoning headroom)", () => {
+  const src = readFileSync(join(serverDir, "structured-deliberation.ts"), "utf8");
+
+  it("callLLM default maxTokens is 1024 (not 400) — Kimi K2.6 reasoning needs headroom", () => {
+    // Locate the default-resolution line and assert 1024.
+    const m = src.match(/const\s+maxTokens\s*=\s*options\?\.maxTokens\s*\?\?\s*(\d+)\s*;/);
+    expect(m, "default maxTokens line not found").toBeTruthy();
+    const defaultValue = parseInt(m![1], 10);
+    expect(defaultValue).toBe(1024);
+    expect(defaultValue).not.toBe(400);
+  });
+
+  it("structured-deliberation call site passes maxTokens 1024 (not 400)", () => {
+    // The main round-dispatch call to callLLM lives inside withRetry(() => callLLM(...)).
+    // Pin the literal we pass for maxTokens at that site to 1024.
+    // Pattern: the comment block above the literal mentions reasoning-model headroom.
+    const callSite = src.match(
+      /withRetry\([\s\S]{0,400}?callLLM\([\s\S]{0,400}?maxTokens:\s*(\d+),/,
+    );
+    expect(callSite, "deliberation call-site maxTokens not found").toBeTruthy();
+    const value = parseInt(callSite![1], 10);
+    expect(value).toBe(1024);
+    expect(value).not.toBe(400);
+  });
+});
