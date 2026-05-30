@@ -252,7 +252,11 @@ async function callLLM(
     agentId?: number; // W7 Item 1d F2: threaded to callOpenAI for per-agent breaker keying
   }
 ): Promise<string> {
-  const maxTokens = options?.maxTokens ?? 400;
+  // PR #167b: bump default 400→1024. Reasoning-models like Kimi K2.6 consume
+  // 200-400 reasoning tokens before emitting visible content; at 400 the agent
+  // returns an empty string. 1024 keeps cost reasonable while leaving headroom
+  // for both reasoning chains and a normal position+rationale.
+  const maxTokens = options?.maxTokens ?? 1024;
   const temperature = options?.temperature ?? 0.7;
   const agentApiKey = options?.agentLlm?.apiKey || null;
   const agentProvider = options?.agentLlm?.provider || null;
@@ -1008,7 +1012,9 @@ async function collectPositions(
           fittedSystemPrompt,
           userMsg,
           {
-            maxTokens: 400,
+            // PR #167b: 400→1024 to accommodate reasoning-model token usage
+            // (Kimi K2.6 consumes 200-400 reasoning tokens before visible content).
+            maxTokens: 1024,
             temperature: phase === "debate" ? 0.8 : 0.6,
             // BUG A fix [BRO2-313]: pass provider ALWAYS, gate only the key.
             // Shared-key agents have llmApiKey=NULL by design (keys in Railway env);
