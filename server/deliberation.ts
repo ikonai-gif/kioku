@@ -7521,7 +7521,22 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                   { role: "user" as const, content: userMessage },
                 ],
               }, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
-              reply = resp.choices[0]?.message?.content?.trim();
+              // PR #169 [BRO2-317]: reasoning-model content+reasoning fallback.
+              // See structured-deliberation.ts callOpenRouter for full rationale.
+              // Even though Claude is non-reasoning, the same code path serves
+              // future reasoning slugs routed through anthropic/* (e.g. claude-sonnet-thinking).
+              const choice = resp.choices[0];
+              const msg: any = choice?.message ?? {};
+              const content = (msg.content ?? "").trim();
+              if (content) {
+                reply = content;
+              } else {
+                const reasoning = ((msg.reasoning ?? msg.reasoning_content) ?? "").trim();
+                if (reasoning) {
+                  console.warn(`[deliberation] Claude/OR empty content — reasoning fallback (len=${reasoning.length}, finish=${choice?.finish_reason})`);
+                  reply = reasoning;
+                }
+              }
             } catch (err) {
               console.error(`[deliberation] Claude/OpenRouter error for ${agent.name}:`, err);
             }
@@ -7569,7 +7584,23 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                   { role: "user" as const, content: userMessage },
                 ],
               }, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
-              reply = resp.choices[0]?.message?.content?.trim();
+              // PR #169 [BRO2-317]: reasoning-model content+reasoning fallback.
+              // Kimi K2.6 splits its answer across message.content and
+              // message.reasoning. When token budget runs out before the visible
+              // write-up, content="" with finish_reason="length" while reasoning
+              // holds the actual answer. Empirically verified via diag_kimi_raw.ts.
+              const choice = resp.choices[0];
+              const msg: any = choice?.message ?? {};
+              const content = (msg.content ?? "").trim();
+              if (content) {
+                reply = content;
+              } else {
+                const reasoning = ((msg.reasoning ?? msg.reasoning_content) ?? "").trim();
+                if (reasoning) {
+                  console.warn(`[deliberation] Kimi/OR empty content — reasoning fallback (len=${reasoning.length}, finish=${choice?.finish_reason})`);
+                  reply = reasoning;
+                }
+              }
               } // end else (kimiModel resolved)
             } catch (err) {
               console.error(`[deliberation] Kimi/OpenRouter error for ${agent.name}:`, err);
