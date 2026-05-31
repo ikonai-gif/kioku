@@ -32,6 +32,7 @@ import { withOpenAIBreaker } from "./lib/openai-client";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
 import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY } from "./lib/openrouter-client";
 import logger from "./logger";
+import { assessRoomHeterogeneity } from "./lib/heterogeneity";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -676,6 +677,15 @@ export async function runDeliberation(
 
     const minAgents = includeHuman ? 1 : 2;
     if (agents.length < minAgents) throw new Error(`Need at least ${minAgents} non-offline agent${minAgents > 1 ? 's' : ''} for deliberation`);
+
+    // [BRO2-315 #170] Heterogeneity warning — observability only, never blocks.
+    const het = assessRoomHeterogeneity(agents);
+    if (het.low) {
+      logger.warn(
+        { source: "deliberation-heterogeneity", roomId, sessionId, configured: het.configured, distinct: het.distinct },
+        `[heterogeneity] room ${roomId}: all ${het.configured} configured agents share one provider+model — low diversity (theater risk)`
+      );
+    }
 
     // Post system message: deliberation starting
     const participantLabel = includeHuman ? `${agents.length} agents + 1 human` : `${agents.length} agents`;
