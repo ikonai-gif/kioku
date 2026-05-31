@@ -614,6 +614,27 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_delib_parent_decision ON kioku_deliberation_sessions(parent_decision_id) WHERE parent_decision_id IS NOT NULL;
   `);
 
+  // [BRO2-318c] PR-1: Deliberation session archive/retention.
+  // archived_at = epoch ms when archived; NULL = not archived (soft-archive).
+  // NOTE: timestamps are milliseconds (Date.now()), matching started_at/completed_at.
+  // Deletion is NOT enabled in PR-1; the log table is created but only written by
+  // the PR-2 delete-cron (behind DELIBERATION_DELETE_ENABLED). session_id is TEXT
+  // to match kioku_deliberation_sessions.id (TEXT, e.g. "dlb_10_1780154753618").
+  await pool.query(`
+    ALTER TABLE kioku_deliberation_sessions ADD COLUMN IF NOT EXISTS archived_at BIGINT;
+    CREATE INDEX IF NOT EXISTS idx_delib_archived ON kioku_deliberation_sessions(archived_at) WHERE archived_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_delib_room_visible ON kioku_deliberation_sessions(room_id, status, completed_at DESC) WHERE archived_at IS NULL;
+    CREATE TABLE IF NOT EXISTS deliberation_session_deletion_log (
+      id          BIGSERIAL PRIMARY KEY,
+      session_id  TEXT NOT NULL,
+      room_id     INTEGER,
+      status      TEXT,
+      archived_at BIGINT,
+      deleted_at  BIGINT NOT NULL,
+      reason      TEXT NOT NULL
+    );
+  `);
+
   // Phase 11: Privacy/Compliance — consent management & age verification
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_basic BOOLEAN DEFAULT FALSE;
@@ -2257,6 +2278,106 @@ export class Storage implements IStorage {
     return rows.map((r: any) => this.mapDelibRow(r));
   }
 
+  // ── [BRO2-318c] PR-1: Archive / retention (soft-archive, ms timestamps) ──
+  // Default room view: all running + the newest `limit` finished (completed/failed),
+  // excluding archived. Ordering uses COALESCE(completed_at, started_at) since
+  // failed sessions may have a NULL completed_at.
+  async getVisibleDeliberationsByRoom(roomId: number, limit = 5) {
+    const { rows } = await pool.query(
+      `WITH ranked AS (
+         SELECT id,
+           ROW_NUMBER() OVER (
+             PARTITION BY room_id
+             ORDER BY COALESCE(completed_at, started_at) DESC
+           ) AS rn
+         FROM kioku_deliberation_sessions
+         WHERE room_id = $1 AND status IN ('completed','failed') AND archived_at IS NULL
+       )
+       SELECT * FROM kioku_deliberation_sessions
+       WHERE room_id = $1
+         AND archived_at IS NULL
+         AND ( status = 'running' OR id IN (SELECT id FROM ranked WHERE rn <= $2) )
+       ORDER BY (status = 'running') DESC, COALESCE(completed_at, started_at) DESC`,
+      [roomId, limit]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  async getArchivedDeliberationsByRoom(roomId: number) {
+    const { rows } = await pool.query(
+      `SELECT * FROM kioku_deliberation_sessions
+       WHERE room_id = $1 AND archived_at IS NOT NULL
+       ORDER BY archived_at DESC`,
+      [roomId]
+    );
+    return rows.map((r: any) => this.mapDelibRow(r));
+  }
+
+  /** Manually archive one finished session. Running sessions cannot be archived. */
+  async archiveDeliberationSession(sessionId: string): Promise<boolean> {
+    const { rowCount } = await pool.query(
+      `UPDATE kioku_deliberation_sessions
+       SET archived_at = $2
+       WHERE id = $1 AND status IN ('completed','failed') AND archived_at IS NULL`,
+      [sessionId, Date.now()]
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Restore an archived session (un-archive). */
+  async restoreDeliberationSession(sessionId: string): Promise<boolean> {
+    const { rowCount } = await pool.query(
+      `UPDATE kioku_deliberation_sessions SET archived_at = NULL WHERE id = $1`,
+      [sessionId]
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Auto-archive finished sessions in a room beyond the newest `keep`. Never
+   *  touches running sessions. Returns number of rows archived. */
+  async archiveOldRoomSessions(roomId: number, keep = 5): Promise<number> {
+    const { rowCount } = await pool.query(
+      `WITH ranked AS (
+         SELECT id,
+           ROW_NUMBER() OVER (
+             PARTITION BY room_id
+             ORDER BY COALESCE(completed_at, started_at) DESC
+           ) AS rn
+         FROM kioku_deliberation_sessions
+         WHERE room_id = $1 AND status IN ('completed','failed') AND archived_at IS NULL
+       )
+       UPDATE kioku_deliberation_sessions s
+       SET archived_at = $3
+       FROM ranked r
+       WHERE s.id = r.id AND r.rn > $2`,
+      [roomId, keep, Date.now()]
+    );
+    return rowCount ?? 0;
+  }
+
+  /** Backstop: archive finished sessions beyond the newest `keep` across ALL
+   *  rooms (per-room partition). Archive only — never deletes, never touches
+   *  running. Idempotent. Returns number of rows archived. */
+  async archiveAllRoomsOldSessions(keep = 5): Promise<number> {
+    const { rowCount } = await pool.query(
+      `WITH ranked AS (
+         SELECT id,
+           ROW_NUMBER() OVER (
+             PARTITION BY room_id
+             ORDER BY COALESCE(completed_at, started_at) DESC
+           ) AS rn
+         FROM kioku_deliberation_sessions
+         WHERE status IN ('completed','failed') AND archived_at IS NULL
+       )
+       UPDATE kioku_deliberation_sessions s
+       SET archived_at = $2
+       FROM ranked r
+       WHERE s.id = r.id AND r.rn > $1`,
+      [keep, Date.now()]
+    );
+    return rowCount ?? 0;
+  }
+
   async getLatestConsensus(roomId: number) {
     const { rows } = await pool.query(
       `SELECT consensus FROM kioku_deliberation_sessions
@@ -2864,6 +2985,7 @@ export class Storage implements IStorage {
       provenanceChainId: row.provenance_chain_id || null,
       chainDepth: row.chain_depth ?? 0,
       chainMetadata: row.chain_metadata || null,
+      archivedAt: row.archived_at != null ? Number(row.archived_at) : null,
     };
   }
 
