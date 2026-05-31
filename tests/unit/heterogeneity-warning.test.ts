@@ -1,21 +1,10 @@
 /**
  * [BRO2-315 #170] Heterogeneity warning (Test E).
- * Unit tests for assessRoomHeterogeneity — pure function, heavy deps mocked
- * so importing structured-deliberation does not require a DB / live clients.
+ * Pure-function unit tests. Imports the dependency-free helper module
+ * directly, so no DB / LLM-client mocks are required.
  */
-import { describe, it, expect, vi } from "vitest";
-
-// Heavy import-time deps of structured-deliberation (and its storage import)
-vi.mock("pg", () => ({
-  Pool: class FakePool { query = vi.fn(); on() {} connect() {} end() {} },
-}));
-vi.mock("../../server/embeddings", () => ({ embedText: vi.fn() }));
-vi.mock("../../server/emotion-scorer", () => ({ scoreEmotion: vi.fn() }));
-vi.mock("../../server/ws", () => ({ broadcastToRoom: vi.fn(), broadcastHumanTurn: vi.fn() }));
-vi.mock("../../server/lib/openai-client", () => ({ withOpenAIBreaker: vi.fn(), isCircuitOpenError: vi.fn() }));
-vi.mock("../../server/lib/openai-per-agent-breaker", () => ({ withAgentBreaker: vi.fn() }));
-
-const { assessRoomHeterogeneity } = await import("../../server/structured-deliberation");
+import { describe, it, expect } from "vitest";
+import { assessRoomHeterogeneity } from "../../server/lib/heterogeneity";
 
 const a = (llmProvider: string | null, llmModel: string | null = null) => ({ llmProvider, llmModel });
 
