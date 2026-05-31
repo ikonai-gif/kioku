@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, ChevronRight, Loader2, Trophy, MessageSquare, ThumbsUp, ThumbsDown, Minus, Clock, History, AlertTriangle, User, Timer } from "lucide-react";
+import { ArrowLeft, Send, CheckCircle2, Star, Bot, Wifi, WifiOff, Zap, ChevronDown, ChevronRight, Loader2, Trophy, MessageSquare, ThumbsUp, ThumbsDown, Minus, Clock, History, AlertTriangle, User, Timer, Archive, ArchiveRestore } from "lucide-react";
 import { AgentAvatar, getAgentIcon } from "@/lib/agent-icon";
 import { Link } from "wouter";
 import { cn, safeParseIds } from "@/lib/utils";
@@ -643,13 +643,37 @@ function DeliberationHistoryList({
     },
   });
 
+  // [BRO2-318c] PR-1: archive of older deliberations (shown on demand).
+  const [showArchive, setShowArchive] = useState(false);
+  const { data: archived = [] } = useQuery<any[]>({
+    queryKey: ["/api/rooms", roomId, "deliberations", "archived"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/rooms/${roomId}/deliberations?archived=1`);
+      if (!r.ok) return [];
+      return r.json();
+    },
+  });
+
+  const invalidateDeliberations = () =>
+    queryClient.invalidateQueries({ queryKey: ["/api/rooms", roomId, "deliberations"] });
+  const archiveMutation = useMutation({
+    mutationFn: async (sessionId: string) =>
+      apiRequest("POST", `/api/rooms/${roomId}/deliberations/${sessionId}/archive`),
+    onSuccess: invalidateDeliberations,
+  });
+  const restoreMutation = useMutation({
+    mutationFn: async (sessionId: string) =>
+      apiRequest("POST", `/api/rooms/${roomId}/deliberations/${sessionId}/restore`),
+    onSuccess: invalidateDeliberations,
+  });
+
   // Sort by most recent first
   const sorted = useMemo(
     () => [...sessions].sort((a: any, b: any) => (b.startedAt || 0) - (a.startedAt || 0)),
     [sessions]
   );
 
-  const selectedSession = sorted.find((s: any) => s.sessionId === selectedId);
+  const selectedSession = [...sorted, ...archived].find((s: any) => s.sessionId === selectedId);
 
   if (isLoading) {
     return (
@@ -661,7 +685,7 @@ function DeliberationHistoryList({
     );
   }
 
-  if (sorted.length === 0) return null;
+  if (sorted.length === 0 && archived.length === 0) return null;
 
   return (
     <div className="space-y-3">
@@ -670,8 +694,18 @@ function DeliberationHistoryList({
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
           Deliberation History
         </span>
-        <span className="text-[10px] text-muted-foreground/40">{sorted.length} sessions</span>
+        <span className="text-[10px] text-muted-foreground/40">{sorted.length} shown</span>
         <div className="flex-1 h-px bg-border/30" />
+        {archived.length > 0 && (
+          <button
+            onClick={() => setShowArchive((v) => !v)}
+            className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground flex items-center gap-1 whitespace-nowrap"
+            data-testid="button-toggle-archive"
+          >
+            <Archive className="w-3 h-3" />
+            {showArchive ? "Hide archive" : `Show archive (${archived.length})`}
+          </button>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -691,9 +725,44 @@ function DeliberationHistoryList({
                 />
               </div>
             )}
+            {session.status !== "running" && (
+              <button
+                onClick={() => archiveMutation.mutate(session.sessionId)}
+                disabled={archiveMutation.isPending}
+                className="mt-1 ml-4 text-[10px] text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1 disabled:opacity-50"
+                data-testid={`button-archive-${session.sessionId}`}
+              >
+                <Archive className="w-3 h-3" /> Archive
+              </button>
+            )}
           </div>
         ))}
       </div>
+
+      {showArchive && (
+        <div className="space-y-2 pt-2 border-t border-border/20">
+          <span className="text-[10px] text-muted-foreground/40 uppercase tracking-wider">
+            Archived ({archived.length})
+          </span>
+          {archived.map((session: any) => (
+            <div key={session.sessionId} className="opacity-70">
+              <DelibHistoryItem
+                session={session}
+                onSelect={() => setSelectedId(selectedId === session.sessionId ? null : session.sessionId)}
+                isSelected={selectedId === session.sessionId}
+              />
+              <button
+                onClick={() => restoreMutation.mutate(session.sessionId)}
+                disabled={restoreMutation.isPending}
+                className="mt-1 ml-4 text-[10px] text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1 disabled:opacity-50"
+                data-testid={`button-restore-${session.sessionId}`}
+              >
+                <ArchiveRestore className="w-3 h-3" /> Restore
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

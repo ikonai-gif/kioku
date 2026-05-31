@@ -3088,6 +3088,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const roundCount = (session as any).rounds?.length ?? (debateRounds ?? 2) + 2; // position + debate rounds + final
       storage.incrementUsage(userId, 'deliberations').catch(() => {});
       storage.incrementUsage(userId, 'rounds', roundCount).catch(() => {});
+      // [BRO2-318c] PR-1: auto-archive finished sessions beyond the newest 5 in
+      // this room (keeps the tab clean). Non-blocking; never touches running.
+      storage.archiveOldRoomSessions(roomId).catch((e) =>
+        logger.error({ source: "deliberation-archive", roomId, err: e }, "auto-archive failed")
+      );
       res.json(session);
     } catch (err) {
       const e = err as any;
@@ -3138,15 +3143,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(session);
   }));
 
-  // List all deliberation sessions for a room
+  // List deliberation sessions for a room.
+  // [BRO2-318c] PR-1: default = visible (running + latest 5 finished, not archived).
+  //   ?archived=1 -> archived sessions only;  ?all=1 -> full unfiltered list (legacy).
   app.get("/api/rooms/:id/deliberations", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     // Verify room belongs to user
-    const room = await storage.getRoom(Number(req.params.id), userId);
+    const roomId = Number(req.params.id);
+    const room = await storage.getRoom(roomId, userId);
     if (!room) return res.status(404).json({ error: "Not found" });
-    const sessions = await getSessionsByRoom(Number(req.params.id));
+    let sessions;
+    if (req.query.all === "1") {
+      sessions = await getSessionsByRoom(roomId);
+    } else if (req.query.archived === "1") {
+      sessions = await storage.getArchivedDeliberationsByRoom(roomId);
+    } else {
+      sessions = await storage.getVisibleDeliberationsByRoom(roomId);
+    }
     res.json(sessions);
+  }));
+
+  // [BRO2-318c] PR-1: manually archive a finished deliberation session.
+  app.post("/api/rooms/:id/deliberations/:sessionId/archive", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    const room = await storage.getRoom(roomId, userId);
+    if (!room) return res.status(404).json({ error: "Not found" });
+    const session = await getSession(String(req.params.sessionId));
+    if (!session || session.roomId !== roomId) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    const ok = await storage.archiveDeliberationSession(String(req.params.sessionId));
+    if (!ok) {
+      return res.status(409).json({ error: "Only finished (completed/failed) sessions can be archived" });
+    }
+    res.json({ archived: true });
+  }));
+
+  // [BRO2-318c] PR-1: restore (un-archive) a deliberation session.
+  app.post("/api/rooms/:id/deliberations/:sessionId/restore", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    const room = await storage.getRoom(roomId, userId);
+    if (!room) return res.status(404).json({ error: "Not found" });
+    const session = await getSession(String(req.params.sessionId));
+    if (!session || session.roomId !== roomId) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    await storage.restoreDeliberationSession(String(req.params.sessionId));
+    res.json({ restored: true });
   }));
 
   // Get latest consensus for a room

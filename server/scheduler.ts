@@ -410,5 +410,18 @@ export function startScheduler() {
       logger.error({ err: err?.message }, "[scheduler] error sweeping expired memories");
     }
   }, CHECK_INTERVAL);
+
+  // [BRO2-318c] PR-1: daily backstop — archive finished deliberation sessions
+  // beyond the newest 5 per room (catches idle rooms; per-session archiving also
+  // runs on new-session start). Archive only — never deletes, never touches running.
+  setInterval(async () => {
+    try {
+      const archived = await storage.archiveAllRoomsOldSessions();
+      if (archived > 0) logger.info({ archived }, "[scheduler] deliberation archive backstop");
+    } catch (err: any) {
+      logger.error({ err: err?.message }, "[scheduler] deliberation archive backstop failed");
+    }
+  }, 24 * 60 * 60 * 1000);
+
   logger.info("[scheduler] started — checking every 60s");
 }
