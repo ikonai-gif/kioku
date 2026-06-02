@@ -9045,13 +9045,18 @@ async function summarizeConversation(userId: number, agentId: number, roomId: nu
       `SELECT created_at FROM memories WHERE user_id = $1 AND namespace = '_episode_summaries' ORDER BY created_at DESC LIMIT 1`,
       [userId]
     );
+    // [BRO2-323] created_at is epoch-ms (bigint). node-postgres returns int8 as a
+    // STRING (no global type parser), and new Date("1748...") => Invalid Date => NaN,
+    // which made `msgTime > NaN` always false and froze this writer at 1 row since
+    // 2026-04-19 (8217 messages, 0 summaries). Coerce numerically — created_at is
+    // already epoch ms, so no Date wrapping is needed.
     const lastSummaryTime = existingSummaries.rows.length > 0
-      ? new Date(existingSummaries.rows[0].created_at).getTime()
+      ? Number(existingSummaries.rows[0].created_at)
       : 0;
 
     // Get messages since last summary
     const newMessages = messages.filter((m: any) => {
-      const msgTime = m.createdAt ? new Date(m.createdAt).getTime() : 0;
+      const msgTime = m.createdAt ? Number(m.createdAt) : 0;
       return msgTime > lastSummaryTime;
     });
 
