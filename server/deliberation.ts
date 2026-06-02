@@ -7270,29 +7270,25 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // not route to OpenRouter (Kimi). When isKimi=true but trigger/system
         // mentions sensitive patent material, block and let later branches
         // fall back to Claude/Gemini.
-        let kimiBlockedByPrivacy = false;
+        // Always false now — patent keyword guard is alert-only (see above);
+        // retained only by the OpenRouter gate refs pending the #171 room-flag.
+        const kimiBlockedByPrivacy = false;
         if (isKimi) {
           const patentKeysRe = /\bK(1[2-7]|20)\b/i;
           const patentKeywordsRe = /\b(patent|патент|provisional|USPTO|disclosure)\b/i;
           const combined = `${triggerContent}\n${systemPrompt}`;
           if (patentKeysRe.test(combined) || patentKeywordsRe.test(combined)) {
-            kimiBlockedByPrivacy = true;
-            console.warn(`[deliberation] Kimi blocked for ${agent.name} — patent-sensitive content detected`);
+            // [#171 alert-only — BRO4 decision] Keyword detection is a SIGNAL,
+            // not a blocker. Blocking caused false-positive silence (e.g. Luca,
+            // an OpenRouter agent, went mute while we discussed patents in a
+            // NORMAL room). Log an alert; the real blocker is the room-flag gate
+            // (structured: #178; chat-path at activation). Flag stays false →
+            // normal routing, no abstain, no cloud leak (OpenRouter answers).
+            logger.warn(
+              { component: "deliberation", event: "patent_keyword_alert", agentId: agent.id, agentName: agent.name },
+              `[deliberation] PATENT_KEYWORD_ALERT — patent keywords for ${agent.name} on OpenRouter; not blocked (flag the room patent_room=true if this is patent work)`,
+            );
           }
-        }
-
-        // [BRO2 interim — pending #171 room-flag] PATENT_KEYWORD_GUARD.
-        // If patent-sensitive content was detected for an OpenRouter agent
-        // (kimiBlockedByPrivacy), ABSTAIN — skip this agent entirely. Without
-        // this, control falls through to the OpenAI terminal path below and the
-        // prompt is transmitted to OpenAI cloud — the exact disclosure this guard
-        // exists to prevent. No cloud fallback, no silent substitution.
-        if (kimiBlockedByPrivacy) {
-          logger.warn(
-            { component: "deliberation", event: "patent_keyword_guard_abstain", agentId: agent.id, agentName: agent.name },
-            "[deliberation] PATENT_KEYWORD_GUARD — ABSTAIN (interim, no cloud fallback)",
-          );
-          continue;
         }
 
         let reply: string | undefined;
