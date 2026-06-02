@@ -34,6 +34,7 @@ import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY } from 
 import { withLocalBreaker, HAS_LOCAL_LLM } from "./lib/local-llm";
 import logger from "./logger";
 import { assessRoomHeterogeneity } from "./lib/heterogeneity";
+import { patentRoomBlocks } from "./lib/patent-routing";
 
 // Strip common prompt injection patterns from user-provided content
 function sanitizeForPrompt(input: string): string {
@@ -326,6 +327,7 @@ async function callLLM(
     temperature?: number;
     agentLlm?: { provider?: string | null; apiKey?: string | null };
     agentId?: number; // W7 Item 1d F2: threaded to callOpenAI for per-agent breaker keying
+    patentRoom?: boolean; // [#171] gate: block non-local providers in patent rooms
   }
 ): Promise<string> {
   // PR #167b → PR #170 progression: default rose 400 → 1024 → 2048.
@@ -342,6 +344,17 @@ async function callLLM(
   const agentProvider = options?.agentLlm?.provider || null;
   const agentId = options?.agentId;
   const model = resolveModel(requestedModel, agentProvider);
+  const patentRoom = options?.patentRoom ?? false;
+  // [#171] Patent-room gate — runs AFTER provider selection, BEFORE any API call.
+  // In a patent room only a local provider may answer; every cloud provider
+  // ABSTAINS (no ZDR configured), never a silent fallback. No-op for normal rooms.
+  if (patentRoomBlocks(patentRoom, agentProvider)) {
+    logger.warn(
+      { event: "patent_provider_blocked", agentId, model, provider: agentProvider },
+      `[deliberation] patent room — non-local provider blocked (${agentProvider ?? "none"}/${model}); abstaining`,
+    );
+    throw new LLMAbstainError("PATENT_PROVIDER_BLOCKED", agentProvider ?? null, model, "patent room: only a local provider may answer");
+  }
 
   // Determine which API key to use for each provider
   const openaiKey = (agentProvider === "openai" && agentApiKey) ? agentApiKey : null;
@@ -763,7 +776,7 @@ export async function runDeliberation(
     // ── Phase 1: Initial Positions ──
     const initialResult = await collectPositions(
       roomId, userId, agents, topic, "position", 1, fallbackModel, [], sessionId,
-      includeHuman, humanName
+      includeHuman, humanName, room.patentRoom ?? false
     );
     session.rounds.push(initialResult.round);
     allInjectedMemories.push(...initialResult.injectedMemories);
@@ -774,7 +787,7 @@ export async function runDeliberation(
     for (let r = 1; r <= debateRounds; r++) {
       const debateResult = await collectPositions(
         roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions, sessionId,
-        includeHuman, humanName
+        includeHuman, humanName, room.patentRoom ?? false
       );
       session.rounds.push(debateResult.round);
       allInjectedMemories.push(...debateResult.injectedMemories);
@@ -786,7 +799,7 @@ export async function runDeliberation(
     const allPriorPositions = session.rounds.flatMap((r) => r.positions);
     const finalResult = await collectPositions(
       roomId, userId, agents, topic, "final", 1, fallbackModel, allPriorPositions, sessionId,
-      includeHuman, humanName
+      includeHuman, humanName, room.patentRoom ?? false
     );
     session.rounds.push(finalResult.round);
     allInjectedMemories.push(...finalResult.injectedMemories);
@@ -931,7 +944,8 @@ async function collectPositions(
   priorPositions: AgentPosition[],
   sessionId: string,
   includeHuman: boolean = false,
-  humanName: string = "Human Participant"
+  humanName: string = "Human Participant",
+  patentRoom: boolean = false
 ): Promise<{ round: DeliberationRound; injectedMemories: InjectedMemory[] }> {
   const phaseLabel =
     phase === "position" ? "📍 Phase 1 — Initial Positions" :
@@ -1130,6 +1144,7 @@ async function collectPositions(
             // Shared-key agents have llmApiKey=NULL by design (keys in Railway env);
             // previously agentLlm was undefined for them => provider lost => gpt-4o fallback.
             agentLlm: { provider: agent.llmProvider, apiKey: agent.llmApiKey ?? null },
+            patentRoom,
             // W7 Item 1d F2: per-agent breaker keying for custom-key isolation.
             agentId: agent.id,
           }

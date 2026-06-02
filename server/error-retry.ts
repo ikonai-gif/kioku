@@ -26,7 +26,8 @@ export type AbstainReason =
   | "CIRCUIT_BREAKER_OPEN"
   | "TIMEOUT"
   | "ALL_PROVIDERS_FAILED"
-  | "PROVIDER_ERROR";
+  | "PROVIDER_ERROR"
+  | "PATENT_PROVIDER_BLOCKED";
 
 /**
  * LLMAbstainError — signals that an LLM call cannot be completed by the

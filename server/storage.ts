@@ -658,6 +658,11 @@ export async function initDb() {
         CHECK (room_type IN ('standard', 'meeting'));
   `);
   await pool.query(`
+    -- [#171] patent_room flag — gates patent routing (local-only). Idempotent.
+    ALTER TABLE rooms
+      ADD COLUMN IF NOT EXISTS patent_room BOOLEAN NOT NULL DEFAULT FALSE;
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS meetings (
       id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       room_id           INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
