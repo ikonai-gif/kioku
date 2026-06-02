@@ -147,6 +147,9 @@ export const rooms = pgTable("rooms", {
   // internal fabrication-test job and MUST NOT appear in user-facing UI.
   purpose:       text("purpose").notNull().default("user"),      // 'user' | 'self_monitoring'
   visibleInUi:   boolean("visible_in_ui").notNull().default(true),
+  // [#171] Patent room flag — set once at creation, never updated (updateRoom
+  // does not accept it). Gates patent routing: only a local provider may answer.
+  patentRoom:    boolean("patent_room").notNull().default(false),
 });
 
 export const insertRoomSchema = createInsertSchema(rooms).omit({ id: true, createdAt: true });
