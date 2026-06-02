@@ -29,6 +29,7 @@ import OpenAI from "openai";
 import logger from "../logger";
 import { storage } from "../storage";
 import { getAssetBytes } from "./asset-bytes-cache";
+import { extractViaMarkItDown } from "./markitdown";
 import type { AttachmentMeta } from "@shared/schema";
 
 // ── concurrency limiter ──────────────────────────────────────────────────────
@@ -287,11 +288,16 @@ async function summarizeFile(att: AttachmentMeta): Promise<FileResult> {
     } else if (looksLikeText) {
       text = bytes.data.toString("utf-8", 0, Math.min(bytes.data.length, 200_000));
     } else {
-      // Word docs, Excel etc. — out of scope for PR-A.6. Leave empty.
-      return {
-        summary: `[${att.type}] ${att.original_name}`,
-        extractedText: null,
-      };
+      // [LUCA-060] Office docs (docx/xlsx/pptx), html, epub … → MarkItDown
+      // subprocess. Best-effort: null on any failure → fall back to placeholder.
+      const md = await extractViaMarkItDown(bytes.data, att.original_name, att.mime);
+      if (!md) {
+        return {
+          summary: `[${att.type}] ${att.original_name}`,
+          extractedText: null,
+        };
+      }
+      text = md;
     }
   } catch (err) {
     logger.warn(
