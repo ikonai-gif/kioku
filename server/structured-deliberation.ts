@@ -31,6 +31,7 @@ import { autoLinkDeliberation as provenanceAutoLink } from "./provenance";
 import { withOpenAIBreaker } from "./lib/openai-client";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
 import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY } from "./lib/openrouter-client";
+import { withLocalBreaker, HAS_LOCAL_LLM } from "./lib/local-llm";
 import logger from "./logger";
 import { assessRoomHeterogeneity } from "./lib/heterogeneity";
 
@@ -80,11 +81,21 @@ function isOpenRouterModel(model: string, provider?: string | null): boolean {
 }
 
 /**
+ * Local-LLM routing is provider-driven: an agent runs on the local Ollama/pod
+ * endpoint when llmProvider is "local" or "ollama". This is the ONLY provider
+ * permitted in patent rooms (no third-party egress when air-gapped).
+ */
+function isLocalModel(model: string, provider?: string | null): boolean {
+  return provider === "local" || provider === "ollama";
+}
+
+/**
  * Resolve agent model to a supported one. OpenRouter-routed models pass through
  * untouched (they are validated by OpenRouter, not by our model lists).
  * Only genuinely unroutable models fall back to DEFAULT_MODEL.
  */
 function resolveModel(model: string, provider?: string | null): string {
+  if (isLocalModel(model, provider)) return model;
   if (isOpenRouterModel(model, provider)) return model;
   if (isGeminiModel(model) || isOpenAIModel(model)) return model;
   console.warn(`[deliberation] Unsupported model "${model}" (provider=${provider ?? "none"}), falling back to ${DEFAULT_MODEL}`);
@@ -266,6 +277,41 @@ async function callOpenRouter(
   return "";
 }
 
+const LOCAL_LLM_TIMEOUT_MS = 120_000; // local 7B inference (Ollama/iMac) can be slow
+
+/**
+ * Call a local-LLM model (Ollama/pod, OpenAI-compatible). Mirrors callOpenRouter
+ * but with NO cross-provider fallback: failures propagate so callLLM abstains.
+ * The HAS_LOCAL_LLM gate keeps this inert on the prod instance (env unset).
+ */
+async function callLocal(
+  model: string,
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens: number,
+  temperature: number,
+): Promise<string> {
+  if (!HAS_LOCAL_LLM) throw new Error("LOCAL_LLM_BASE_URL not configured");
+  const params = {
+    model,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userMessage },
+    ],
+  };
+  const reqOpts = { signal: AbortSignal.timeout(LOCAL_LLM_TIMEOUT_MS) };
+  const completion = await withLocalBreaker((client) => client.chat.completions.create(params, reqOpts));
+  const choice = completion.choices[0];
+  const msg: any = choice?.message ?? {};
+  const content = (msg.content ?? "").trim();
+  if (content) return content;
+  const reasoning = ((msg.reasoning ?? msg.reasoning_content) ?? "").trim();
+  if (reasoning) return reasoning;
+  return "";
+}
+
 /**
  * Call appropriate LLM based on model name, with provider fallback.
  * If the primary provider fails, falls back to the other provider.
@@ -301,6 +347,26 @@ async function callLLM(
   const openaiKey = (agentProvider === "openai" && agentApiKey) ? agentApiKey : null;
   const geminiKey = (agentProvider === "gemini" && agentApiKey) ? agentApiKey : null;
   const openrouterKey = (agentProvider === "openrouter" && agentApiKey) ? agentApiKey : null;
+
+  // Local models — patent-room provider. NO fallback of any kind: on failure
+  // the agent abstains (never a cloud provider). Inert in prod (HAS_LOCAL_LLM).
+  if (isLocalModel(model, agentProvider)) {
+    try {
+      return await callLocal(model, systemPrompt, userMessage, maxTokens, temperature);
+    } catch (err: any) {
+      const reason: AbstainReason =
+        err?.code === "CIRCUIT_OPEN" || err?.name === "CircuitOpenError"
+          ? "CIRCUIT_BREAKER_OPEN"
+          : err?.name === "AbortError" || /timeout|ETIMEDOUT/i.test(err?.message ?? "")
+            ? "TIMEOUT"
+            : "PROVIDER_ERROR";
+      logger.warn(
+        { event: "llm_abstain", agentId, model, reason, provider: "local", err: err?.message?.slice(0, 200) },
+        `[deliberation] Local LLM (${model}) failed — abstaining (never cloud fallback)`,
+      );
+      throw new LLMAbstainError(reason, "local", model, err?.message ?? "unknown error");
+    }
+  }
 
   // OpenRouter models — try OpenRouter first, fall back to shared providers.
   // This is the heterogeneity path: Claude/Kimi/Llama/DeepSeek route here
