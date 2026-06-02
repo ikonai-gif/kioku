@@ -54,7 +54,7 @@ import { classifyToolCall, classifyTool } from "./lib/luca-approvals/classify";
 import { sendTelegramMessage } from "./lib/telegram";
 import { parseQuietHours, isInQuietHours, getDeferredSendAt } from "./lib/luca-checkin/quiet-hours";
 import { lucaTelegramLog } from "../shared/schema";
-import { normalizeNamespace, slugify } from "../shared/namespaces";
+import { normalizeNamespace, slugify, isValidFactKey } from "../shared/namespaces";
 import { db } from "./storage";
 import {
   createPendingApproval,
@@ -1311,6 +1311,10 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         namespace: {
           type: "string",
           description: "Optional namespace for retrieval grouping. If omitted, derived from type. MUST be canonical: a base name like '_aesthetics', '_reflections', '_commitment', '_relational', or a pattern: 'knowledge:<topic>' (lowercase_with_underscores), '_relational:<person>' (kote|nicole|bro2|bro3|boss), '_series_bible:<series>'. Do NOT invent ad-hoc colon suffixes (e.g. '_commitment:open', '_reflection:p2_10') — they are auto-collapsed to the base. Unknown namespaces are rejected.",
+        },
+        fact_key: {
+          type: "string",
+          description: "Optional. Set ONLY when this memory states a factual attribute of an entity that can later change (e.g. 'kote.hair_color', 'luca.provider_model', 'ikonbai.production_domain'). Format: lowercase '<subject>.<attribute>'. If the memory is an event, a reflection, or you are unsure, LEAVE THIS NULL. A fact_key lets a later contradicting value automatically supersede this one.",
         },
         related_ids: {
           type: "array",
@@ -5992,11 +5996,16 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           // Sprint 1 v2: explicit provenance + verified columns. Always luca_inferred + false
           // from this tool path. confidence forced to 0.3 for emotional_state.
           // [BRO2-280] CCP Phase 1.0: ccp_y populated from temporalStance arg.
+          // [BRO2-325] fact_key (validate format only; null if invalid/unsure) +
+          // valid_from = now (valid time starts at write). valid_to stays NULL.
+          // Auto-invalidation of superseded facts lands in 2.1b.
+          const rawFactKey = typeof toolInput.fact_key === "string" ? toolInput.fact_key.trim() : "";
+          const factKey = isValidFactKey(rawFactKey) ? rawFactKey : null;
           const r = await pool.query(
-            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at, ccp_y)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11, $12)
+            `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at, ccp_y, fact_key, valid_from)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11, $12, $13, $14)
              RETURNING id`,
-            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance]
+            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance, factKey, now]
           );
           const newId = r.rows[0]?.id;
 

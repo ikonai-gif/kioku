@@ -78,6 +78,13 @@ export const memories = pgTable("memories", {
   // `drizzle-kit push` sees the existing prod column and does NOT propose dropping
   // it. Temporary safety net — drop (with backup table) after the rollback window.
   namespaceLegacy: text("namespace_legacy"),
+  // [BRO2-325] bi-temporal validity (Phase 2.1). valid_from/valid_to are epoch-ms
+  // (valid TIME — when the fact was true), distinct from created_at (transaction
+  // time) and ccp temporal_stance (relevance). valid_to NULL = still valid.
+  // fact_key ('<subject>.<attribute>') keys contradiction-driven invalidation.
+  validFrom: bigint("valid_from", { mode: "number" }),
+  validTo:   bigint("valid_to", { mode: "number" }),
+  factKey:   text("fact_key"),
   embedding: text("embedding"),                              // JSON float[] from OpenAI
   strength:         real("strength").default(1.0),           // 0.0-1.0, decays over time
   emotionalValence: real("emotional_valence"),               // -1.0 (negative) to 1.0 (positive)

@@ -17,7 +17,7 @@ import {
   type KnowledgeDomain, type InsertKnowledgeDomain,
   type AestheticPreference, type InsertAestheticPreference,
 } from "@shared/schema";
-import { normalizeNamespace } from "@shared/namespaces";
+import { normalizeNamespace, isValidFactKey } from "@shared/namespaces";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { provenanceWeight } from "./lib/memory-domain";
@@ -1776,6 +1776,11 @@ export class Storage implements IStorage {
         console.warn(`[ns-gate] createMemory: mapped ${JSON.stringify(decision.from)} -> ${JSON.stringify(decision.namespace)}`);
         data = { ...data, namespace: decision.namespace };
       }
+    }
+    // [BRO2-325] fact_key: validate format only (never guess). Invalid => NULL.
+    if (data.factKey != null && data.factKey !== "" && !isValidFactKey(data.factKey)) {
+      console.warn(`[fact-key] createMemory: invalid fact_key ${JSON.stringify(data.factKey)} -> NULL`);
+      data = { ...data, factKey: null };
     }
     const now = Date.now();
     const [mem] = await db.insert(memories).values({
