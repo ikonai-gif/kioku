@@ -6825,6 +6825,20 @@ function getOpenRouterClient(agent: { llmApiKey?: string | null; llmProvider?: s
   return null;
 }
 
+/**
+ * Local LLM client (Ollama/pod, OpenAI-compatible) for agents with llmProvider
+ * "local"/"ollama". Returns null when LOCAL_LLM_BASE_URL is unset (e.g. the prod
+ * instance) — the chat-path then ABSTAINS rather than falling back to cloud.
+ */
+function getLocalClient(agent: { llmApiKey?: string | null; llmProvider?: string | null }): OpenAI | null {
+  const baseURL = process.env.LOCAL_LLM_BASE_URL;
+  if (!baseURL) return null;
+  if (agent.llmProvider === "local" || agent.llmProvider === "ollama") {
+    return new OpenAI({ apiKey: process.env.LOCAL_LLM_API_KEY || "local", baseURL });
+  }
+  return null;
+}
+
 const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
 
 // Prevent simultaneous agent responses for same room (simple lock)
@@ -7249,6 +7263,8 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         const isKimi = chatModel.startsWith("kimi-")
           || chatModel.startsWith("moonshotai/")
           || ((agent as any).llmProvider === "openrouter");
+        const isLocal = ((agent as any).llmProvider === "local")
+          || ((agent as any).llmProvider === "ollama");
 
         // Patent privacy: K12-K17/K20 content and patent-related keywords must
         // not route to OpenRouter (Kimi). When isKimi=true but trigger/system
@@ -7622,7 +7638,37 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           }
         }
 
-        if (!reply && (!isClaude || !getAnthropicClient(agent as any))) {
+        if (!reply && isLocal) {
+          // Patent-room provider. If LOCAL_LLM_BASE_URL is unset (prod) or the
+          // call fails, reply stays empty and the agent ABSTAINS — the OpenAI
+          // terminal below is guarded with !isLocal so we NEVER leak to cloud.
+          const localClient = getLocalClient(agent as any);
+          if (localClient) {
+            try {
+              const localMessages: any[] = [
+                { role: "system", content: systemPrompt },
+                ...chatHistory,
+                {
+                  role: "user",
+                  content: isPartnerChat
+                    ? sanitizeForPrompt(triggerContent)
+                    : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`,
+                },
+              ];
+              const completion = await localClient.chat.completions.create({
+                model: chatModel,
+                max_tokens: isPartnerChat ? 1024 : 256,
+                temperature: isPartnerChat ? 0.85 : 0.75,
+                messages: localMessages,
+              }, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
+              reply = completion.choices[0]?.message?.content?.trim();
+            } catch (err) {
+              console.error(`[deliberation] Local LLM error for ${agent.name}:`, err);
+            }
+          }
+        }
+
+        if (!reply && !isLocal && (!isClaude || !getAnthropicClient(agent as any))) {
           // OpenAI path (default or fallback when Claude client unavailable).
           // W6 1b: route through withAgentBreaker — custom-key agents get their
           // own per-agent breaker + client; shared-key agents ride the
