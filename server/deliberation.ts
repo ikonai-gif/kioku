@@ -54,6 +54,7 @@ import { classifyToolCall, classifyTool } from "./lib/luca-approvals/classify";
 import { sendTelegramMessage } from "./lib/telegram";
 import { parseQuietHours, isInQuietHours, getDeferredSendAt } from "./lib/luca-checkin/quiet-hours";
 import { lucaTelegramLog } from "../shared/schema";
+import { normalizeNamespace, slugify } from "../shared/namespaces";
 import { db } from "./storage";
 import {
   createPendingApproval,
@@ -1309,7 +1310,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
         },
         namespace: {
           type: "string",
-          description: "Optional namespace for retrieval grouping. Examples: '_aesthetics', '_relational:kote', '_commitment:open', '_reflection:p2_10'. If omitted, derived from type.",
+          description: "Optional namespace for retrieval grouping. If omitted, derived from type. MUST be canonical: a base name like '_aesthetics', '_reflections', '_commitment', '_relational', or a pattern: 'knowledge:<topic>' (lowercase_with_underscores), '_relational:<person>' (kote|nicole|bro2|bro3|boss), '_series_bible:<series>'. Do NOT invent ad-hoc colon suffixes (e.g. '_commitment:open', '_reflection:p2_10') — they are auto-collapsed to the base. Unknown namespaces are rejected.",
         },
         related_ids: {
           type: "array",
@@ -5119,7 +5120,7 @@ print("Converted MD to DOCX")
         const action = toolInput.action;
         const seriesName = toolInput.series_name;
         if (!action || !seriesName) return "Missing required fields: action, series_name.";
-        const ns = `_series_bible:${seriesName}`;
+        const ns = `_series_bible:${slugify(String(seriesName))}`;
 
         if (action === "get") {
           const r = await pool.query(
@@ -5910,13 +5911,23 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           namespace = memType === "aesthetic" ? "_aesthetics"
                     : memType === "procedural" ? "_procedural"
                     : memType === "meta_cognitive" ? "_meta_cognitive"
-                    : memType === "reflection" ? "_reflection"
+                    : memType === "reflection" ? "_reflections"
                     : memType === "commitment" ? "_commitment"
                     : memType === "relational" ? "_relational"
                     : memType === "autobiographical" ? "_autobiographical"
                     : memType === "emotional_state" ? "_emotional_state"
                     : memType === "episodic" ? "_episodic"
                     : "_semantic";
+        }
+        // [namespace-enforcement PR-1] Normalize + reject unknown to stop drift.
+        // Luca-facing: an unknown namespace returns an error so Luca picks a valid one;
+        // a legacy alias / tag-suffix / mixed-case slug is silently mapped to canonical.
+        {
+          const nsDecision = normalizeNamespace(namespace);
+          if (!nsDecision.ok) {
+            return `remember: namespace '${namespace}' rejected — ${nsDecision.reason}. Use a canonical namespace (e.g. _reflections, _commitment, _aesthetics, _relational:kote, knowledge:<topic>). To add a new namespace, ask Boss to register it in shared/namespaces.json.`;
+          }
+          if (nsDecision.namespace) namespace = nsDecision.namespace;
         }
         try {
           const { pool } = await import("./storage");

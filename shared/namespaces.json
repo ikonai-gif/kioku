@@ -1,0 +1,113 @@
+{
+  "$schema_version": 1,
+  "frozen_at": "2026-06-02",
+  "owner": "BOSS",
+  "maintainer": "BRO2",
+  "privacy_auditor": "BRO4",
+  "_note": "Single source of truth for memory namespaces. Canonical names + explicit legacy aliases + sensitivity + dynamic-slug patterns. Enforced at TWO disjoint write paths: remember tool (server/deliberation.ts, direct INSERT) and storage.createMemory (server/storage.ts). New namespace = RFC via MEETING_ROOM -> BRO4 privacy review -> BOSS approve -> add here.",
+  "_enforcement": "known canonical -> accept; known legacy alias -> map to canonical + log; unknown -> reject. Auto-map only via explicit alias list below, never by semantic guess.",
+
+  "canonical": [
+    { "name": "_identity",            "writable_by_luca": false, "sensitive": true,  "pii": false, "gated_in_privacy_ts": true,  "retention": "indefinite", "desc": "who I am, durable self-facts; system-written only" },
+    { "name": "_episode_summaries",   "writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "Layer1 consolidation summaries (see BRO2-323 audit: nearly empty in prod)" },
+    { "name": "_self_improvements",   "writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "system self-correction log" },
+    { "name": "_self_monitoring",     "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "3d", "desc": "self-audit exhaust; short TTL (BRO2-313)" },
+    { "name": "_self",                "writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "30d", "desc": "auto-written introspection" },
+    { "name": "_system",              "writable_by_luca": false, "sensitive": true,  "pii": false, "gated_in_privacy_ts": true,  "retention": "indefinite", "desc": "system-internal; survives consent revoke" },
+    { "name": "_health",              "writable_by_luca": false, "sensitive": true,  "pii": true,  "gated_in_privacy_ts": true,  "retention": "policy-protected", "desc": "medical; consent-gated, deleted on sensitive-consent revoke. Empty in prod." },
+    { "name": "_allergies",           "writable_by_luca": false, "sensitive": true,  "pii": true,  "gated_in_privacy_ts": true,  "retention": "policy-protected", "desc": "medical; same gate as _health. Empty in prod." },
+    { "name": "_biometric",           "writable_by_luca": false, "sensitive": true,  "pii": true,  "gated_in_privacy_ts": true,  "retention": "policy-protected", "desc": "biometric; consent-gated. Empty in prod." },
+    { "name": "_face_scan",           "writable_by_luca": false, "sensitive": true,  "pii": true,  "gated_in_privacy_ts": true,  "retention": "policy-protected", "desc": "face data; consent-gated. Empty in prod." },
+
+    { "name": "_conversation_insights", "writable_by_luca": true, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "30d", "desc": "insights extracted from conversations (highest volume ns)" },
+    { "name": "_episodic",            "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "7d",  "desc": "specific events" },
+    { "name": "_semantic",            "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "general world/project facts" },
+    { "name": "_procedural",          "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "if-X-then-Y rules" },
+    { "name": "_autobiographical",    "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "365d", "desc": "my own history" },
+    { "name": "_emotional_state",     "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "1d",  "desc": "current emotion snapshots (confidence 0.3)" },
+    { "name": "_meta_cognitive",      "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "30d", "desc": "self-observation patterns" },
+    { "name": "_reflections",         "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "14d", "desc": "lessons from outcomes. CANON = plural (BRO1). Absorbs legacy _reflection + _reflection:*" },
+
+    { "name": "_relational",          "writable_by_luca": true,  "sensitive": true,  "pii": "by_slug", "gated_in_privacy_ts": false, "retention": "365d", "desc": "relationship dynamics. SENSITIVE family (BRO4). NOTE: privacy.ts gate NOT yet wired for _relational — see follow-up. Bare _relational = 84 legacy rows pending re-shard (PR-2)." },
+
+    { "name": "decisions",            "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "general team/technical decisions" },
+    { "name": "_boss_decisions",      "writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "append_only": true, "desc": "BOSS-authoritative decisions. Append-only, no edit/delete (BRO4)." },
+
+    { "name": "_projects",            "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "active projects" },
+    { "name": "_commitment",          "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "open obligations. Absorbs legacy _commitments + _commitment:*" },
+    { "name": "_active_plans",        "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "active plans (kept separate in PR-1 per BRO1)" },
+    { "name": "_proactive_suggestions","writable_by_luca": true, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "30d", "desc": "proactive suggestions (kept separate PR-1)" },
+    { "name": "_feedback_requests",   "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "30d", "desc": "feedback asks (kept separate PR-1)" },
+
+    { "name": "_knowledge",           "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "general/miscellaneous knowledge container. Kept SEPARATE from _semantic per BOSS #3 (overrides legacy in-code alias _semantic<-_knowledge)." },
+    { "name": "_lessons",             "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "extracted lessons" },
+    { "name": "_learning",            "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "learning notes" },
+
+    { "name": "_aesthetics",          "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "style/format likes-dislikes" },
+    { "name": "_aesthetic_profile",   "writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "latest-only", "desc": "single latest aesthetic profile (delete+rewrite pattern)" },
+    { "name": "_creations",           "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "created artifacts" },
+    { "name": "_video",               "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "video creations (kept separate PR-1)" },
+    { "name": "_audio",               "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "audio creations (kept separate PR-1). Empty in prod." },
+
+    { "name": "deliberation_positions","writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "per-turn deliberation positions (audit trail)" },
+    { "name": "stable_positions",     "writable_by_luca": false, "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "90d", "desc": "stabilized positions (audit trail)" },
+
+    { "name": "_preferences",         "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": true,  "retention": "indefinite", "desc": "Boss preferences I learned (deleted on full revoke path)" },
+    { "name": "_series_bible",        "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "indefinite", "desc": "creative continuity bible base; per-series via _series_bible:<slug>" },
+
+    { "name": "default",              "writable_by_luca": true,  "sensitive": false, "pii": false, "gated_in_privacy_ts": false, "retention": "30d", "desc": "legal fallback bucket for unclassified content (so unknown content has a valid home instead of free-form drift)" }
+  ],
+
+  "dynamic_patterns": [
+    { "prefix": "knowledge:",     "regex": "^knowledge:[a-z0-9][a-z0-9_]{1,63}$", "sensitive": false,     "desc": "topical knowledge shard (BRO1). lowercase, _ for spaces, no nested colon, no raw PII, max 64 after prefix" },
+    { "prefix": "_relational:",   "regex": "^_relational:[a-z0-9][a-z0-9_]{1,40}$", "sensitive": "by_slug", "desc": "person/agent-scoped relational. Slug MUST be in person_slugs registry. PII slugs gated; internal-agent slugs not." },
+    { "prefix": "_series_bible:", "regex": "^_series_bible:[a-z0-9][a-z0-9_]{1,40}$", "sensitive": false,   "desc": "per-series creative bible" }
+  ],
+
+  "person_slugs": {
+    "_comment": "BOSS-maintained registry. New slug = BOSS approval (BRO4 governance).",
+    "pii": ["kote", "nicole"],
+    "internal_agents": ["bro2", "bro3", "boss"]
+  },
+
+  "legacy_aliases": {
+    "_comment": "Explicit legacy -> canonical map. Used by enforcement (auto-map+log) AND by the guarded migration. Exact-string entries here; suffix-strip rules are in migration only (see scripts/migrate_namespaces_20260602.sql).",
+    "_reflection": "_reflections",
+    "_commitments": "_commitment",
+    "_knowledge_Art History": "knowledge:art_history",
+    "research": "knowledge:research",
+    "strategy": "knowledge:strategy",
+    "finance": "knowledge:finance",
+    "legal": "knowledge:legal",
+    "operations": "knowledge:operations",
+    "product": "knowledge:product",
+    "client_feedback": "knowledge:client_feedback",
+    "client_preferences": "knowledge:client_preferences",
+    "agent_coordination": "knowledge:agent_coordination",
+    "marketing_strategy": "knowledge:marketing_strategy",
+    "launch_campaign": "knowledge:launch_campaign",
+    "beta_launch": "knowledge:beta_launch",
+    "production_status": "knowledge:production_status",
+    "_relational:boss_alter": "_relational:boss",
+    "_series_bible:IKONBAI Confidential": "_series_bible:ikonbai_confidential",
+    "_series_bible:Meta-coder": "_series_bible:meta_coder"
+  },
+
+  "suffix_strip_rules": {
+    "_comment": "Tag-style colon suffixes collapse to base (suffix is a note, not an entity). NEVER apply to _relational:, knowledge:, _series_bible: (entity suffixes, preserved).",
+    "_reflection:": "_reflections",
+    "_commitment:": "_commitment",
+    "_autobiographical:": "_autobiographical",
+    "_procedural:": "_procedural",
+    "_emotional_state:": "_emotional_state",
+    "_meta_cognitive:": "_meta_cognitive"
+  },
+
+  "follow_ups": [
+    "BRO2-323: Episode Summary Writer audit (_episode_summaries = 1 row; Layer1 starved).",
+    "PR-2: wire _relational into privacy.ts retrieval-exclusion (not gated today).",
+    "PR-2: re-shard 84 bare _relational rows by person (needs content read, not mechanical).",
+    "PR-2: per-namespace TTL enforcement via cron from retention field (BRO4).",
+    "PR-2 (optional): consolidate _video/_audio -> _creations, planning namespaces."
+  ]
+}
