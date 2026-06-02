@@ -17,6 +17,7 @@ import {
   type KnowledgeDomain, type InsertKnowledgeDomain,
   type AestheticPreference, type InsertAestheticPreference,
 } from "@shared/schema";
+import { normalizeNamespace } from "@shared/namespaces";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { provenanceWeight } from "./lib/memory-domain";
@@ -1763,6 +1764,19 @@ export class Storage implements IStorage {
     return result.rows;
   }
   async createMemory(data: InsertMemory): Promise<Memory> {
+    // [namespace-enforcement PR-1] Final hard gate. Normalize alias/suffix/slug to a
+    // canonical namespace. Unknown is coerced to 'default' (never throws — a system
+    // write must not break). The Luca-facing `remember` tool rejects unknown upstream.
+    if (typeof data.namespace === "string" && data.namespace.trim() !== "") {
+      const decision = normalizeNamespace(data.namespace);
+      if (!decision.ok) {
+        console.warn(`[ns-gate] createMemory: unknown namespace ${JSON.stringify(data.namespace)} -> 'default' (${decision.reason})`);
+        data = { ...data, namespace: "default" };
+      } else if (decision.mapped && decision.namespace) {
+        console.warn(`[ns-gate] createMemory: mapped ${JSON.stringify(decision.from)} -> ${JSON.stringify(decision.namespace)}`);
+        data = { ...data, namespace: decision.namespace };
+      }
+    }
     const now = Date.now();
     const [mem] = await db.insert(memories).values({
       ...data,
