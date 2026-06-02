@@ -73,6 +73,11 @@ export const memories = pgTable("memories", {
   type:      text("type").notNull().default("semantic"),     // semantic | episodic | procedural | emotional | temporal | causal | contextual
   importance: real("importance").notNull().default(0.5),
   namespace: text("namespace"),
+  // [namespace-enforcement PR-1] Per-row rollback for the 2026-06-02 namespace
+  // consolidation (scripts/migrate_namespaces_20260602.sql). Declared here so
+  // `drizzle-kit push` sees the existing prod column and does NOT propose dropping
+  // it. Temporary safety net — drop (with backup table) after the rollback window.
+  namespaceLegacy: text("namespace_legacy"),
   embedding: text("embedding"),                              // JSON float[] from OpenAI
   strength:         real("strength").default(1.0),           // 0.0-1.0, decays over time
   emotionalValence: real("emotional_valence"),               // -1.0 (negative) to 1.0 (positive)
