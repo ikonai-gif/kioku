@@ -2378,6 +2378,28 @@ export class Storage implements IStorage {
     return rowCount ?? 0;
   }
 
+  /** [PR-2] Hard-delete archived sessions older than `retentionDays` (default 90),
+   *  logging each row into deliberation_session_deletion_log. Only touches
+   *  archived rows (archived_at IS NOT NULL); never running/visible ones.
+   *  Returns number of rows deleted. The scheduler calls this ONLY when
+   *  DELIBERATION_DELETE_ENABLED is true, so it is a no-op in prod by default. */
+  async deleteOldArchivedSessions(retentionDays = 90, reason = "retention_90d"): Promise<number> {
+    const now = Date.now();
+    const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+    const { rowCount } = await pool.query(
+      `WITH deleted AS (
+         DELETE FROM kioku_deliberation_sessions
+         WHERE archived_at IS NOT NULL AND archived_at < $1
+         RETURNING id, room_id, status, archived_at
+       )
+       INSERT INTO deliberation_session_deletion_log
+         (session_id, room_id, status, archived_at, deleted_at, reason)
+       SELECT id, room_id, status, archived_at, $2, $3 FROM deleted`,
+      [cutoff, now, reason]
+    );
+    return rowCount ?? 0;
+  }
+
   async getLatestConsensus(roomId: number) {
     const { rows } = await pool.query(
       `SELECT consensus FROM kioku_deliberation_sessions

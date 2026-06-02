@@ -423,5 +423,19 @@ export function startScheduler() {
     }
   }, 24 * 60 * 60 * 1000);
 
+  // [PR-2] daily deliberation deletion — hard-delete archived sessions older than
+  // 90 days, logging each to deliberation_session_deletion_log. DISABLED by default:
+  // only runs when DELIBERATION_DELETE_ENABLED === "true". No-op in prod until BOSS
+  // flips the flag (archive-then-delete keeps a 90-day window after archiving).
+  setInterval(async () => {
+    if (process.env.DELIBERATION_DELETE_ENABLED !== "true") return;
+    try {
+      const deleted = await storage.deleteOldArchivedSessions(90);
+      if (deleted > 0) logger.info({ deleted }, "[scheduler] deliberation deletion (90d)");
+    } catch (err: any) {
+      logger.error({ err: err?.message }, "[scheduler] deliberation deletion failed");
+    }
+  }, 24 * 60 * 60 * 1000);
+
   logger.info("[scheduler] started — checking every 60s");
 }
