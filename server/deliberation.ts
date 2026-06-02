@@ -7265,6 +7265,20 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           }
         }
 
+        // [BRO2 interim — pending #171 room-flag] PATENT_KEYWORD_GUARD.
+        // If patent-sensitive content was detected for an OpenRouter agent
+        // (kimiBlockedByPrivacy), ABSTAIN — skip this agent entirely. Without
+        // this, control falls through to the OpenAI terminal path below and the
+        // prompt is transmitted to OpenAI cloud — the exact disclosure this guard
+        // exists to prevent. No cloud fallback, no silent substitution.
+        if (kimiBlockedByPrivacy) {
+          logger.warn(
+            { component: "deliberation", event: "patent_keyword_guard_abstain", agentId: agent.id, agentName: agent.name },
+            "[deliberation] PATENT_KEYWORD_GUARD — ABSTAIN (interim, no cloud fallback)",
+          );
+          continue;
+        }
+
         let reply: string | undefined;
         // W6 1c / W7 Variant C (NEW-3): unified flag across OpenAI + Claude
         // paths. Hoisted above every LLM branch so downstream (sycophancy
