@@ -9,7 +9,7 @@
  *   GOOGLE_DRIVE_CLIENT_ID
  *   GOOGLE_DRIVE_CLIENT_SECRET
  *   GOOGLE_DRIVE_REFRESH_TOKEN
- *   GOOGLE_DRIVE_BACKUP_FOLDER_ID
+ *   GOOGLE_DRIVE_BACKUP_FOLDER_ID   (optional — auto-created if unset)
  *
  * The refresh token is a long-lived credential — treat it like a password.
  * It grants access to `drive.file` scope: the uploader can only touch files
@@ -50,7 +50,10 @@ export function readDriveConfig(): DriveConfig | { error: string } {
   if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID");
   if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET");
   if (!refreshToken) missing.push("GOOGLE_DRIVE_REFRESH_TOKEN");
-  if (!folderId) missing.push("GOOGLE_DRIVE_BACKUP_FOLDER_ID");
+  // GOOGLE_DRIVE_BACKUP_FOLDER_ID is OPTIONAL: when unset, the uploader creates
+  // a folder THIS client owns. Under drive.file a freshly re-authed client
+  // cannot write into a folder a previous client created, but it can always
+  // create and write into its own folder.
   if (missing.length) return { error: `missing env: ${missing.join(",")}` };
   return { clientId, clientSecret, refreshToken, folderId };
 }
@@ -69,6 +72,30 @@ export async function buildDriveClient(cfg: DriveConfig): Promise<DriveLike> {
   return drive as unknown as DriveLike;
 }
 
+const BACKUP_FOLDER_MIME = "application/vnd.google-apps.folder";
+
+/**
+ * Resolve the Drive folder to upload into. If GOOGLE_DRIVE_BACKUP_FOLDER_ID is
+ * configured, use it. Otherwise create a folder owned by THIS client and log
+ * its id so the operator can pin it via env. Makes the backup robust to an
+ * OAuth-client change (drive.file can only write into folders it created).
+ */
+export async function resolveBackupFolderId(drive: DriveLike, cfg: DriveConfig): Promise<string> {
+  const configured = (cfg.folderId ?? "").trim();
+  if (configured) return configured;
+  const resp = await drive.files.create({
+    requestBody: { name: "KIOKU Backups", mimeType: BACKUP_FOLDER_MIME },
+    fields: "id,name",
+  });
+  const id = resp.data.id;
+  if (!id) throw new Error("drive-uploader: backup-folder create returned no id");
+  logger.warn(
+    { component: "jobs", event: "drive_backup_folder_created", folderId: id },
+    `[jobs] created Drive backup folder id=${id} — set GOOGLE_DRIVE_BACKUP_FOLDER_ID=${id} to reuse it`,
+  );
+  return id;
+}
+
 /**
  * Upload a Buffer to Drive under the configured folder.
  * mimeType defaults to application/json for KIOKU backups.
@@ -85,10 +112,12 @@ export async function uploadBufferToDrive(
 
   const drive = opts.driveOverride ?? (await buildDriveClient(cfg));
 
+  const folderId = await resolveBackupFolderId(drive, cfg);
+
   const resp = await drive.files.create({
     requestBody: {
       name: filename,
-      parents: [cfg.folderId],
+      parents: [folderId],
       mimeType,
     },
     media: {
