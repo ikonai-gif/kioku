@@ -579,6 +579,7 @@ export async function fetchRelevantMemories(
       WHERE m.user_id = $2
         AND (m.agent_id = $3 OR m.agent_id IS NULL)
         AND m.embedding_vec IS NOT NULL
+        AND m.valid_to IS NULL
         AND m.namespace != '_identity'
         AND m.namespace != '_episode_summaries'
       ORDER BY m.embedding_vec <=> $1::vector
@@ -650,12 +651,14 @@ export async function fetchRelevantMemories(
           JOIN memories m ON m.id = ml.target_memory_id
           WHERE ml.source_memory_id = ANY($1) AND ml.user_id = $2
             AND m.namespace != '_identity' AND m.namespace != '_episode_summaries'
+            AND m.valid_to IS NULL
           UNION
           SELECT DISTINCT m.*, ml.link_type, ml.strength as link_strength
           FROM memory_links ml
           JOIN memories m ON m.id = ml.source_memory_id
           WHERE ml.target_memory_id = ANY($1) AND ml.user_id = $2
             AND m.namespace != '_identity' AND m.namespace != '_episode_summaries'
+            AND m.valid_to IS NULL
         `, [topIds, userId]);
         graphMemories = graphResults.rows;
       } catch { /* graph walk failure is non-fatal */ }
@@ -722,7 +725,7 @@ export async function fetchRelevantMemories(
   // that still needs all memories, since keyword matching scans everything).
   const allMemories = await storage.getMemories(userId, config.memoryFetchLimit);
   const candidateMemories = allMemories.filter(
-    (m: any) => m.agentId === agentId || m.agentId === null
+    (m: any) => (m.agentId === agentId || m.agentId === null) && m.validTo == null
   );
   const scored = candidateMemories
     .filter((m: any) => !alwaysIds.has(m.id))

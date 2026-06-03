@@ -1664,7 +1664,8 @@ export class Storage implements IStorage {
       sql`${memories.userId} = ${userId}
           AND (${memories.agentId} = ${agentId} OR ${memories.agentId} IS NULL)
           AND (${memories.namespace} IN ('_identity', '_episode_summaries')
-               OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))`
+               OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))
+          AND ${memories.validTo} IS NULL`
     ).orderBy(desc(memories.importance), desc(memories.createdAt));
     const now = Date.now();
     return results.map((m: any) => ({
@@ -1695,6 +1696,7 @@ export class Storage implements IStorage {
         WHERE user_id = $2
           AND embedding_vec IS NOT NULL
           AND (expires_at IS NULL OR expires_at > $3)
+          AND valid_to IS NULL
       `;
       const params: any[] = [embeddingStr, userId, nowMs];
       let paramIdx = 4;
@@ -1775,7 +1777,7 @@ export class Storage implements IStorage {
   private async textSearchMemories(userId: number, query: string, limit: number, namespace?: string): Promise<any[]> {
     // Sprint 1 v2 (R373): mirror expires_at filter from vector path.
     const nowMs = Date.now();
-    let sqlQuery = 'SELECT * FROM memories WHERE user_id = $1 AND (content ILIKE $2 OR agent_name ILIKE $2) AND (expires_at IS NULL OR expires_at > $3)';
+    let sqlQuery = 'SELECT * FROM memories WHERE user_id = $1 AND (content ILIKE $2 OR agent_name ILIKE $2) AND (expires_at IS NULL OR expires_at > $3) AND valid_to IS NULL';
     const params: any[] = [userId, `%${query}%`, nowMs];
     let idx = 4;
     if (namespace) {
