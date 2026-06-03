@@ -201,6 +201,44 @@ describe("daily-backup · runDailyBackup", () => {
     expect((result.dump_counts as any).memories).toBe(50);
   });
 
+  it("auto-creates a backup folder when GOOGLE_DRIVE_BACKUP_FOLDER_ID is unset", async () => {
+    const dump = goodDump({
+      memories: new Array(50).fill({ id: 1, content: "x".repeat(200) }),
+      counts: { agents: 0, memories: 50, rooms: 0, room_messages: 0, flows: 0, integrations: 0 },
+    });
+    const uploads: any[] = [];
+    const driveMock = {
+      files: {
+        create: async (req: any) => {
+          uploads.push(req);
+          if (req.requestBody.mimeType === "application/vnd.google-apps.folder") {
+            return { data: { id: "new-folder-1", name: req.requestBody.name } };
+          }
+          return { data: { id: "drive-xyz", name: req.requestBody.name, size: "999", webViewLink: "https://drive/xyz" } };
+        },
+      },
+    };
+    process.env.GOOGLE_DRIVE_CLIENT_ID = "cid";
+    process.env.GOOGLE_DRIVE_CLIENT_SECRET = "sec";
+    process.env.GOOGLE_DRIVE_REFRESH_TOKEN = "rt";
+    delete process.env.GOOGLE_DRIVE_BACKUP_FOLDER_ID;
+
+    const result = await runDailyBackup({
+      poolOverride: poolForDump(dump),
+      driveOverride: driveMock,
+      notify: async () => ({ delivered: true, status: 204 }),
+      now: new Date(Date.UTC(2026, 3, 24, 13, 0)),
+    });
+
+    // Two create calls: first the folder, then the file under it.
+    expect(uploads).toHaveLength(2);
+    expect(uploads[0].requestBody.mimeType).toBe("application/vnd.google-apps.folder");
+    expect(uploads[1].requestBody.parents).toEqual(["new-folder-1"]);
+    expect(result.drive_file_id).toBe("drive-xyz");
+
+    process.env.GOOGLE_DRIVE_BACKUP_FOLDER_ID = "fid"; // restore for later tests
+  });
+
   it("alerts + throws on email-mismatch", async () => {
     const dump = goodDump({
       user: { id: 10, email: "wrong@example.com" },
