@@ -180,7 +180,10 @@ async function summarizeImage(att: AttachmentMeta): Promise<string> {
 
   try {
     const res = await client.messages.create({
-      model: "claude-3-5-haiku-latest",
+      // [fix] claude-3-5-haiku-latest 404s (alias retired) — use the current
+      // haiku SKU (vision-capable; same default as the urgency classifier),
+      // env-overridable for future SKU bumps without a redeploy.
+      model: process.env.ATTACHMENT_SUMMARY_MODEL || "claude-haiku-4-5",
       max_tokens: 200,
       system: IMAGE_SUMMARY_PROMPT,
       messages: [
