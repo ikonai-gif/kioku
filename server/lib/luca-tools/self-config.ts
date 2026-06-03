@@ -106,6 +106,18 @@ export function buildSelfConfigSnapshot(input: {
     "LUCA_DRIVE_ROOT_FOLDER",
     "AWS_REGION",
     "OPENROUTER_API_KEY",
+    // Provider / media keys — these gate images (DALL-E), video (Veo/kie.ai),
+    // voice (TTS), ears (Whisper STT), vision, and the LLM providers. Presence
+    // ONLY, never values. Added so Luca can confirm capability config via
+    // luca_self_config rather than inferring (incorrectly) from luca_run_code,
+    // whose sandbox does not receive these prod secrets.
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_AI_KEY",
+    "ELEVENLABS_API_KEY",
+    "KIE_API_KEY",
+    "COMPOSIO_API_KEY",
   ] as const;
   const secrets_present: Record<string, boolean> = {};
   for (const k of secretKeys) {
