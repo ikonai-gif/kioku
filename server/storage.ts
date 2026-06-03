@@ -1490,6 +1490,7 @@ export interface IStorage {
   resetAgentError(id: number, userId: number): Promise<boolean>;
 
   getMemories(userId: number, limit?: number): Promise<Memory[]>;
+  getInjectionCandidates(userId: number, agentId: number): Promise<Memory[]>;
   searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
   deleteMemory(id: number, userId: number): Promise<boolean>;
@@ -1641,6 +1642,30 @@ export class Storage implements IStorage {
   async getMemories(userId: number, limit = 100, offset = 0) {
     const results = await db.select().from(memories).where(eq(memories.userId, userId))
       .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit).offset(offset);
+    const now = Date.now();
+    return results.map((m: any) => ({
+      ...m,
+      currentConfidence: computeDecayedConfidence(
+        m.confidence ?? 1.0,
+        m.decayRate ?? 0.01,
+        m.lastReinforcedAt,
+        m.createdAt,
+        now
+      ),
+    }));
+  }
+  // [cube-memory #1] Targeted always-inject load. Returns only the injection-
+  // eligible universe (identity + episode summaries + profile types), agent-
+  // scoped (agent-specific OR shared). Replaces pulling 500 rows and filtering
+  // in JS on the hot path; also avoids the importance-ranked LIMIT 500 silently
+  // dropping identity rows for users with many memories.
+  async getInjectionCandidates(userId: number, agentId: number) {
+    const results = await db.select().from(memories).where(
+      sql`${memories.userId} = ${userId}
+          AND (${memories.agentId} = ${agentId} OR ${memories.agentId} IS NULL)
+          AND (${memories.namespace} IN ('_identity', '_episode_summaries')
+               OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))`
+    ).orderBy(desc(memories.importance), desc(memories.createdAt));
     const now = Date.now();
     return results.map((m: any) => ({
       ...m,

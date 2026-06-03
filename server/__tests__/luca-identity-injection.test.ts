@@ -44,6 +44,9 @@ vi.mock("../storage", () => {
   return {
     storage: {
       getMemories: vi.fn(async () => fakeMemories),
+      // [cube-memory #1] always-inject path now uses a targeted query; mock it
+      // to return the same fixture set so the identity-injection assertions hold.
+      getInjectionCandidates: vi.fn(async () => fakeMemories),
       reinforceMemory: vi.fn().mockResolvedValue(undefined),
     },
     pool: {

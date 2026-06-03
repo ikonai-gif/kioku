@@ -445,15 +445,13 @@ export async function fetchRelevantMemories(
   currentEmotionVector?: number[] | null
 ): Promise<InjectedMemory[]> {
   const config = getLucaMemoryConfig();
-  // Fetch all user memories (includes all agents + shared)
-  const allMemories = await storage.getMemories(userId, config.memoryFetchLimit);
-
-  // Filter to agent-specific + shared (agentId = null) memories
-  const candidateMemories = allMemories.filter(
-    (m) => m.agentId === agentId || m.agentId === null
-  );
-
-  if (candidateMemories.length === 0) return [];
+  // [cube-memory #1] Layer 1+2 always-inject load — fetch ONLY the injection-
+  // eligible universe (identity / episode summaries / profile types) via a
+  // targeted, agent-scoped query instead of pulling the full memoryFetchLimit
+  // set and filtering in JS. Also fixes a latent bug: getMemories is importance-
+  // ranked + LIMIT-capped, so identity rows beyond the cap were silently
+  // dropped. The broad set is loaded lazily in the keyword fallback below.
+  const injectionCandidates = await storage.getInjectionCandidates(userId, agentId);
 
   const now = Date.now();
   const topicLower = topic.toLowerCase();
@@ -466,7 +464,7 @@ export async function fetchRelevantMemories(
   // context on agents with many identity entries (e.g. Luca's 20+ rows).
   const IDENTITY_TOKEN_CAP = 2500; // tokens
   const IDENTITY_CHAR_CAP = IDENTITY_TOKEN_CAP * 4;
-  const identityCandidates = candidateMemories
+  const identityCandidates = injectionCandidates
     .filter((m: any) => m.namespace === '_identity' || m.type === 'identity')
     .sort((a: any, b: any) => {
       const impA = typeof a.importance === 'number' ? a.importance : 0.5;
@@ -509,7 +507,7 @@ export async function fetchRelevantMemories(
   const BOSS_NAME_RE = /\b(котэ|кот[аеуыя]?\b|kote|boss|босс)/i;
   const BOSS_PROFILE_TYPES = new Set(["relational", "aesthetic", "procedural"]);
   const alwaysInjectIds = new Set(alwaysInject.map((m) => m.id));
-  const bossProfileCandidates = candidateMemories
+  const bossProfileCandidates = injectionCandidates
     .filter((m: any) => {
       if (alwaysInjectIds.has(m.id)) return false;
       if (!BOSS_PROFILE_TYPES.has(m.type)) return false;
@@ -544,7 +542,7 @@ export async function fetchRelevantMemories(
   }
 
   // Always-inject: 3 most recent episode summaries regardless of keyword match
-  const episodeSummaries: InjectedMemory[] = candidateMemories
+  const episodeSummaries: InjectedMemory[] = injectionCandidates
     .filter((m: any) => m.namespace === '_episode_summaries')
     .sort((a: any, b: any) => {
       const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -720,6 +718,12 @@ export async function fetchRelevantMemories(
   }
 
   // ── FALLBACK: keyword matching (if embedText fails or returns null) ─────
+  // Vector path unavailable → load the broad memory set lazily (the only place
+  // that still needs all memories, since keyword matching scans everything).
+  const allMemories = await storage.getMemories(userId, config.memoryFetchLimit);
+  const candidateMemories = allMemories.filter(
+    (m: any) => m.agentId === agentId || m.agentId === null
+  );
   const scored = candidateMemories
     .filter((m: any) => !alwaysIds.has(m.id))
     .map((m: any) => {
