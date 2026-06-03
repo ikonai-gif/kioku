@@ -725,6 +725,15 @@ export const lucaProposals = pgTable("luca_proposals", {
   // RESERVED FOR FUTURE USE — see migration 0015 for rationale.
   appliedPrUrl:      text("applied_pr_url"),
   appliedCommitSha:  varchar("applied_commit_sha", { length: 40 }),
+  // R471 (BRO2) — Phase-1 of the gated build loop. Luca may attach a concrete
+  // unified diff (patchDiff) plus the output of tests SHE ran in her own
+  // luca_run_code sandbox (testReport). Both are NULLABLE and inert: a normal
+  // proposal omits them. This does NOT create a branch or PR and does NOT
+  // auto-apply — BOSS still reviews the diff and decides. Phase-2 (actual
+  // branch+PR via GitHub API) is intentionally separate and not built here.
+  // Migration 0018 adds these columns idempotently.
+  patchDiff:         text("patch_diff"),
+  testReport:        text("test_report"),
 }, (t) => [
   index("idx_luca_proposals_user_status_created").on(t.userId, t.status, t.createdAt),
   index("idx_luca_proposals_status_created").on(t.status, t.createdAt),

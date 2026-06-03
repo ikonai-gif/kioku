@@ -3689,17 +3689,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 200
       ? Math.floor(limitParam) : 50;
 
-    try {
-      const r = await pool.query(
-        `SELECT id, user_id, agent_id, title, body, category, status,
+    // Defensive column set: patch_diff / test_report arrive with migration 0018.
+    // Try the full list first; on Postgres 42703 (undefined_column) fall back to
+    // the legacy list so this endpoint never 500s solely because the migration
+    // has not been applied yet in a given environment. Self-heals post-migration.
+    const baseCols = `id, user_id, agent_id, title, body, category, status,
                 created_at, decided_at, decision_note,
-                applied_pr_url, applied_commit_sha
-           FROM luca_proposals
-          WHERE user_id = $1 AND status = $2
-          ORDER BY created_at DESC
-          LIMIT $3`,
-        [userId, statusParam, limit],
-      );
+                applied_pr_url, applied_commit_sha`;
+    const buildSql = (cols: string) =>
+      `SELECT ${cols}
+         FROM luca_proposals
+        WHERE user_id = $1 AND status = $2
+        ORDER BY created_at DESC
+        LIMIT $3`;
+    try {
+      let r;
+      try {
+        r = await pool.query(buildSql(`${baseCols}, patch_diff, test_report`), [userId, statusParam, limit]);
+      } catch (inner: any) {
+        if (inner?.code === "42703") {
+          r = await pool.query(buildSql(baseCols), [userId, statusParam, limit]);
+        } else {
+          throw inner;
+        }
+      }
       res.json({ proposals: r.rows, count: r.rows.length, status: statusParam });
     } catch (e: any) {
       logger.error({ source: "luca-proposals", err: e?.message }, "[luca] proposals/list failed");
