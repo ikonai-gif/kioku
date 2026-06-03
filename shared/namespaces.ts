@@ -191,3 +191,14 @@ export function lucaWritableNamespaceHint(): string {
     "plus patterns: knowledge:<topic>, _relational:<person> (kote|nicole|bro2|bro3|boss), _series_bible:<series>",
   ].join("; ");
 }
+
+// ── fact_key (BRO2-325 bi-temporal validity) ───────────────────────────────
+// Canonical key for a factual attribute of an entity, e.g. "kote.hair_color".
+// Enables contradiction-driven invalidation (same fact_key + different value =>
+// close the old fact). Format: lowercase, a-z0-9_, at least one dot.
+// Derived by the LLM in `remember`; storage only VALIDATES (never guesses).
+export const FACT_KEY_REGEX = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/;
+
+export function isValidFactKey(input: unknown): boolean {
+  return typeof input === "string" && FACT_KEY_REGEX.test(input);
+}
