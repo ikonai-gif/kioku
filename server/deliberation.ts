@@ -1439,7 +1439,7 @@ const partnerTools: Anthropic.Messages.Tool[] = [
     // BRO2. Rate-limited 5/h + 2/min per agent.
     name: "luca_propose_improvement",
     description:
-      "File a structured improvement proposal for Boss to review. Use when you have a concrete suggestion grounded in something you read (your own source via luca_read_repo, your own memory via luca_recall_self, your own config via luca_self_config) \u2014 not a vague intuition. Boss reviews pending proposals out-of-band. Approving a proposal does NOT automatically apply it; it creates a hand-off task for the engineering agent (BRO2). Rate-limited 5/h + 2/min per agent. Categories: 'tool' (a tool you want / want changed), 'prompt' (your own system-prompt wording), 'memory' (something durable to remember about the codebase / Boss / yourself), 'process' (workflow / approval-flow / autonomy boundary), 'other'.",
+      "File a structured improvement proposal for Boss to review. Use when you have a concrete suggestion grounded in something you read (your own source via luca_read_repo, your own memory via luca_recall_self, your own config via luca_self_config) \u2014 not a vague intuition. Boss reviews pending proposals out-of-band. Approving a proposal does NOT automatically apply it; it creates a hand-off task for the engineering agent (BRO2). Rate-limited 5/h + 2/min per agent. Categories: 'tool' (a tool you want / want changed), 'prompt' (your own system-prompt wording), 'memory' (something durable to remember about the codebase / Boss / yourself), 'process' (workflow / approval-flow / autonomy boundary), 'other'. OPTIONAL: if your proposal is a concrete code change, you MAY attach `patch_diff` (a unified diff you wrote) and `test_report` (the output of tests YOU ran via luca_run_code on the patched tree). This does NOT open a PR and does NOT auto-apply \u2014 Boss reviews the diff and decides. Attaching a tested diff makes a proposal far stronger than prose alone.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1455,6 +1455,14 @@ const partnerTools: Anthropic.Messages.Tool[] = [
           type: "string",
           enum: ["tool", "prompt", "memory", "process", "other"],
           description: "Categorical tag. Pick the closest \u2014 default to 'other' if uncertain.",
+        },
+        patch_diff: {
+          type: "string",
+          description: "OPTIONAL unified diff implementing the proposal (max ~200k chars). Standard `diff --git` / `--- a/ +++ b/` format. Omit unless you have a concrete, complete change. Does NOT create a branch or PR and does NOT auto-apply \u2014 it is evidence for Boss to review.",
+        },
+        test_report: {
+          type: "string",
+          description: "OPTIONAL output of tests YOU ran on the patched tree via luca_run_code (max ~50k chars). Paste the relevant pass/fail summary so Boss can see the diff was exercised. Omit if you did not run tests.",
         },
       },
       required: ["title", "body", "category"],

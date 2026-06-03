@@ -38,22 +38,35 @@ export type ProposalErrorCode =
   | "body_too_long"
   | "invalid_category"
   | "invalid_chars"
+  | "patch_too_long"
+  | "test_report_too_long"
   | "db_error";
 
 export interface ProposalInput {
   title: string;
   body: string;
   category: ProposalCategory;
+  /** Optional unified diff Luca proposes (Phase-1 build loop). */
+  patch_diff?: string;
+  /** Optional output of tests Luca ran herself in luca_run_code. */
+  test_report?: string;
 }
 
 export interface ValidatedProposal {
   title: string;
   body: string;
   category: ProposalCategory;
+  /** undefined when not provided — INSERT omits the column entirely. */
+  patchDiff?: string;
+  testReport?: string;
 }
 
 const TITLE_MAX = 200;
 const BODY_MAX = 8000;
+// A unified diff can be large; cap generously but bounded to prevent abuse /
+// runaway context. test_report is tighter (it is evidence, not the change).
+const PATCH_MAX = 200_000;
+const TEST_REPORT_MAX = 50_000;
 const VALID_CATEGORIES: ReadonlySet<ProposalCategory> = new Set(["tool", "prompt", "memory", "process", "other"]);
 
 /**
@@ -83,12 +96,33 @@ export function validateProposalInput(
     return { ok: false, error: "invalid_category" };
   }
 
+  // Optional Phase-1 build-loop fields. Absent / empty → omitted (undefined),
+  // so the INSERT never references the new columns unless Luca actually
+  // attaches a patch. Same NUL-strip + length discipline as title/body.
+  let patchDiff: string | undefined;
+  const rawPatch = i.patch_diff;
+  if (rawPatch != null && rawPatch !== "") {
+    if (typeof rawPatch !== "string" || rawPatch.includes("\0")) return { ok: false, error: "invalid_chars" };
+    if (rawPatch.length > PATCH_MAX) return { ok: false, error: "patch_too_long" };
+    patchDiff = rawPatch;
+  }
+
+  let testReport: string | undefined;
+  const rawReport = i.test_report;
+  if (rawReport != null && rawReport !== "") {
+    if (typeof rawReport !== "string" || rawReport.includes("\0")) return { ok: false, error: "invalid_chars" };
+    if (rawReport.length > TEST_REPORT_MAX) return { ok: false, error: "test_report_too_long" };
+    testReport = rawReport;
+  }
+
   return {
     ok: true,
     value: {
       title,
       body,
       category: category as ProposalCategory,
+      ...(patchDiff !== undefined ? { patchDiff } : {}),
+      ...(testReport !== undefined ? { testReport } : {}),
     },
   };
 }
@@ -125,6 +159,11 @@ export async function createProposal(args: CreateProposalArgs): Promise<CreatePr
         title: v.value.title,
         body: v.value.body,
         category: v.value.category,
+        // Phase-1 build-loop fields — included ONLY when Luca attached them, so
+        // a normal proposal's INSERT never references patch_diff / test_report
+        // (safe even before migration 0018 is applied).
+        ...(v.value.patchDiff !== undefined ? { patchDiff: v.value.patchDiff } : {}),
+        ...(v.value.testReport !== undefined ? { testReport: v.value.testReport } : {}),
         // status defaults to 'pending' at the DB level — pass undefined.
       })
       .returning({
