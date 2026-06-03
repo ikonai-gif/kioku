@@ -181,6 +181,13 @@ class SandboxManager {
 
 const sandboxManager = new SandboxManager();
 
+// [PR-E / BRO2-326] One-time guard so the partner-chat Telegram-mirror skip
+// (TELEGRAM_BOSS_CHAT_ID unset) is logged ONCE per process instead of on every
+// partner turn. A missing env here means Luca's replies render on usekioku.com
+// but never mirror to Telegram — the silent failure mode that cost hours during
+// the 2026-06-03 silence incident.
+let __telegramMirrorSkipWarned = false;
+
 // ── Partner Tool Definitions (Claude tool-use) ─────────────────────
 
 // W7 P2.5/P2.6: Luca Studio scope — tools Luca can actually use.
@@ -8026,6 +8033,12 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
               userId,
               reason: `partner_chat_mirror:agent_${agent.id}`,
             }).catch((err) => logger.warn({ err, agentId: agent.id }, "telegram-mirror: send failed"));
+          } else if (!__telegramMirrorSkipWarned) {
+            __telegramMirrorSkipWarned = true;
+            logger.warn(
+              { component: "deliberation", event: "partner_chat_mirror_skipped", agentId: agent.id },
+              "[deliberation] partner_chat_mirror skipped: TELEGRAM_BOSS_CHAT_ID unset — Luca replies will NOT mirror to Telegram (web only)",
+            );
           }
         }
 
