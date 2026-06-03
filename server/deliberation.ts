@@ -54,7 +54,7 @@ import { classifyToolCall, classifyTool } from "./lib/luca-approvals/classify";
 import { sendTelegramMessage } from "./lib/telegram";
 import { parseQuietHours, isInQuietHours, getDeferredSendAt } from "./lib/luca-checkin/quiet-hours";
 import { lucaTelegramLog } from "../shared/schema";
-import { normalizeNamespace, slugify, isValidFactKey } from "../shared/namespaces";
+import { normalizeNamespace, slugify, isValidFactKey, canSupersede } from "../shared/namespaces";
 import { db } from "./storage";
 import {
   createPendingApproval,
@@ -6001,20 +6001,79 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           // Auto-invalidation of superseded facts lands in 2.1b.
           const rawFactKey = typeof toolInput.fact_key === "string" ? toolInput.fact_key.trim() : "";
           const factKey = isValidFactKey(rawFactKey) ? rawFactKey : null;
-          const r = await pool.query(
+
+          // Single INSERT reused by both paths below (kept textually identical so
+          // the user_id/agent_id ownership contract — pinned by remember-tool.test —
+          // is unchanged).
+          const insertMemorySql =
             `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at, ccp_y, fact_key, valid_from)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11, $12, $13, $14)
-             RETURNING id`,
-            [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance, factKey, now]
-          );
-          const newId = r.rows[0]?.id;
+             RETURNING id`;
+          const insertMemoryParams = [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance, factKey, now];
+
+          // [BRO2-325] 2.1b bi-temporal invalidation. With a fact_key we run the
+          // write in ONE transaction: insert the new fact, close prior ACTIVE
+          // facts for the same (user_id, fact_key) that this write may supersede
+          // (provenance gate; never _boss_decisions), and record new->old
+          // 'supersedes' links. A byte-identical re-assertion writes nothing.
+          // Without a fact_key it is a plain insert (no auto-invalidation), as before.
+          let newId: any;
+          const supersededIds: number[] = [];
+          let reasserted = false;
+
+          if (factKey) {
+            const client = await pool.connect();
+            try {
+              await client.query("BEGIN");
+              const active = await client.query(
+                `SELECT id, content, provenance, namespace FROM memories
+                  WHERE user_id = $1 AND fact_key = $2 AND valid_to IS NULL`,
+                [userId, factKey]
+              );
+              const identical = active.rows.find((row: any) => row.content === enrichedContent);
+              if (identical) {
+                await client.query("COMMIT");
+                reasserted = true;
+                newId = identical.id;
+              } else {
+                const r = await client.query(insertMemorySql, insertMemoryParams);
+                newId = r.rows[0]?.id;
+                // New provenance from this tool path is always 'luca_inferred'.
+                for (const row of active.rows) {
+                  if (row.namespace === "_boss_decisions") continue;
+                  if (!canSupersede("luca_inferred", row.provenance)) continue;
+                  const upd = await client.query(
+                    `UPDATE memories SET valid_to = $1 WHERE id = $2 AND valid_to IS NULL`,
+                    [now, row.id]
+                  );
+                  if (upd.rowCount && upd.rowCount > 0) {
+                    await client.query(
+                      `INSERT INTO memory_links (source_memory_id, target_memory_id, user_id, link_type, strength, created_at)
+                       VALUES ($1, $2, $3, 'supersedes', 1.0, $4)`,
+                      [newId, row.id, userId, now]
+                    );
+                    supersededIds.push(row.id);
+                  }
+                }
+                await client.query("COMMIT");
+              }
+            } catch (txErr: any) {
+              try { await client.query("ROLLBACK"); } catch {}
+              client.release();
+              return `remember: write failed — ${txErr?.message || String(txErr)}`;
+            }
+            client.release();
+          } else {
+            const r = await pool.query(insertMemorySql, insertMemoryParams);
+            newId = r.rows[0]?.id;
+          }
 
           // Sprint 2 (R372/R384): fire-and-forget contradiction detection.
           // P1: helper itself short-circuits when newProvenance === 'luca_inferred',
           //     so for the current remember() tool path this is a no-op today —
           //     wired up so Sprint 2.5 telemetry-write can promote provenance
           //     without touching this call-site again. P2: caller try/catch.
-          if (newId) {
+          if (newId && !reasserted) {
             void import("./memory-injection")
               .then(({ detectContradictionAndLink }) =>
                 detectContradictionAndLink(
@@ -6039,7 +6098,11 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
               });
           }
 
-          return `Memory saved (id=${newId}, type=${memType}, importance=${importance}${valence !== null ? `, valence=${valence}` : ""}, provenance=luca_inferred, verified=false${isEmotionalState ? ", confidence=0.3 (emotional_state)" : ""}).${honestyStripNote}`;
+          if (reasserted) {
+            return `Memory already current (id=${newId}, fact_key=${factKey ?? "none"}) — re-assertion, no change.${honestyStripNote}`;
+          }
+          const supersedeNote = supersededIds.length ? `, superseded ${supersededIds.length} prior fact(s) [${supersededIds.join(",")}]` : "";
+          return `Memory saved (id=${newId}, type=${memType}, importance=${importance}${valence !== null ? `, valence=${valence}` : ""}, provenance=luca_inferred, verified=false${isEmotionalState ? ", confidence=0.3 (emotional_state)" : ""}${factKey ? `, fact_key=${factKey}` : ""}${supersedeNote}).${honestyStripNote}`;
         } catch (e: any) {
           return `remember: write failed — ${e?.message || String(e)}`;
         }

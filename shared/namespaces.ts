@@ -202,3 +202,30 @@ export const FACT_KEY_REGEX = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/;
 export function isValidFactKey(input: unknown): boolean {
   return typeof input === "string" && FACT_KEY_REGEX.test(input);
 }
+
+// ── provenance hierarchy (BRO2-325 bi-temporal 2.1b) ───────────────────────
+// A NEW fact may close (set valid_to) an existing fact ONLY when the new
+// write's provenance is at least as strong. Prevents a luca_inferred write
+// from silently overriding human-told truth.
+export const PROVENANCE_STRENGTH: Record<string, number> = {
+  boss_told: 100,
+  user_told: 90,
+  verified_import: 80,
+  tool_observed: 70,
+  agent_inferred: 50,
+  luca_inferred: 50,
+  unknown: 10,
+};
+
+export function provenanceStrength(p: string | null | undefined): number {
+  if (!p) return PROVENANCE_STRENGTH.unknown;
+  return PROVENANCE_STRENGTH[p] ?? PROVENANCE_STRENGTH.unknown;
+}
+
+/** True when a NEW fact (newProv) may supersede an existing fact (oldProv). */
+export function canSupersede(
+  newProv: string | null | undefined,
+  oldProv: string | null | undefined,
+): boolean {
+  return provenanceStrength(newProv) >= provenanceStrength(oldProv);
+}
