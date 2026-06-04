@@ -2152,6 +2152,41 @@ export default function PartnerChat() {
   React.useEffect(() => {
     if (showActionPanel) setActionPanelSeen(parsedArtifacts.length);
   }, [showActionPanel, parsedArtifacts.length]);
+  // Auto-play Luca voice: when a NEW generate_speech audio arrives, play it once.
+  // Baselines per room so chat history never auto-plays; only genuinely new audio does.
+  const audioAutoplayedRef = useRef<Set<string>>(new Set<string>());
+  const audioInitRoomRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!messages || messages.length === 0) return;
+    let target: { id: string; url: string } | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m: any = messages[i];
+      if (isUserFn(m)) continue;
+      const c = String(m.content || '');
+      const k = c.indexOf('[Audio generated');
+      if (k < 0) continue;
+      const close = c.indexOf(']', k);
+      if (close < 0) continue;
+      let rest = c.slice(close + 1).trim();
+      if (rest.indexOf('URL:') === 0) rest = rest.slice(4).trim();
+      const url = rest.split(' ')[0].split(String.fromCharCode(10))[0].split(String.fromCharCode(13))[0];
+      if (url) { target = { id: String(m.id), url }; break; }
+    }
+    if (audioInitRoomRef.current !== (partnerRoomId || null)) {
+      audioInitRoomRef.current = partnerRoomId || null;
+      if (target) audioAutoplayedRef.current.add(target.id);
+      return;
+    }
+    if (!target) return;
+    if (audioAutoplayedRef.current.has(target.id)) return;
+    audioAutoplayedRef.current.add(target.id);
+    try {
+      unlockAudio();
+      const a = new Audio(target.url);
+      a.play().catch(() => {});
+    } catch {}
+  }, [messages, isUserFn, partnerRoomId]);
+
 
   // ── WebSocket for real-time updates ───────────────────────────
   // Phase 6 PR-C — use shared `useKiokuWebSocket()` instead of opening our
