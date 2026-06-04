@@ -16,6 +16,16 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes("node_modules")) {
+            if (/[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react-vendor";
+            if (id.includes("@tanstack")) return "query-vendor";
+          }
+        },
+      },
+    },
   },
   server: {
     fs: {
