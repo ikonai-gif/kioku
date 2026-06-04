@@ -107,3 +107,18 @@ export function __setOpenAIClientForTest(client: OpenAI | null): void {
   }
   _client = client;
 }
+
+// Dedicated image client - pinned to the real OpenAI API.
+// The shared client above honours OPENAI_BASE_URL, which in this deployment
+// routes chat through OpenRouter; OpenRouter does not serve dall-e-3 image
+// generation. Pin image calls to api.openai.com with the real OPENAI_API_KEY
+// so generate_image always reaches DALL-E regardless of chat routing.
+let _imageClient: OpenAI | null = null;
+export function getOpenAIImageClient(): OpenAI {
+  if (_imageClient) return _imageClient;
+  _imageClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: "https://api.openai.com/v1" });
+  return _imageClient;
+}
+export async function withOpenAIImageBreaker<T>(fn: (client: OpenAI) => Promise<T>): Promise<T> {
+  return openaiBreaker.exec(() => fn(getOpenAIImageClient()));
+}

@@ -26,7 +26,7 @@ import { registerLucaApprovalRoutes } from "./luca-approval-routes";
 import { registerMeetingRoutes } from "./routes/meetings";
 import { requireFlag } from "./feature-flags";
 import { PRIVATE_MODE, isEmailAllowed, getPrivateModeStatus } from "./lib/private-mode";
-import { withOpenAIBreaker } from "./lib/openai-client";
+import { withOpenAIBreaker, getOpenAIImageClient } from "./lib/openai-client";
 import { send503, isCircuitOpenError } from "./lib/http-errors";
 import {
   buildGoogleOAuthUrl, buildDropboxOAuthUrl,
@@ -4676,8 +4676,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ? `${prompt}${style ? `. Style: ${style}` : ''}. ${aestheticContext.trim()}`
       : `${prompt}${style ? `. Style: ${style}` : ''}`;
 
-    const OpenAI = (await import("openai")).default;
-    const openai = new OpenAI();
+    const openai = getOpenAIImageClient();
     const response = await openai.images.generate({
       model: "dall-e-3",
       prompt: enhancedPrompt.slice(0, 4000),

@@ -16,7 +16,7 @@ import {
   toWorkspaceMediaRow,
 } from "./lib/luca-tools/workspace-save-media";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
-import { withOpenAIBreaker } from "./lib/openai-client";
+import { withOpenAIBreaker, withOpenAIImageBreaker } from "./lib/openai-client";
 import { isCircuitOpenError } from "./lib/http-errors";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
 import { withAnthropicBreaker } from "./lib/anthropic-client";
@@ -2083,7 +2083,7 @@ export async function executePartnerTool(
 
         let response;
         try {
-          response = await withOpenAIBreaker((oaiClient) => oaiClient.images.generate({
+          response = await withOpenAIImageBreaker((oaiClient) => oaiClient.images.generate({
             model: "dall-e-3",
             prompt: enhancedPrompt.slice(0, 4000),
             n: 1,
