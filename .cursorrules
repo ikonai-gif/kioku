@@ -1,0 +1,29 @@
+# KIOKU - Cursor project rules
+
+KIOKU (usekioku.com) - trust-governed multi-agent memory app.
+
+## Stack
+- Frontend: React 18 + TypeScript + Vite 7 + Tailwind 3 + wouter (HASH routing) + framer-motion
+- Backend: Express + Drizzle ORM + PostgreSQL (Neon in prod)
+- Deploy: Railway, auto-deploys on merge to main. Prod DB: Neon.
+
+## Hard rules - never violate
+- NEVER merge to main or deploy. Only the owner (Kote / BOSS) merges and deploys. Prepare branches + PRs only.
+- Confirm the goal in writing before building. Do not invent scope.
+- Never run: git add . - stage only the specific files you changed. Never commit package-lock.json unless intended.
+- Before any commit run NODE_ENV=development npm run check (tsc) and npm run build - both must be green.
+
+## Git workflow
+- Branch from origin/main: git checkout -b <type>/<slug> origin/main
+- Edit, stage specific files, commit, git push -u origin <branch>, open PR with --base main.
+- After PR, git checkout main to leave the repo clean.
+
+## Do not break prod
+- Routes use React.lazy under Suspense with a RouteErrorBoundary. Keep the boundary - never let one route error blank the whole app.
+- Measure performance impact before merging perf changes; put the number in the PR body.
+
+## Current goal
+- Redesign the actual app (rooms, the Luca chat, navigation) to be clearer and more intuitive for the user - NOT the marketing landing.
+
+## Style
+- Concise, truth-first. Surface risks. Own mistakes. No flattery.
