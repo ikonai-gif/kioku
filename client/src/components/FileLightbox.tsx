@@ -177,8 +177,8 @@ const MAX_TEXT_BYTES = 1 * 1024 * 1024; // 1MB \u2014 protect main thread
 
 const SyntaxHighlighter: any = lazy(async () => {
   // Dynamic import \u2014 keeps highlighter + theme off the main bundle.
-  const [{ Light }, themeMod] = await Promise.all([
-    import("react-syntax-highlighter"),
+  const [{ default: Light }, themeMod] = await Promise.all([
+    import("react-syntax-highlighter/dist/esm/light"),
     import("react-syntax-highlighter/dist/esm/styles/hljs/atom-one-dark"),
   ]);
   // Register only the languages we actually use, to keep the chunk small.
