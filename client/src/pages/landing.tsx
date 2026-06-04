@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, lazy, Suspense } from "react";
 import { Brain, Wrench, CalendarClock, Mic, Shield, Globe } from "lucide-react";
 import DemoChat from "@/components/DemoChat";
 import logoSrc from "@assets/kioku-logo.jpg";
+
+const MemoryGraph = lazy(() => import("@/components/MemoryGraph"));
 
 const FEATURES = [
   { icon: Brain, title: "Volumetric Memory", desc: "Remembers everything across conversations" },
@@ -16,6 +18,14 @@ function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 }
 
+// Apple-glass specular highlight that follows the cursor.
+function onGlassMove(e: React.MouseEvent<HTMLElement>) {
+  const t = e.currentTarget;
+  const r = t.getBoundingClientRect();
+  t.style.setProperty("--mx", `${((e.clientX - r.left) / r.width) * 100}%`);
+  t.style.setProperty("--my", `${((e.clientY - r.top) / r.height) * 100}%`);
+}
+
 export default function LandingPage() {
   const observerRef = useRef<IntersectionObserver | null>(null);
 
@@ -23,9 +33,7 @@ export default function LandingPage() {
     observerRef.current = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("landing-visible");
-          }
+          if (entry.isIntersecting) entry.target.classList.add("landing-visible");
         });
       },
       { threshold: 0.1 },
@@ -38,7 +46,7 @@ export default function LandingPage() {
 
   return (
     <div className="landing-page">
-      {/* ── Nav ──────────────────────────────────────────── */}
+      {/* ── Nav ─────────────────────────────────────────── */}
       <nav className="landing-nav">
         <div className="landing-nav-inner">
           <div className="landing-nav-brand">
@@ -53,40 +61,40 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* ── Hero ──────────────────────────────────────────── */}
+      {/* ── Hero: copy + live memory graph ──────────────── */}
       <section className="landing-hero">
-        <div className="landing-hero-inner landing-fade-in">
-          <img
-            src={logoSrc}
-            alt="KIOKU"
-            width={80}
-            height={80}
-            className="landing-hero-logo gold-glow-strong"
-            style={{ borderRadius: 16, objectFit: "cover" }}
-          />
-          <h1 className="landing-hero-title">KIOKU™</h1>
-          <p className="landing-hero-tagline">Your AI Companion That Actually Remembers</p>
-          <p className="landing-hero-sub">
-            Not just another chatbot. Luca is an AI agent with persistent memory,
-            24+ tools, and a personality that grows with you.
-          </p>
-          <div className="landing-hero-btns">
-            <button onClick={() => scrollTo("demo")} className="landing-btn-primary">
-              Try Luca →
-            </button>
-            <a href="#/login" className="landing-btn-secondary">
-              Sign Up Free
-            </a>
+        <div className="landing-hero-grid landing-fade-in">
+          <div className="landing-hero-copy">
+            <span className="landing-eyebrow">Persistent · Bi-temporal · Memory</span>
+            <div className="landing-nav-brand" style={{ justifyContent: "flex-start", marginBottom: "0.75rem" }}>
+              <img src={logoSrc} alt="KIOKU" width={40} height={40} className="gold-glow-strong" style={{ borderRadius: 10, objectFit: "cover" }} />
+              <span className="landing-nav-logo" style={{ fontSize: "1.25rem" }}>KIOKU™</span>
+            </div>
+            <h1 className="landing-hero-title">Memory that outlives the conversation.</h1>
+            <p className="landing-hero-sub">
+              KIOKU gives AI agents persistent, bi-temporal memory — every fact linked by
+              cause and effect, remembered across every conversation. This is a live demo
+              graph; hover a node to trace its links, click to see how it lived over time.
+            </p>
+            <div className="landing-hero-btns">
+              <button onClick={() => scrollTo("demo")} className="landing-btn-primary">Try Luca →</button>
+              <a href="#/login" className="landing-btn-secondary glass" onMouseMove={onGlassMove}>Sign Up Free</a>
+            </div>
+          </div>
+          <div className="landing-hero-graph glass" onMouseMove={onGlassMove}>
+            <Suspense fallback={<div className="memory-graph-skeleton">building memory graph…</div>}>
+              <MemoryGraph variant="hero" />
+            </Suspense>
           </div>
         </div>
       </section>
 
-      {/* ── Features ──────────────────────────────────────── */}
+      {/* ── Features ────────────────────────────────────── */}
       <section id="features" className="landing-features landing-fade-in">
         <h2 className="landing-section-title">What Makes Luca Different</h2>
         <div className="landing-features-grid">
           {FEATURES.map((f) => (
-            <div key={f.title} className="landing-feature-card">
+            <div key={f.title} className="landing-feature-card glass" onMouseMove={onGlassMove}>
               <f.icon className="landing-feature-icon" />
               <h3 className="landing-feature-title">{f.title}</h3>
               <p className="landing-feature-desc">{f.desc}</p>
@@ -95,7 +103,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── Live Demo ─────────────────────────────────────── */}
+      {/* ── Live Demo ───────────────────────────────────── */}
       <section id="demo" className="landing-demo landing-fade-in">
         <h2 className="landing-section-title">Talk to Luca Right Now</h2>
         <p className="landing-demo-sub">No sign-up required. Ask anything about KIOKU™.</p>
@@ -104,7 +112,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── CTA ───────────────────────────────────────────── */}
+      {/* ── CTA ─────────────────────────────────────────── */}
       <section className="landing-final-cta landing-fade-in">
         <h2 className="landing-cta-title">Ready for the Full Experience?</h2>
         <p className="landing-cta-sub">
@@ -115,7 +123,7 @@ export default function LandingPage() {
         </a>
       </section>
 
-      {/* ── Footer ─────────────────────────────────────────── */}
+      {/* ── Footer ──────────────────────────────────────── */}
       <footer className="landing-footer">
         <div className="landing-footer-inner">
           <span>&copy; 2026 IKONBAI™</span>
