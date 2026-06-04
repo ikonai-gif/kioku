@@ -11,6 +11,8 @@ import OnboardingWizard from "./components/onboarding-wizard";
 
 import LandingPage from "./pages/landing";
 import NotFound from "./pages/not-found";
+import AppLayout from "./components/layout";
+import RouteErrorBoundary from "./components/RouteErrorBoundary";
 
 // Route-level code splitting. Only the public landing (first paint) and the
 // trivial 404 load eagerly. The whole authenticated app and secondary public
@@ -39,7 +41,6 @@ const KnowledgePage = lazy(() => import("./pages/knowledge"));
 const FilesPage = lazy(() => import("./pages/files"));
 const ConnectorsPage = lazy(() => import("./pages/connectors"));
 const VerifyPage = lazy(() => import("./pages/verify"));
-const AppLayout = lazy(() => import("./components/layout"));
 
 // ── Page titles ──────────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
@@ -234,6 +235,7 @@ export default function App() {
         <AuthContext.Provider value={{ user, sessionToken, login, logout }}>
           <Router hook={useHashLocation}>
             <TitleManager />
+            <RouteErrorBoundary>
             <Suspense
               fallback={
                 <div className="flex h-screen items-center justify-center bg-background">
@@ -298,6 +300,7 @@ export default function App() {
               </>
             )}
             </Suspense>
+            </RouteErrorBoundary>
             <CookieBanner />
           </Router>
           <Toaster />
