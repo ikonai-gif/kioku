@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
@@ -10,8 +10,6 @@ import { useKiokuWebSocket, type KiokuWsMessage } from "@/hooks/useKiokuWebSocke
 import { useAuth } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { CapabilityCards } from "@/components/CapabilityCards";
 import { TaskProgress, type ToolStep } from "@/components/TaskProgress";
 import { ActionPanel } from "@/components/ActionPanel";
@@ -616,11 +614,19 @@ function renderMessageContent(content: string): React.ReactNode {
   return renderMarkdownContent(content);
 }
 
-/** Render markdown content with ReactMarkdown + remark-gfm */
+// react-markdown + remark-gfm pull a large unified/micromark stack (~400KB
+// rendered). Lazy-load so it is not bundled into the partner-chat page chunk;
+// messages show as plain text until the chunk arrives.
+const LazyMarkdown = lazy(() => import('@/components/LazyMarkdown'));
+
+/** Render markdown content with react-markdown + remark-gfm (lazy-loaded) */
 function renderMarkdownContent(content: string): React.ReactNode {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+    <Suspense
+      fallback={<span className="whitespace-pre-wrap text-sm leading-relaxed text-white/80">{content}</span>}
+    >
+    <LazyMarkdown
+      content={content}
       components={{
         // Tables
         table: ({ children }) => (
@@ -745,9 +751,8 @@ function renderMarkdownContent(content: string): React.ReactNode {
           );
         },
       }}
-    >
-      {content}
-    </ReactMarkdown>
+    />
+    </Suspense>
   );
 }
 
