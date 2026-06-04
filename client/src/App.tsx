@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, lazy, Suspense } from "react";
 import { Router, Switch, Route, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
@@ -9,32 +9,37 @@ import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
 import OnboardingWizard from "./components/onboarding-wizard";
 
-import LoginPage from "./pages/login";
-import DashboardPage from "./pages/dashboard";
-import AgentsPage from "./pages/agents";
-import MemoryPage from "./pages/memory";
-import FlowsPage from "./pages/flows";
-import RoomsPage from "./pages/rooms";
-import RoomDetailPage from "./pages/room-detail";
-import LogsPage from "./pages/logs";
-import BillingPage from "./pages/billing";
-import PricingPage from "./pages/pricing";
-import DocsPage from "./pages/docs";
-import PrivacyPage from "./pages/privacy";
-import PrivacyDashboardPage from "./pages/privacy-dashboard";
-import TermsPage from "./pages/terms";
-import CookiesPage from "./pages/cookies";
-import BossBoardPage from "./pages/boss-board";
-import LucaBoardPage from "./pages/luca-board";
-import PartnerChatPage from "./pages/partner-chat";
-import GalleryPage from "./pages/gallery";
-import KnowledgePage from "./pages/knowledge";
-import FilesPage from "./pages/files";
-import ConnectorsPage from "./pages/connectors";
-import AppLayout from "./components/layout";
-import NotFound from "./pages/not-found";
-import VerifyPage from "./pages/verify";
 import LandingPage from "./pages/landing";
+import NotFound from "./pages/not-found";
+
+// Route-level code splitting. Only the public landing (first paint) and the
+// trivial 404 load eagerly. The whole authenticated app and secondary public
+// pages are lazy, so a visitor to the marketing landing never downloads the
+// entire app bundle.
+const LoginPage = lazy(() => import("./pages/login"));
+const DashboardPage = lazy(() => import("./pages/dashboard"));
+const AgentsPage = lazy(() => import("./pages/agents"));
+const MemoryPage = lazy(() => import("./pages/memory"));
+const FlowsPage = lazy(() => import("./pages/flows"));
+const RoomsPage = lazy(() => import("./pages/rooms"));
+const RoomDetailPage = lazy(() => import("./pages/room-detail"));
+const LogsPage = lazy(() => import("./pages/logs"));
+const BillingPage = lazy(() => import("./pages/billing"));
+const PricingPage = lazy(() => import("./pages/pricing"));
+const DocsPage = lazy(() => import("./pages/docs"));
+const PrivacyPage = lazy(() => import("./pages/privacy"));
+const PrivacyDashboardPage = lazy(() => import("./pages/privacy-dashboard"));
+const TermsPage = lazy(() => import("./pages/terms"));
+const CookiesPage = lazy(() => import("./pages/cookies"));
+const BossBoardPage = lazy(() => import("./pages/boss-board"));
+const LucaBoardPage = lazy(() => import("./pages/luca-board"));
+const PartnerChatPage = lazy(() => import("./pages/partner-chat"));
+const GalleryPage = lazy(() => import("./pages/gallery"));
+const KnowledgePage = lazy(() => import("./pages/knowledge"));
+const FilesPage = lazy(() => import("./pages/files"));
+const ConnectorsPage = lazy(() => import("./pages/connectors"));
+const VerifyPage = lazy(() => import("./pages/verify"));
+const AppLayout = lazy(() => import("./components/layout"));
 
 // ── Page titles ──────────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
@@ -229,6 +234,13 @@ export default function App() {
         <AuthContext.Provider value={{ user, sessionToken, login, logout }}>
           <Router hook={useHashLocation}>
             <TitleManager />
+            <Suspense
+              fallback={
+                <div className="flex h-screen items-center justify-center bg-background">
+                  <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                </div>
+              }
+            >
             {restoring ? (
               // Session restore in progress — show spinner to avoid flash of login page
               <div className="flex h-screen items-center justify-center bg-background">
@@ -285,6 +297,7 @@ export default function App() {
                 </Switch>
               </>
             )}
+            </Suspense>
             <CookieBanner />
           </Router>
           <Toaster />

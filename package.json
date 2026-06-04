@@ -19,6 +19,7 @@
     "@browserbasehq/stagehand": "^3.3.0",
     "@composio/core": "^0.6.10",
     "@e2b/code-interpreter": "^2.4.0",
+    "@fontsource/sora": "^5.2.8",
     "@google/genai": "^1.50.1",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
