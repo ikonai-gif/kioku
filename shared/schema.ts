@@ -96,6 +96,10 @@ export const memories = pgTable("memories", {
   provenance:       text("provenance").notNull().default("luca_inferred"),     // user_told | tool_observed | luca_inferred
   verified:         boolean("verified").notNull().default(false),
   lastVerifiedAt:   bigint("last_verified_at", { mode: "number" }),            // epoch ms when last user-confirmed; null = never
+  // Phase 0 (room-decision honesty): links a room_decision memory back to the
+  // meeting that produced it (= meetings.id). Participants derive from
+  // meeting_participants by this id. Nullable; only set for provenance='room_decision'.
+  decisionRef:      uuid("decision_ref"),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
