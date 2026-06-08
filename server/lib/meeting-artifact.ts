@@ -279,12 +279,17 @@ export async function endMeetingAndMaybeCommitMemory(
 
   // Phase 0 — honesty layer: record the meeting outcome as a first-class ROOM
   // DECISION (provenance='room_decision', NOT luca_inferred; verified=false until a
-  // human elevates). Written ONCE under the creator's userId, with decision_ref=
-  // meetingId (participants derive from meeting_participants). Additive + non-fatal,
-  // mirroring the opt-in summary commits above — this is the first writer that fills
-  // the honesty layer with a non-inferred fact. Cross-owner fan-out is Phase 1.
+  // human elevates). PRIVACY INVARIANT: meeting-derived content enters a user's
+  // memory ONLY with that user's opt-in. So we write this under the creator ONLY
+  // when the creator is themselves an opted-in participant (carry_over_memory=true).
+  // Creator did not opt in → no write, exactly like the participant-summary path —
+  // the "zero by default" guarantee is untouched. Requires >=2 participants (a real
+  // multi-agent decision). One row, under the creator. Additive + non-fatal.
+  // A dedicated room-owner consent path (fill regardless of carry-over) + cross-owner
+  // fan-out are Phase 1.
+  const creatorOptedIn = optIn.some((p) => p.ownerUserId === creatorUserId);
   let roomDecisionWritten = false;
-  if (participants.length >= 2) {
+  if (participants.length >= 2 && creatorOptedIn) {
     try {
       await recordMeetingDecision(
         {

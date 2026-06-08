@@ -77,10 +77,10 @@ class ArtifactFakePg {
       return { rows: m ? [{ creator_user_id: m.creator_user_id, state: m.state }] : [], rowCount: m ? 1 : 0 };
     }
 
-    // end phase-1: SELECT id, state FROM meetings WHERE id=$1 FOR UPDATE
-    if (/SELECT\s+id,\s*state\s+FROM\s+meetings\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE/i.test(s)) {
+    // end phase-1: SELECT id, state, creator_user_id FROM meetings WHERE id=$1 FOR UPDATE
+    if (/SELECT\s+id,\s*state,\s*creator_user_id\s+FROM\s+meetings\s+WHERE\s+id\s*=\s*\$1\s+FOR\s+UPDATE/i.test(s)) {
       const m = this.meetings.get(params![0]);
-      return { rows: m ? [{ id: m.id, state: m.state }] : [], rowCount: m ? 1 : 0 };
+      return { rows: m ? [{ id: m.id, state: m.state, creator_user_id: m.creator_user_id }] : [], rowCount: m ? 1 : 0 };
     }
 
     // upsertArtifact: SELECT 1 FROM meetings WHERE id=$1 FOR UPDATE (lock)
@@ -384,7 +384,7 @@ describe("POST /api/meetings/:id/end", () => {
     expect(fake.meetings.get(mid)!.state).toBe("completed");
   });
 
-  it("OPT-IN: exactly 1 memory per opt-in participant, namespace=_meeting_summary_{id}, belongs to that user", async () => {
+  it("OPT-IN: 1 summary per opt-in participant + 1 room_decision under the opted-in creator", async () => {
     const { app } = makeApp(1);
     const mid = seedMeeting({
       creator: 1,
@@ -398,14 +398,23 @@ describe("POST /api/meetings/:id/end", () => {
     expect(res.status).toBe(200);
     expect(res.body.memories_written).toBe(1);
     expect(res.body.participants_opted_in).toBe(1);
-    expect(holder.createdMemories).toHaveLength(1);
-    const mem = holder.createdMemories[0];
+    // Participant carry-over summary: still EXACTLY ONE, under the opt-in user only.
+    const summaries = holder.createdMemories.filter((m) => m.namespace === meetingSummaryNamespace(mid));
+    expect(summaries).toHaveLength(1);
+    const mem = summaries[0];
     expect(mem.userId).toBe(1);                             // opt-in user only
     expect(mem.agentId).toBe(100);
-    expect(mem.namespace).toBe(meetingSummaryNamespace(mid));
     expect(mem.importance).toBe(0.4);
     expect(mem.type).toBe("episodic");
     expect(mem.content).toMatch(/summary:/);                 // our injected summarizer
+    // Phase 0 honesty layer: ONE room_decision under the (opted-in) creator — distinct
+    // namespace + provenance, unverified until a human (BOSS) elevates it.
+    const decisions = holder.createdMemories.filter((m) => m.provenance === "room_decision");
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].userId).toBe(1);
+    expect(decisions[0].namespace).toBe("room_decisions");
+    expect(decisions[0].verified).toBe(false);
+    expect(decisions[0].decisionRef).toBe(mid);
   });
 
   it("summarizer failure → fallback memory still written for opt-in", async () => {
