@@ -1749,7 +1749,7 @@ export class Storage implements IStorage {
           // huge luca_inferred floor (provenanceWeight=0.3). Additive lets
           // a high-similarity luca_inferred memory still win against a
           // low-similarity user_told one when retrieval just needs context.
-          const provWeight = provenanceWeight(r.provenance, r.namespace);
+          const provWeight = provenanceWeight(r.provenance, r.namespace, r.verified);
           const combinedScore =
             (r.similarity ?? 0) * 0.65 +
             (r.importance ?? 0.5) * 0.25 +
@@ -1916,6 +1916,20 @@ export class Storage implements IStorage {
       WHERE id = $2 AND user_id = $3`,
       [now, id, userId]
     );
+  }
+
+  // Phase 0.5 — honesty layer: a human (the owner) elevates a memory to verified=true.
+  // This is the legitimate verify path, distinct from Luca's remember tool (which
+  // cannot self-set verified on its own inferences). Scoped to the owner's own row
+  // by (id, userId). Returns the updated Memory, or undefined if nothing matched.
+  async setMemoryVerified(id: number, userId: number): Promise<Memory | undefined> {
+    const now = Date.now();
+    const rows = await db
+      .update(memories)
+      .set({ verified: true, lastVerifiedAt: now })
+      .where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`)
+      .returning();
+    return rows[0];
   }
 
   async deleteMemory(id: number, userId: number): Promise<boolean> {

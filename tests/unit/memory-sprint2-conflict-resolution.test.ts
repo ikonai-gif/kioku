@@ -306,7 +306,7 @@ describe("Sprint 2 / Module C — searchMemories provenance blend", () => {
   });
 
   it("provenanceWeight is invoked with both provenance AND namespace", () => {
-    expect(storageSrc).toMatch(/provenanceWeight\(\s*r\.provenance\s*,\s*r\.namespace\s*\)/);
+    expect(storageSrc).toMatch(/provenanceWeight\(\s*r\.provenance\s*,\s*r\.namespace\s*(?:,\s*r\.verified\s*)?\)/);
   });
 });
 

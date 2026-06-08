@@ -62,8 +62,17 @@ export function memoryDomain(namespace: string | null | undefined): MemoryDomain
  */
 export function provenanceWeight(
   provenance: string | null | undefined,
-  namespace: string | null | undefined
+  namespace: string | null | undefined,
+  verified?: boolean | null,
 ): number {
+  // Honesty layer (Phase 0.5): a human-verified memory is the highest-trust signal
+  // regardless of origin — once a person confirms a fact it should win retrieval.
+  // This is the payoff of the verify loop (POST /api/memories/:id/verify).
+  if (verified) return 1.0;
+  // A room decision is a collective, system-written fact (NOT a Luca inference):
+  // unverified it ranks near tool_observed, well above the luca_inferred floor, so
+  // honest decisions surface even before a human elevates them.
+  if (provenance === "room_decision") return 0.7;
   const domain = memoryDomain(namespace);
   if (domain === "behavioral") {
     if (provenance === "tool_observed") return 1.0;
