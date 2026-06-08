@@ -8031,7 +8031,12 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // point of the Telegram inbound webhook is bidirectional chat. We rely
         // on sendTelegramMessage's fail-silent contract; never throw out of
         // the mirror because that would corrupt deliberation flow.
-        if (isPartnerChat && reply && reply.trim().length > 0) {
+        // Opt-in via LUCA_PARTNER_CHAT_MIRROR_ENABLED (default OFF). BOSS asked to
+        // stop unsolicited Telegram copies of partner-chat replies. Inbound Telegram
+        // is unaffected: it replies to the inbound chatId and still auth-allowlists
+        // on TELEGRAM_BOSS_CHAT_ID, both of which are untouched here.
+        const partnerChatMirrorEnabled = process.env.LUCA_PARTNER_CHAT_MIRROR_ENABLED === "true";
+        if (partnerChatMirrorEnabled && isPartnerChat && reply && reply.trim().length > 0) {
           const bossChatId = process.env.TELEGRAM_BOSS_CHAT_ID;
           if (bossChatId) {
             sendTelegramMessage({
