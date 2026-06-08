@@ -1762,6 +1762,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(stripEmbedding({ ...mem, currentConfidence }, includeEmbedding));
   }));
 
+  // ── Verify (honesty layer, Phase 0.5): owner elevates a memory to verified=true ──
+  // The legitimate human verify path — distinct from Luca's remember tool, which
+  // cannot self-verify its own inferences. After this, retrieval ranks the memory at
+  // top provenance weight (see provenanceWeight + searchMemories blend). Scoped to
+  // the caller's own memory by (id, userId).
+  app.post("/api/memories/:id/verify", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid memory id" });
+    const updated = await storage.setMemoryVerified(id, userId);
+    if (!updated) return res.status(404).json({ error: "Not found" });
+    res.json(stripEmbedding(updated, false));
+  }));
+
   app.delete("/api/memories/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
