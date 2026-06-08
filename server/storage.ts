@@ -835,6 +835,15 @@ export async function initDb() {
       WHERE interaction_count > 0
         AND trust_level < LEAST(1.0, interaction_count * 0.01);`
   );
+
+  // Phase 0 (honesty layer): decision_ref links a room_decision memory to the meeting
+  // that produced it. Idempotent ALTER — existing prod gains the column on deploy;
+  // fresh DBs get it right after the baseline `memories` CREATE above. Required before
+  // recordMeetingDecision can persist a row (it writes decision_ref).
+  await runMigration(
+    'v2026_06_08_001_memory_decision_ref',
+    'ALTER TABLE memories ADD COLUMN IF NOT EXISTS decision_ref uuid;'
+  );
 }
 
 // ── Tool activity log (feature #2: history of Luca's steps) ─────────────────────
