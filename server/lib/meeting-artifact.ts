@@ -37,6 +37,7 @@
 import type { PoolClient } from "pg";
 import { pool, storage } from "../storage";
 import logger from "../logger";
+import { recordMeetingDecision } from "./meeting-decision-memory";
 
 /** Reserved namespace prefix for meeting-originated memories. */
 export const MEETING_SUMMARY_NAMESPACE_PREFIX = "_meeting_summary_";
@@ -172,6 +173,7 @@ export async function endMeetingAndMaybeCommitMemory(
   const client = await pool.connect();
 
   let previousState: string;
+  let creatorUserId: number;
   let participants: Array<{
     id: string;
     agentId: number;
@@ -184,7 +186,7 @@ export async function endMeetingAndMaybeCommitMemory(
     await client.query("BEGIN");
 
     const { rows: mRows } = await client.query(
-      `SELECT id, state FROM meetings WHERE id = $1 FOR UPDATE`,
+      `SELECT id, state, creator_user_id FROM meetings WHERE id = $1 FOR UPDATE`,
       [meetingId],
     );
     if (mRows.length === 0) {
@@ -192,6 +194,7 @@ export async function endMeetingAndMaybeCommitMemory(
       throw new Error("meeting_not_found");
     }
     previousState = String(mRows[0].state);
+    creatorUserId = Number(mRows[0].creator_user_id);
     if (previousState === "completed" || previousState === "aborted") {
       await client.query("ROLLBACK");
       throw new MeetingAlreadyTerminalError(previousState);
@@ -274,6 +277,38 @@ export async function endMeetingAndMaybeCommitMemory(
     }
   }
 
+  // Phase 0 — honesty layer: record the meeting outcome as a first-class ROOM
+  // DECISION (provenance='room_decision', NOT luca_inferred; verified=false until a
+  // human elevates). PRIVACY INVARIANT: meeting-derived content enters a user's
+  // memory ONLY with that user's opt-in. So we write this under the creator ONLY
+  // when the creator is themselves an opted-in participant (carry_over_memory=true).
+  // Creator did not opt in → no write, exactly like the participant-summary path —
+  // the "zero by default" guarantee is untouched. Requires >=2 participants (a real
+  // multi-agent decision). One row, under the creator. Additive + non-fatal.
+  // A dedicated room-owner consent path (fill regardless of carry-over) + cross-owner
+  // fan-out are Phase 1.
+  const creatorOptedIn = optIn.some((p) => p.ownerUserId === creatorUserId);
+  let roomDecisionWritten = false;
+  if (participants.length >= 2 && creatorOptedIn) {
+    try {
+      await recordMeetingDecision(
+        {
+          meetingId,
+          creatorUserId,
+          content: summary,
+          participants: participants.map((p) => ({ agentId: p.agentId, ownerUserId: p.ownerUserId })),
+        },
+        (data) => storage.createMemory(data),
+      );
+      roomDecisionWritten = true;
+    } catch (err) {
+      logger.error(
+        { component: "meeting-artifact", meetingId, err: String(err) },
+        "[meeting-artifact] room_decision memory write failed",
+      );
+    }
+  }
+
   logger.info(
     {
       component: "meeting-artifact",
@@ -281,6 +316,7 @@ export async function endMeetingAndMaybeCommitMemory(
       previousState,
       participantsOptedIn: optIn.length,
       memoriesWritten: written,
+      roomDecisionWritten,
     },
     "[meeting-artifact] meeting ended",
   );
