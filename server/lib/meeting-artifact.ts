@@ -37,6 +37,7 @@
 import type { PoolClient } from "pg";
 import { pool, storage } from "../storage";
 import logger from "../logger";
+import { recordMeetingDecision } from "./meeting-decision-memory";
 
 /** Reserved namespace prefix for meeting-originated memories. */
 export const MEETING_SUMMARY_NAMESPACE_PREFIX = "_meeting_summary_";
@@ -172,6 +173,7 @@ export async function endMeetingAndMaybeCommitMemory(
   const client = await pool.connect();
 
   let previousState: string;
+  let creatorUserId: number;
   let participants: Array<{
     id: string;
     agentId: number;
@@ -184,7 +186,7 @@ export async function endMeetingAndMaybeCommitMemory(
     await client.query("BEGIN");
 
     const { rows: mRows } = await client.query(
-      `SELECT id, state FROM meetings WHERE id = $1 FOR UPDATE`,
+      `SELECT id, state, creator_user_id FROM meetings WHERE id = $1 FOR UPDATE`,
       [meetingId],
     );
     if (mRows.length === 0) {
@@ -192,6 +194,7 @@ export async function endMeetingAndMaybeCommitMemory(
       throw new Error("meeting_not_found");
     }
     previousState = String(mRows[0].state);
+    creatorUserId = Number(mRows[0].creator_user_id);
     if (previousState === "completed" || previousState === "aborted") {
       await client.query("ROLLBACK");
       throw new MeetingAlreadyTerminalError(previousState);
@@ -274,6 +277,33 @@ export async function endMeetingAndMaybeCommitMemory(
     }
   }
 
+  // Phase 0 — honesty layer: record the meeting outcome as a first-class ROOM
+  // DECISION (provenance='room_decision', NOT luca_inferred; verified=false until a
+  // human elevates). Written ONCE under the creator's userId, with decision_ref=
+  // meetingId (participants derive from meeting_participants). Additive + non-fatal,
+  // mirroring the opt-in summary commits above — this is the first writer that fills
+  // the honesty layer with a non-inferred fact. Cross-owner fan-out is Phase 1.
+  let roomDecisionWritten = false;
+  if (participants.length >= 2) {
+    try {
+      await recordMeetingDecision(
+        {
+          meetingId,
+          creatorUserId,
+          content: summary,
+          participants: participants.map((p) => ({ agentId: p.agentId, ownerUserId: p.ownerUserId })),
+        },
+        (data) => storage.createMemory(data),
+      );
+      roomDecisionWritten = true;
+    } catch (err) {
+      logger.error(
+        { component: "meeting-artifact", meetingId, err: String(err) },
+        "[meeting-artifact] room_decision memory write failed",
+      );
+    }
+  }
+
   logger.info(
     {
       component: "meeting-artifact",
@@ -281,6 +311,7 @@ export async function endMeetingAndMaybeCommitMemory(
       previousState,
       participantsOptedIn: optIn.length,
       memoriesWritten: written,
+      roomDecisionWritten,
     },
     "[meeting-artifact] meeting ended",
   );
