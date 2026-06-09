@@ -1777,6 +1777,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(stripEmbedding(updated, false));
   }));
 
+  // Owner edits their OWN memory (content/importance). Per-user scoped (id,userId).
+  app.patch("/api/memories/:id", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const body = (req.body ?? {}) as { content?: unknown; importance?: unknown };
+    const patch: { content?: string; importance?: number } = {};
+    if (typeof body.content === "string" && body.content.trim()) patch.content = body.content.trim();
+    if (typeof body.importance === "number" && body.importance >= 0 && body.importance <= 1) patch.importance = body.importance;
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "Nothing to update (content or importance required)" });
+    const updated = await storage.updateMemory(Number(req.params.id), userId, patch);
+    if (!updated) return res.status(404).json({ error: "Not found" });
+    res.json(updated);
+  }));
+
   app.delete("/api/memories/:id", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });

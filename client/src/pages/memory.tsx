@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Trash2, Brain, Plus, Download, Clock, GitBranch, MapPin, Shield } from "lucide-react";
+import { Search, Trash2, Brain, Plus, Download, Clock, GitBranch, MapPin, Shield, Pencil } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -45,6 +45,8 @@ export default function MemoryPage() {
   const [debouncedQ, setDebouncedQ] = useState("");
   const [filterType, setFilterType] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editContent, setEditContent] = useState("");
   const [form, setForm] = useState({
     content: "",
     type: "semantic",
@@ -86,6 +88,16 @@ export default function MemoryPage() {
   const filteredMemories = filterType
     ? (memories as any[]).filter((m: any) => m.type === filterType)
     : memories;
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, content }: { id: number; content: string }) =>
+      apiRequest("PATCH", `/api/memories/${id}`, { content }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/memories"] });
+      setEditingId(null);
+      setEditContent("");
+    },
+  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiRequest("DELETE", `/api/memories/${id}`).then(r => r.json()),
@@ -249,7 +261,32 @@ export default function MemoryPage() {
                 style={{ background: `hsl(43 74% ${30 + Math.round(mem.importance * 40)}%)`, opacity: 0.5 + mem.importance * 0.5 }} />
 
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-foreground leading-relaxed">{mem.content}</p>
+                {editingId === mem.id ? (
+                  <div className="flex flex-col gap-2">
+                    <textarea
+                      className="w-full text-sm bg-background border border-card-border rounded-lg p-2 text-foreground leading-relaxed"
+                      rows={3}
+                      value={editContent}
+                      onChange={e => setEditContent(e.target.value)}
+                      data-testid={`textarea-edit-memory-${mem.id}`}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        className="text-[11px] px-2 py-1 rounded-md bg-primary text-primary-foreground disabled:opacity-50"
+                        disabled={!editContent.trim() || updateMutation.isPending}
+                        onClick={() => updateMutation.mutate({ id: mem.id, content: editContent.trim() })}
+                        data-testid={`button-save-memory-${mem.id}`}
+                      >Save</button>
+                      <button
+                        className="text-[11px] px-2 py-1 rounded-md bg-muted text-muted-foreground"
+                        onClick={() => { setEditingId(null); setEditContent(""); }}
+                        data-testid={`button-cancel-memory-${mem.id}`}
+                      >Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-foreground leading-relaxed">{mem.content}</p>
+                )}
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1", typeColors[mem.type] ?? "bg-muted text-muted-foreground")}>
                     {typeIcons[mem.type] ?? null}
@@ -298,6 +335,13 @@ export default function MemoryPage() {
                 </div>
               </div>
 
+              <button
+                className="opacity-30 group-hover:opacity-100 text-muted-foreground hover:text-primary transition-all p-1"
+                onClick={() => { setEditingId(mem.id); setEditContent(mem.content); }}
+                data-testid={`button-edit-memory-${mem.id}`}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
               <button
                 className="opacity-30 group-hover:opacity-100 text-muted-foreground hover:text-red-400 transition-all p-1"
                 onClick={() => deleteMutation.mutate(mem.id)}
