@@ -47,14 +47,19 @@ export function isAnthropicFailure(err: unknown): boolean {
 }
 
 // Single process-wide breaker. Claude is slower than GPT, so timeouts are
-// generous (60s vs OpenAI's 30s). Threshold of 3 is tighter: Claude calls
+// generous (120s vs OpenAI's 30s). Threshold of 3 is tighter: Claude calls
 // are fewer and more expensive, so we want to fail fast.
 const anthropicBreaker = new CircuitBreaker({
   name: "anthropic",
   failureThreshold: 3,
   cooldownMs: 30_000,
   successThreshold: 1,
-  timeoutMs: 60_000,
+  // Raised 60s->120s and made env-tunable. Luca's heavy tool-loop turns
+  // (large system prompt + many tools + long history) legitimately exceed
+  // 60s on claude-sonnet, tripping this breaker — the recurring
+  // "timed out after 60000ms" Luca outage. Override at runtime via
+  // ANTHROPIC_BREAKER_TIMEOUT_MS (ms) without a redeploy.
+  timeoutMs: Number(process.env.ANTHROPIC_BREAKER_TIMEOUT_MS) || 120_000,
   isFailure: isAnthropicFailure,
   onStateChange: (from, to, reason) => {
     const event =
