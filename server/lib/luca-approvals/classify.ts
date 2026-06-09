@@ -71,6 +71,8 @@ export type LucaAdmissibleTool =
   | "luca_notion_fetch"
   | "luca_notion_append"
   | "luca_notion_create"
+  // Google Calendar (read)
+  | "luca_calendar_list"
   // Media (15)
   | "generate_image"
   | "generate_video"
@@ -192,6 +194,9 @@ export const TOOL_WRITE_CLASS = {
   // on every write is the correct trade.
   luca_notion_append:   "LOW_STAKES_WRITE",
   luca_notion_create:   "LOW_STAKES_WRITE",
+
+  // ─── Google Calendar (read) — pure GET against primary calendar ───
+  luca_calendar_list:   "READ_ONLY",
 
   // ─── Media generation — LOW (costs some $$ but ephemeral URLs) ────
   // Returns data URI / signed URL to Luca. Kote sees output in chat.

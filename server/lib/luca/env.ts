@@ -105,6 +105,8 @@ export interface LucaEnv {
   LUCA_TOOL_NOTION_READ_ENABLED: boolean;
   /** Per-tool flag for the notion write family (append + create). */
   LUCA_TOOL_NOTION_WRITE_ENABLED: boolean;
+  /** Per-tool flag for the Google Calendar read tool (luca_calendar_list). */
+  LUCA_TOOL_CALENDAR_READ_ENABLED: boolean;
   /** Notion integration token (workspace-scoped). Without it the tools
    *  refuse at call time with `not_configured`. */
   NOTION_INTEGRATION_TOKEN: string | null;
@@ -204,6 +206,8 @@ export function readLucaEnv(): LucaEnv {
       process.env.LUCA_TOOL_NOTION_READ_ENABLED === "true",
     LUCA_TOOL_NOTION_WRITE_ENABLED:
       process.env.LUCA_TOOL_NOTION_WRITE_ENABLED === "true",
+    LUCA_TOOL_CALENDAR_READ_ENABLED:
+      process.env.LUCA_TOOL_CALENDAR_READ_ENABLED === "true",
     NOTION_INTEGRATION_TOKEN:
       (process.env.NOTION_INTEGRATION_TOKEN ?? "").trim() || null,
     NOTION_WORKSPACE_ID: (process.env.NOTION_WORKSPACE_ID ?? "").trim() || null,
@@ -283,7 +287,8 @@ export function isLucaToolEnabled(
     | "LUCA_TOOL_WRITE_MEMORY_ENABLED"
     | "LUCA_TOOL_READ_FILE_ENABLED"
     | "LUCA_TOOL_UPLOAD_FILE_ENABLED"
-    | "LUCA_TOOL_EMAIL_READ_ENABLED",
+    | "LUCA_TOOL_EMAIL_READ_ENABLED"
+    | "LUCA_TOOL_CALENDAR_READ_ENABLED",
 ): boolean {
   const env = readLucaEnv();
   return env.LUCA_V1A_ENABLED && env.LUCA_TOOLS_ENABLED && env[toolFlag];
