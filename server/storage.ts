@@ -1502,6 +1502,7 @@ export interface IStorage {
   getInjectionCandidates(userId: number, agentId: number): Promise<Memory[]>;
   searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
+  updateMemory(id: number, userId: number, patch: { content?: string; importance?: number }): Promise<Memory | undefined>;
   deleteMemory(id: number, userId: number): Promise<boolean>;
   purgeMemories(userId: number, scope: 'all' | 'agent', agentId?: string): Promise<number>;
   exportMemories(userId: number): Promise<any[]>;
@@ -1930,6 +1931,32 @@ export class Storage implements IStorage {
       .where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`)
       .returning();
     return rows[0];
+  }
+
+  // Owner edits their OWN memory (content/importance). Scoped by (id, userId) like
+  // deleteMemory/setMemoryVerified. On content change, recompute embedding_vec so
+  // semantic search stays correct (mirrors createMemory's embedding path).
+  async updateMemory(id: number, userId: number, patch: { content?: string; importance?: number }): Promise<Memory | undefined> {
+    const set: Record<string, unknown> = {};
+    if (typeof patch.content === "string") set.content = patch.content;
+    if (typeof patch.importance === "number") set.importance = patch.importance;
+    if (Object.keys(set).length === 0) return this.getMemory(id, userId);
+    const rows = await db
+      .update(memories)
+      .set(set)
+      .where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`)
+      .returning();
+    const updated = rows[0];
+    if (!updated) return undefined;
+    if (typeof patch.content === "string") {
+      try {
+        const vec = await embedText(patch.content);
+        if (vec) {
+          await pool.query('UPDATE memories SET embedding_vec = $1::vector WHERE id = $2', [`[${vec.join(',')}]`, id]);
+        }
+      } catch { /* text-search fallback if embedding fails */ }
+    }
+    return updated;
   }
 
   async deleteMemory(id: number, userId: number): Promise<boolean> {
