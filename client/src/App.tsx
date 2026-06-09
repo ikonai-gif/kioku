@@ -12,6 +12,7 @@ import OnboardingWizard from "./components/onboarding-wizard";
 import LandingPage from "./pages/landing";
 import NotFound from "./pages/not-found";
 import AppLayout from "./components/layout";
+import { resolveInitialTheme, themeToStored, THEME_KEY } from "@/lib/theme";
 import RouteErrorBoundary from "./components/RouteErrorBoundary";
 
 // Route-level code splitting. Only the public landing (first paint) and the
@@ -160,7 +161,13 @@ function OnboardingOverlay() {
 }
 
 export default function App() {
-  const [dark, setDark] = useState(true); // default dark
+  const [dark, setDark] = useState<boolean>(() => {
+    // Persisted theme (Brick PR-A, LUCA-053). Default dark.
+    try {
+      return resolveInitialTheme(localStorage.getItem(THEME_KEY));
+    } catch { /* localStorage unavailable */ }
+    return true;
+  });
   const [user, setUser] = useState<any | null>(null);
   const [sessionToken, setToken] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(true); // true while checking cookie session
@@ -168,6 +175,7 @@ export default function App() {
   // Apply dark class
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
+    try { localStorage.setItem(THEME_KEY, themeToStored(dark)); } catch { /* ignore */ }
   }, [dark]);
 
   // Register unauth handler
