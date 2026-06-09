@@ -1786,6 +1786,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (typeof body.content === "string" && body.content.trim()) patch.content = body.content.trim();
     if (typeof body.importance === "number" && body.importance >= 0 && body.importance <= 1) patch.importance = body.importance;
     if (Object.keys(patch).length === 0) return res.status(400).json({ error: "Nothing to update (content or importance required)" });
+    // Honesty-layer guard: verified=true memories are ground-truth and immutable to
+    // casual edit. Only the verify path (human owner, Phase 0.5) sets verified; once
+    // set, content/importance can't be silently rewritten. Owner may delete + recreate.
+    const existing = await storage.getMemory(Number(req.params.id), userId);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    if (existing.verified === true) {
+      return res.status(409).json({ error: "Memory is verified and immutable; delete and recreate to change it." });
+    }
     const updated = await storage.updateMemory(Number(req.params.id), userId, patch);
     if (!updated) return res.status(404).json({ error: "Not found" });
     res.json(updated);
