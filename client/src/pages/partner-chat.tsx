@@ -4,10 +4,10 @@ import { queryClient, apiRequest, API_BASE } from "@/lib/queryClient";
 import { getSessionToken } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert, Activity } from "lucide-react";
+import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Sparkles, PenLine, Palette, Copy, Download, FileText, Heart, ThumbsUp, Meh, ThumbsDown, Angry, ChevronDown, ChevronUp, Plus, Camera, Video, File, MoreVertical, Trash2, Search, Layers, Image as ImageIcon, Code, Package, Check, ExternalLink, MessageSquare, RefreshCw, Plug, Inbox, ShieldAlert, Activity, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useKiokuWebSocket, type KiokuWsMessage } from "@/hooks/useKiokuWebSocket";
-import { useAuth } from "../App";
+import { useAuth, useTheme } from "../App";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { CapabilityCards } from "@/components/CapabilityCards";
@@ -1976,6 +1976,7 @@ function ArtifactsSidebar({
 // ── Main Partner Chat Page ───────────────────────────────────────
 export default function PartnerChat() {
   const { user } = useAuth();
+  const { dark, toggle: toggleTheme } = useTheme();
   const { toast } = useToast();
   const [input, setInput] = useState("");
   const [partnerRoomId, setPartnerRoomId] = useState<number | null>(null);
@@ -3466,6 +3467,14 @@ export default function PartnerChat() {
                   >
                     <RefreshCw className="w-4 h-4 text-[#C9A340]" />
                     <span className="text-sm text-foreground">Refresh Summary</span>
+                  </button>
+                  <button
+                    onClick={() => { toggleTheme(); setHeaderMenuOpen(false); }}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    data-testid="button-toggle-theme"
+                  >
+                    {dark ? <Sun className="w-4 h-4 text-[#C9A340]" /> : <Moon className="w-4 h-4 text-[#C9A340]" />}
+                    <span className="text-sm text-foreground">{dark ? "Светлая тема" : "Тёмная тема"}</span>
                   </button>
                   <div className="my-1 border-t border-white/5" />
                   <button
