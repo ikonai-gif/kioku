@@ -32,9 +32,25 @@ const TOOL_MAP: Record<string, { icon: string; label: string }> = {
   analyze_image:           { icon: "👁️", label: "Смотрю изображение" },
   tts:                     { icon: "🔊", label: "Генерирую речь" },
   deliberation:            { icon: "🤝", label: "Совещаюсь с командой" },
+  // Brick 1.3 (LUCA-053): V1a luca_* tool names + memory ops. Without these the
+  // live indicator showed the generic ⚙️ fallback for Luca's real tools.
+  remember:                { icon: "💾", label: "Записываю в память" },
+  recall:                  { icon: "🧠", label: "Вспоминаю" },
+  luca_search:             { icon: "🔍", label: "Ищу в интернете" },
+  luca_read_url:           { icon: "🌐", label: "Читаю страницу" },
+  luca_analyze_image:      { icon: "👁️", label: "Смотрю изображение" },
+  luca_run_code:           { icon: "💻", label: "Выполняю код" },
+  luca_agent_browser:      { icon: "🖥️", label: "Работаю в браузере" },
+  luca_email_read:         { icon: "📧", label: "Читаю письмо" },
+  luca_email_thread:       { icon: "📧", label: "Читаю переписку" },
+  luca_inbox_list:         { icon: "📥", label: "Смотрю входящие" },
+  luca_notion_search:      { icon: "📝", label: "Ищу в Notion" },
+  luca_notion_fetch:       { icon: "📝", label: "Читаю Notion" },
+  luca_notion_append:      { icon: "📝", label: "Дополняю Notion" },
+  luca_notion_create:      { icon: "📝", label: "Создаю в Notion" },
 };
 
-function getFriendlyTool(toolName: string): { icon: string; label: string } {
+export function getFriendlyTool(toolName: string): { icon: string; label: string } {
   if (TOOL_MAP[toolName]) return TOOL_MAP[toolName];
   for (const key of Object.keys(TOOL_MAP)) {
     if (toolName.startsWith(key)) return TOOL_MAP[key];
