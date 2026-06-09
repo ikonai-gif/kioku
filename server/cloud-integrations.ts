@@ -172,6 +172,60 @@ async function getDropboxToken(userId: number): Promise<string> {
   return integration.access_token;
 }
 
+// ── Google Calendar (read) ───────────────────────────────────────
+
+export interface CalendarEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  location?: string;
+  status?: string;
+  htmlLink?: string;
+}
+
+/**
+ * List upcoming events from the user's primary Google Calendar (READ-ONLY).
+ * Reuses the existing Google OAuth token (provider "google_drive"); requires
+ * the calendar.readonly scope, granted on (re)connect of Google.
+ */
+export async function listGoogleCalendarEvents(
+  userId: number,
+  opts?: { maxResults?: number; timeMinIso?: string; timeMaxIso?: string },
+): Promise<CalendarEvent[]> {
+  const token = await getGoogleToken(userId);
+  const maxResults = Math.min(Math.max(opts?.maxResults ?? 10, 1), 50);
+  const timeMin = opts?.timeMinIso || new Date().toISOString();
+  const params = new URLSearchParams({
+    maxResults: String(maxResults),
+    singleEvents: "true",
+    orderBy: "startTime",
+    timeMin,
+  });
+  if (opts?.timeMaxIso) params.set("timeMax", opts.timeMaxIso);
+  const resp = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) },
+  );
+  if (!resp.ok) {
+    const err = await resp.text().catch(() => "");
+    if (resp.status === 403 && /insufficient|scope/i.test(err)) {
+      throw new Error("Google Calendar access not granted — reconnect Google to allow Calendar (read).");
+    }
+    throw new Error(`Google Calendar list failed: ${resp.status} ${err.slice(0, 300)}`);
+  }
+  const data = await resp.json() as any;
+  return (data.items || []).map((e: any): CalendarEvent => ({
+    id: e.id,
+    summary: e.summary || "(no title)",
+    start: e.start?.dateTime || e.start?.date || "",
+    end: e.end?.dateTime || e.end?.date || "",
+    location: e.location,
+    status: e.status,
+    htmlLink: e.htmlLink,
+  }));
+}
+
 // ── Google Drive Search ──────────────────────────────────────────
 
 export async function searchGoogleDrive(userId: number, query: string): Promise<any[]> {
@@ -940,7 +994,7 @@ export function buildGoogleOAuthUrl(userId: number): string {
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: GOOGLE_REDIRECT_URI,
     response_type: "code",
-    scope: "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.email",
+    scope: "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email",
     access_type: "offline",
     prompt: "consent",
     state: String(userId),

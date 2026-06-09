@@ -12,8 +12,9 @@ const CONNECTORS: ConnectorDef[] = [
     id: "google_calendar",
     name: "Google Calendar",
     emoji: "📅",
-    description: "View events and manage your schedule",
-    providerKey: undefined,
+    description: "View your upcoming calendar events (read-only)",
+    providerKey: "google_drive",
+    connectEndpoint: "/api/integrations/google/connect",
   },
   {
     id: "google_drive",

@@ -102,7 +102,9 @@ export type LucaToolName =
   | "luca_notion_search"
   | "luca_notion_fetch"
   | "luca_notion_append"
-  | "luca_notion_create";
+  | "luca_notion_create"
+  // Google Calendar (read) — UNTRUSTED: invite text is author-supplied.
+  | "luca_calendar_list";
 
 export const TOOL_TRUST_POLICY = {
   luca_run_code: "TRUSTED",
@@ -167,6 +169,7 @@ export const TOOL_TRUST_POLICY = {
   luca_notion_fetch: "UNTRUSTED",
   luca_notion_append: "UNTRUSTED",
   luca_notion_create: "UNTRUSTED",
+  luca_calendar_list: "UNTRUSTED",
 } as const satisfies Record<LucaToolName, TrustLevel>;
 
 /**
