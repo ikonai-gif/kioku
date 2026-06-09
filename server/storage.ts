@@ -1520,6 +1520,7 @@ export interface IStorage {
   updateRoom(id: number, userId: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Promise<Room | undefined>;
   deleteRoom(id: number, userId: number): Promise<boolean>;
 
+  searchMessages(userId: number, query: string, limit?: number): Promise<Array<{ messageId: number; roomId: number; snippet: string; createdAt: number }>>;
   getRoomMessages(roomId: number, userId: number): Promise<RoomMessage[] | null>;
   /** Fetch specific messages by their ids (no user check; for trusted internal callers). */
   getRoomMessagesByIds(ids: number[]): Promise<RoomMessage[]>;
@@ -2106,6 +2107,33 @@ export class Storage implements IStorage {
   }
 
   // ── Room Messages ──────────────────────────────────────────────────────────
+  // Brick 1.2 (LUCA-053): search across the user's own conversation messages.
+  // Per-user scoped via JOIN rooms.user_id = $1 (room_messages has no userId of
+  // its own). v1 uses ILIKE on content + search_text — correct everywhere; the
+  // pg_trgm GIN index (migration 0018, prod-applied) makes it fast. Newest first.
+  async searchMessages(userId: number, query: string, limit = 20): Promise<Array<{ messageId: number; roomId: number; snippet: string; createdAt: number }>> {
+    const q = query.trim();
+    if (!q) return [];
+    const lim = Math.min(50, Math.max(1, limit));
+    const like = `%${q}%`;
+    const result = await pool.query(
+      `SELECT m.id AS message_id, m.room_id, m.content, m.created_at
+         FROM room_messages m
+         JOIN rooms r ON r.id = m.room_id
+        WHERE r.user_id = $1
+          AND (m.content ILIKE $2 OR m.search_text ILIKE $2)
+        ORDER BY m.created_at DESC
+        LIMIT $3`,
+      [userId, like, lim]
+    );
+    return result.rows.map((row: any) => ({
+      messageId: Number(row.message_id),
+      roomId: Number(row.room_id),
+      snippet: String(row.content ?? "").slice(0, 240),
+      createdAt: Number(row.created_at),
+    }));
+  }
+
   async getRoomMessages(roomId: number, userId: number): Promise<RoomMessage[] | null> {
     // Verify room belongs to user
     const room = await this.getRoom(roomId, userId);

@@ -16,6 +16,10 @@ export const flags = {
   GMAIL_SEND_ENABLED: process.env.GMAIL_SEND_ENABLED !== 'false',
   EMBEDDINGS_ENABLED: process.env.EMBEDDINGS_ENABLED !== 'false',
   PUSH_ENABLED: process.env.PUSH_ENABLED !== 'false',
+  // Brick 1.2 (LUCA-053): conversation history search. NEW feature -> opt-in
+  // (default OFF), unlike the legacy default-ON flags above. Same dark-by-default
+  // rationale as LUCA_V1A_ENABLED. Flip CONVO_SEARCH_ENABLED=true to enable.
+  CONVO_SEARCH_ENABLED: process.env.CONVO_SEARCH_ENABLED === 'true',
 } as const;
 
 export type FeatureFlag = keyof typeof flags;

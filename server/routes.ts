@@ -1624,6 +1624,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }));
 
   // ── Memories ──────────────────────────────────────────────────
+  // Brick 1.2 (LUCA-053): search across the user's own conversation history.
+  // Behind CONVO_SEARCH_ENABLED (default OFF). Per-user scoped in storage via
+  // rooms.user_id. requireFlag returns 503 when disabled.
+  app.get("/api/conversations/search", requireFlag("CONVO_SEARCH_ENABLED"), asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (!q) return res.status(400).json({ error: "Query param q is required" });
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 20));
+    const results = await storage.searchMessages(userId, q, limit);
+    res.json({ data: results });
+  }));
+
   app.get("/api/memories", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
