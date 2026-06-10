@@ -8,6 +8,7 @@ import { Send, ArrowLeft, Menu, Volume2, Mic, MicOff, ImagePlus, X, Loader2, Spa
 import { cn } from "@/lib/utils";
 import { useKiokuWebSocket, type KiokuWsMessage } from "@/hooks/useKiokuWebSocket";
 import { useAuth, useTheme } from "../App";
+import { useI18n } from "@/i18n";
 import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { CapabilityCards } from "@/components/CapabilityCards";
@@ -1977,6 +1978,7 @@ function ArtifactsSidebar({
 export default function PartnerChat() {
   const { user } = useAuth();
   const { dark, toggle: toggleTheme } = useTheme();
+  const { t, lang, setLang } = useI18n();
   const { toast } = useToast();
   const [input, setInput] = useState("");
   const [partnerRoomId, setPartnerRoomId] = useState<number | null>(null);
@@ -3431,7 +3433,7 @@ export default function PartnerChat() {
                       className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
                     >
                       <Menu className="w-4 h-4 text-[#C9A340]" />
-                      <span className="text-sm text-foreground">Rooms</span>
+                      <span className="text-sm text-foreground">{t("chat.menu.rooms")}</span>
                     </a>
                   </Link>
                   <Link href="/gallery">
@@ -3440,7 +3442,7 @@ export default function PartnerChat() {
                       className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
                     >
                       <ImagePlus className="w-4 h-4 text-[#C9A340]" />
-                      <span className="text-sm text-foreground">Gallery</span>
+                      <span className="text-sm text-foreground">{t("chat.menu.gallery")}</span>
                     </a>
                   </Link>
                   <Link href="/knowledge">
@@ -3449,7 +3451,7 @@ export default function PartnerChat() {
                       className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
                     >
                       <Search className="w-4 h-4 text-[#C9A340]" />
-                      <span className="text-sm text-foreground">Knowledge</span>
+                      <span className="text-sm text-foreground">{t("chat.menu.knowledge")}</span>
                     </a>
                   </Link>
                   <Link href="/connectors">
@@ -3458,7 +3460,7 @@ export default function PartnerChat() {
                       className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
                     >
                       <Plug className="w-4 h-4 text-[#C9A340]" />
-                      <span className="text-sm text-foreground">Почта и интеграции</span>
+                      <span className="text-sm text-foreground">{t("chat.menu.connectors")}</span>
                     </a>
                   </Link>
                   <button
@@ -3466,7 +3468,15 @@ export default function PartnerChat() {
                     className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
                   >
                     <RefreshCw className="w-4 h-4 text-[#C9A340]" />
-                    <span className="text-sm text-foreground">Refresh Summary</span>
+                    <span className="text-sm text-foreground">{t("chat.menu.refreshSummary")}</span>
+                  </button>
+                  <button
+                    onClick={() => { setLang(lang === "ru" ? "en" : "ru"); }}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                    data-testid="button-toggle-lang"
+                  >
+                    <Layers className="w-4 h-4 text-[#C9A340]" />
+                    <span className="text-sm text-foreground">{lang === "ru" ? t("chat.menu.langEn") : t("chat.menu.langRu")}</span>
                   </button>
                   <button
                     onClick={() => { toggleTheme(); setHeaderMenuOpen(false); }}
@@ -3474,7 +3484,7 @@ export default function PartnerChat() {
                     data-testid="button-toggle-theme"
                   >
                     {dark ? <Sun className="w-4 h-4 text-[#C9A340]" /> : <Moon className="w-4 h-4 text-[#C9A340]" />}
-                    <span className="text-sm text-foreground">{dark ? "Светлая тема" : "Тёмная тема"}</span>
+                    <span className="text-sm text-foreground">{dark ? t("chat.menu.themeLight") : t("chat.menu.themeDark")}</span>
                   </button>
                   <div className="my-1 border-t border-white/5" />
                   <button
@@ -3482,7 +3492,7 @@ export default function PartnerChat() {
                     className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-red-500/10 transition-colors text-left"
                   >
                     <Trash2 className="w-4 h-4 text-red-400" />
-                    <span className="text-sm text-red-400">Clear Chat</span>
+                    <span className="text-sm text-red-400">{t("chat.menu.clearChat")}</span>
                   </button>
                 </div>
               </motion.div>
