@@ -13,6 +13,7 @@ import LandingPage from "./pages/landing";
 import NotFound from "./pages/not-found";
 import AppLayout from "./components/layout";
 import { resolveInitialTheme, themeToStored, THEME_KEY } from "@/lib/theme";
+import { I18nProvider } from "@/i18n";
 import RouteErrorBoundary from "./components/RouteErrorBoundary";
 
 // Route-level code splitting. Only the public landing (first paint) and the
@@ -240,6 +241,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeContext.Provider value={{ dark, toggle: () => setDark(d => !d) }}>
+        <I18nProvider>
         <AuthContext.Provider value={{ user, sessionToken, login, logout }}>
           <Router hook={useHashLocation}>
             <TitleManager />
@@ -313,6 +315,7 @@ export default function App() {
           </Router>
           <Toaster />
         </AuthContext.Provider>
+        </I18nProvider>
       </ThemeContext.Provider>
     </QueryClientProvider>
   );
