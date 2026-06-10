@@ -172,6 +172,7 @@ function PhaseHeader({ label, active, completed }: { label: string; active: bool
 // ── Agent Response Card ─────────────────────────────────────────
 function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animate: boolean }) {
   const isError = item.position.startsWith("[error:");
+  const { t } = useI18n();
   return (
     <div className={cn(
       "rounded-xl border p-3 transition-all duration-500",
@@ -197,12 +198,12 @@ function AgentResponseCard({ item, animate }: { item: ParsedDelibMessage; animat
             </span>
             {isError && (
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-400/10 text-red-400 font-medium border border-red-400/20">
-                Error
+                {t("roomDetail.errorBadge")}
               </span>
             )}
             {item.isHuman && (
               <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#D4AF37]/15 text-[#D4AF37] font-bold uppercase tracking-wider border border-[#D4AF37]/30">
-                Human
+                {t("roomDetail.human")}
               </span>
             )}
             {item.modelTag && !item.isHuman && (
@@ -364,6 +365,7 @@ function VoteTallyBar({ votes }: { votes: ClassifiedVote[] }) {
 // ── Agent Vote Card (with expandable reasoning) ────────────────
 function AgentVoteCard({ vote, agentColor }: { vote: ClassifiedVote; agentColor?: string }) {
   const [expanded, setExpanded] = useState(false);
+  const { t } = useI18n();
   const Icon = VOTE_ICONS[vote.voteType];
   const color = agentColor || "#888";
   const pct = Math.round(vote.confidence * 100);
@@ -394,7 +396,7 @@ function AgentVoteCard({ vote, agentColor }: { vote: ClassifiedVote; agentColor?
             </span>
             {vote.changedMind && (
               <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-400/10 text-yellow-400 font-medium">
-                Changed mind
+                {t("roomDetail.changedMind")}
               </span>
             )}
           </div>
@@ -439,6 +441,7 @@ function AgentVoteCard({ vote, agentColor }: { vote: ClassifiedVote; agentColor?
 // ── Confidence Gauge (large radial) ────────────────────────────
 function ConfidenceGauge({ value }: { value: number }) {
   const pct = Math.round(value * 100);
+  const { t } = useI18n();
   const radius = 40;
   const circumference = 2 * Math.PI * radius;
   const progress = (pct / 100) * circumference;
@@ -463,7 +466,7 @@ function ConfidenceGauge({ value }: { value: number }) {
         </div>
       </div>
       <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-        Consensus Confidence
+        {t("roomDetail.consensusConfidence")}
       </span>
     </div>
   );
@@ -483,6 +486,7 @@ function EnhancedConsensusPanel({
   };
   agentColors: Record<string, string>;
 }) {
+  const { t } = useI18n();
   const classifiedVotes = classifyVotes(consensus.votes, consensus.decision);
 
   return (
@@ -506,7 +510,7 @@ function EnhancedConsensusPanel({
       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
         <div className="flex-1">
           <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5 font-medium">
-            Overall Decision
+            {t("roomDetail.overallDecision")}
           </p>
           <p className="text-sm text-foreground leading-relaxed font-medium">{consensus.decision}</p>
         </div>
@@ -539,7 +543,7 @@ function EnhancedConsensusPanel({
           <div className="flex items-center gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 text-red-400/80" />
             <span className="text-[10px] font-semibold text-red-400/90 uppercase tracking-wider">
-              Dissenting Opinions
+              {t("roomDetail.dissentingOpinions")}
             </span>
           </div>
           {consensus.dissent.map((d, i) => (
@@ -695,7 +699,7 @@ function DeliberationHistoryList({
       <div className="flex items-center gap-2">
         <History className="w-3.5 h-3.5 text-muted-foreground/60" />
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Deliberation History
+          {t("roomDetail.deliberationHistory")}
         </span>
         <span className="text-[10px] text-muted-foreground/40">{sorted.length} shown</span>
         <div className="flex-1 h-px bg-border/30" />
