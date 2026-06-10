@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useI18n } from "@/i18n";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -287,6 +288,7 @@ const VOTE_ICONS: Record<VoteType, typeof ThumbsUp> = {
 
 // ── Vote Tally Bar ─────────────────────────────────────────────
 function VoteTallyBar({ votes }: { votes: ClassifiedVote[] }) {
+  const { t } = useI18n();
   const total = votes.length;
   if (total === 0) return null;
 
@@ -301,8 +303,8 @@ function VoteTallyBar({ votes }: { votes: ClassifiedVote[] }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>Vote Distribution</span>
-        <span>{total} total votes</span>
+        <span>{t("roomDetail.voteDistribution")}</span>
+        <span>{total} {t("roomDetail.totalVotes")}</span>
       </div>
       {/* Bar */}
       <div className="h-3 rounded-full overflow-hidden flex bg-white/5">
@@ -632,6 +634,7 @@ function DeliberationHistoryList({
   roomId: number;
   agentColors: Record<string, string>;
 }) {
+  const { t } = useI18n();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const { data: sessions = [], isLoading } = useQuery<any[]>({
@@ -703,7 +706,7 @@ function DeliberationHistoryList({
             data-testid="button-toggle-archive"
           >
             <Archive className="w-3 h-3" />
-            {showArchive ? "Hide archive" : `Show archive (${archived.length})`}
+            {showArchive ? t("roomDetail.hideArchive") : `${t("roomDetail.showArchive")} (${archived.length})`}
           </button>
         )}
       </div>
@@ -816,6 +819,7 @@ function HumanInputCard({
   onSubmitted: () => void;
   onSkipped: () => void;
 }) {
+  const { t } = useI18n();
   const [position, setPosition] = useState("");
   const [confidence, setConfidence] = useState(0.7);
   const [reasoning, setReasoning] = useState("");
@@ -866,7 +870,7 @@ function HumanInputCard({
     onSkipped();
   }
 
-  const phaseLabel = phase === "position" ? "Initial Position" : phase === "debate" ? `Debate Round ${round}` : "Final Position";
+  const phaseLabel = phase === "position" ? t("roomDetail.phaseInitial") : phase === "debate" ? `${t("roomDetail.phaseDebateRound")} ${round}` : t("roomDetail.phaseFinal");
   const confPct = Math.round(confidence * 100);
   const totalSeconds = Math.floor(timeoutMs / 1000);
 
@@ -887,9 +891,9 @@ function HumanInputCard({
         </div>
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-bold text-[#D4AF37]">Your Turn</span>
+            <span className="text-sm font-bold text-[#D4AF37]">{t("roomDetail.yourTurn")}</span>
             <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#D4AF37]/15 text-[#D4AF37] font-semibold uppercase tracking-wider border border-[#D4AF37]/30">
-              Human
+              {t("roomDetail.human")}
             </span>
           </div>
           <span className="text-[10px] text-muted-foreground">{phaseLabel}</span>
@@ -901,7 +905,7 @@ function HumanInputCard({
       {priorPositions.length > 0 && (
         <div className="rounded-lg bg-white/[0.02] border border-border/30 p-3 space-y-1.5">
           <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
-            Other positions ({priorPositions.length})
+            {t("roomDetail.otherPositions")} ({priorPositions.length})
           </span>
           {priorPositions.slice(0, 4).map((p, i) => (
             <div key={i} className="flex items-start gap-2">
@@ -910,18 +914,18 @@ function HumanInputCard({
             </div>
           ))}
           {priorPositions.length > 4 && (
-            <span className="text-[9px] text-muted-foreground/50">+{priorPositions.length - 4} more</span>
+            <span className="text-[9px] text-muted-foreground/50">+{priorPositions.length - 4} {t("roomDetail.more")}</span>
           )}
         </div>
       )}
 
       {/* Position textarea */}
       <div>
-        <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">Your Position</label>
+        <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">{t("roomDetail.yourPosition")}</label>
         <textarea
           className="w-full bg-muted/30 border border-[#D4AF37]/30 rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#D4AF37]/60 transition-colors resize-none"
           rows={3}
-          placeholder="State your position on the topic..."
+          placeholder={t("roomDetail.positionPlaceholder")}
           value={position}
           onChange={e => setPosition(e.target.value)}
           disabled={submitting}
@@ -932,7 +936,7 @@ function HumanInputCard({
       {/* Confidence slider */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label className="text-[11px] text-muted-foreground font-medium">Confidence</label>
+          <label className="text-[11px] text-muted-foreground font-medium">{t("roomDetail.confidence")}</label>
           <span
             className="text-xs font-mono font-bold"
             style={{ color: confPct >= 70 ? "#10B981" : confPct >= 40 ? "#D4AF37" : "#EF4444" }}
@@ -957,11 +961,11 @@ function HumanInputCard({
 
       {/* Reasoning (optional) */}
       <div>
-        <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">Reasoning (optional)</label>
+        <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">{t("roomDetail.reasoningOptional")}</label>
         <textarea
           className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#D4AF37]/40 transition-colors resize-none"
           rows={2}
-          placeholder="Explain your reasoning..."
+          placeholder={t("roomDetail.reasoningPlaceholder")}
           value={reasoning}
           onChange={e => setReasoning(e.target.value)}
           disabled={submitting}
@@ -982,12 +986,12 @@ function HumanInputCard({
           {submitting ? (
             <>
               <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-              Submitting...
+              {t("roomDetail.submitting")}
             </>
           ) : (
             <>
               <Send className="w-3.5 h-3.5 mr-1.5" />
-              Submit Position
+              {t("roomDetail.submitPosition")}
             </>
           )}
         </Button>
@@ -996,7 +1000,7 @@ function HumanInputCard({
           onClick={handleSkip}
           disabled={submitting}
         >
-          Skip Round
+          {t("roomDetail.skipRound")}
         </button>
       </div>
     </div>
