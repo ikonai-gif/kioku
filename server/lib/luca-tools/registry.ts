@@ -69,6 +69,11 @@ import {
   calendarListHandler,
   type CalendarContext,
 } from "./calendar";
+import {
+  askGeminiTool,
+  askGeminiHandler,
+  type AskGeminiContext,
+} from "./ask-gemini";
 import { isLucaEmailToolEnabled, isLucaNotionToolEnabled } from "../luca/env";
 
 // ─── Registry ────────────────────────────────────────────────────────────
@@ -129,6 +134,11 @@ const LUCA_TOOL_ENTRIES: ReadonlyArray<LucaToolEntry> = [
   // Google Calendar (read) — rides per-user Google OAuth; calendar.readonly
   // scope granted on (re)connect. READ-ONLY, three-level flag gate.
   { kind: "tool", spec: calendarListTool, flag: "LUCA_TOOL_CALENDAR_READ_ENABLED" },
+  // Track B — Gemini second-engine delegate. Luca stays on Claude; this is
+  // an explicit "ask the other model" sub-call. READ-ONLY side-effects, but
+  // classified HIGH_STAKES_WRITE in classify.ts for the cautious first ship
+  // (every call Boss-approved). Privacy fence + trust=UNTRUSTED in handler.
+  { kind: "tool", spec: askGeminiTool, flag: "LUCA_TOOL_ASK_GEMINI_ENABLED" },
   // Day 5+: read_memory, write_memory, read_file, upload_file
 ];
 
@@ -178,7 +188,8 @@ export async function dispatchLucaTool(
     AgentBrowserContext &
     EmailReadContext &
     NotionContext &
-    CalendarContext,
+    CalendarContext &
+    AskGeminiContext,
 ): Promise<unknown> {
   switch (toolName) {
     case "luca_run_code":
@@ -210,6 +221,9 @@ export async function dispatchLucaTool(
     // Google Calendar (read)
     case "luca_calendar_list":
       return calendarListHandler(toolInput, ctx);
+    // Track B — Gemini second-engine delegate
+    case "luca_ask_gemini":
+      return askGeminiHandler(toolInput, ctx);
     // Day 5+: memory, files
     default:
       throw new Error(`luca_tool_not_found: ${toolName}`);

@@ -48,6 +48,8 @@ describe("trust-policy: TOOL_TRUST_POLICY table", () => {
       "inbox_list",
       "inbox_read",
       "luca_analyze_image",
+      // Track B — Gemini second-engine delegate (UNTRUSTED, external model text)
+      "luca_ask_gemini",
       // Google Calendar (read) — UNTRUSTED: invite text is author-supplied
       "luca_calendar_list",
       // Step 4 PR A — Luca-native Gmail reads (UNTRUSTED, same rationale)
