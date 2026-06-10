@@ -1014,6 +1014,7 @@ function HumanInputCard({
 export default function RoomDetailPage({ params }: { params: { id: string } }) {
   const roomId = Number(params.id);
   const { toast } = useToast();
+  const { t } = useI18n();
   const [speakingAs, setSpeakingAs] = useState<any | null>(null);
   const [input, setInput] = useState("");
   const [isDecision, setIsDecision] = useState(false);
@@ -1163,7 +1164,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       setInput("");
       setIsDecision(false);
     },
-    onError: () => toast({ title: "Failed to send", variant: "destructive" }),
+    onError: () => toast({ title: t("roomDetail.failedToSend"), variant: "destructive" }),
   });
 
   function send() {
@@ -1183,7 +1184,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       const r = await apiRequest("POST", `/api/rooms/${roomId}/deliberate`, data);
       if (!r.ok) {
         const err = await r.json().catch(() => ({ error: r.statusText }));
-        throw new Error(err.error || "Failed to start deliberation");
+        throw new Error(err.error || t("roomDetail.failedToStart"));
       }
       return r.json();
     },
@@ -1192,12 +1193,12 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
       setDelibPhase("completed");
       setShowDelibPanel(false);
       setHumanTurnData(null);
-      toast({ title: "Deliberation complete" });
+      toast({ title: t("roomDetail.deliberationComplete") });
     },
     onError: (err: any) => {
       setDelibPhase("failed");
       setHumanTurnData(null);
-      toast({ title: err.message || "Deliberation failed", variant: "destructive" });
+      toast({ title: err.message || t("roomDetail.deliberationFailed"), variant: "destructive" });
     },
   });
 
@@ -1310,9 +1311,9 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
           </Link>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="text-sm font-semibold text-foreground">{room?.name ?? "Room"}</h1>
+              <h1 className="text-sm font-semibold text-foreground">{room?.name ?? t("roomDetail.roomFallback")}</h1>
               <span
-                title={wsConnected ? "Real-time connected" : "Polling fallback"}
+                title={wsConnected ? t("roomDetail.realtimeConnected") : t("roomDetail.pollingFallback")}
                 className={cn(
                   "w-1.5 h-1.5 rounded-full flex-shrink-0",
                   wsConnected ? "bg-emerald-400 animate-pulse" : "bg-muted-foreground/40"
@@ -1332,14 +1333,14 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             onClick={() => setShowDecisions(d => !d)}
           >
             <Star className="w-3 h-3" />
-            Decisions ({decisions.length})
+            {t("roomDetail.decisions")} ({decisions.length})
           </button>
         </div>
 
         {/* ── Colored flow labels ──────────────────────────────────── */}
         {flowInfo.length > 0 && (
           <div className="px-4 md:px-5 pb-2 flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] text-muted-foreground">Flows:</span>
+            <span className="text-[10px] text-muted-foreground">{t("roomDetail.flows")}</span>
             {flowInfo.map(({ flow, color, agentIds }) => {
               const flowAgents = (agents as any[]).filter((a: any) => agentIds.includes(a.id) && roomAgentIds.includes(a.id));
               return (
@@ -1374,7 +1375,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             onClick={() => setActiveTab("chat")}
           >
             <MessageSquare className="w-3 h-3" />
-            Chat
+            {t("roomDetail.tabChat")}
           </button>
           <button
             className={cn(
@@ -1386,7 +1387,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             onClick={() => setActiveTab("deliberation")}
           >
             <Zap className="w-3 h-3" />
-            Deliberation
+            {t("roomDetail.tabDeliberation")}
             {isDelibRunning && (
               <span className="w-1.5 h-1.5 rounded-full bg-[#D4AF37] animate-pulse" />
             )}
@@ -1421,12 +1422,12 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
               <div className="flex flex-col items-center justify-center h-full text-center">
                 <Bot className="w-9 h-9 text-muted-foreground mb-3 opacity-40" />
                 <p className="text-sm text-muted-foreground">
-                  {showDecisions ? "No decisions logged yet" : "No messages yet"}
+                  {showDecisions ? t("roomDetail.noDecisions") : t("roomDetail.noMessages")}
                 </p>
                 <p className="text-xs text-muted-foreground/50 mt-1">
                   {showDecisions
-                    ? "Mark a message as Decision to log it here"
-                    : "Select an agent below and start the discussion"}
+                    ? t("roomDetail.markDecisionHint")
+                    : t("roomDetail.selectAgentHint")}
                 </p>
               </div>
             )}
@@ -1502,9 +1503,9 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
 
             {/* Speaking as — agent pills */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[10px] text-muted-foreground">Speaking as:</span>
+              <span className="text-[10px] text-muted-foreground">{t("roomDetail.speakingAs")}</span>
               {roomAgents.length === 0 && (
-                <span className="text-[10px] text-muted-foreground/50">No agents — add agents when creating the room</span>
+                <span className="text-[10px] text-muted-foreground/50">{t("roomDetail.noAgentsHint")}</span>
               )}
               {roomAgents.map((a: any) => {
                 const active = speakingAs?.id === a.id;
@@ -1525,7 +1526,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 <input type="checkbox" className="w-3 h-3 accent-yellow-400"
                   checked={isDecision} onChange={e => setIsDecision(e.target.checked)}
                   data-testid="checkbox-is-decision" />
-                <span className="text-[10px] text-muted-foreground">Mark as Decision</span>
+                <span className="text-[10px] text-muted-foreground">{t("roomDetail.markAsDecision")}</span>
               </label>
             </div>
 
@@ -1548,8 +1549,8 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 className="flex-1 bg-muted/40 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40 transition-colors"
                 placeholder={
                   speakingAs
-                    ? `${speakingAs.name}: type a message, command, or task…`
-                    : "Select an agent to speak as"
+                    ? `${speakingAs.name}: ${t("roomDetail.typeMessageSuffix")}`
+                    : t("roomDetail.selectAgentToSpeak")
                 }
                 value={input}
                 onChange={e => setInput(e.target.value)}
@@ -1586,7 +1587,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
             >
               <div className="flex items-center gap-2">
                 <Zap className="w-4 h-4 text-[#D4AF37]" />
-                <span className="text-sm font-semibold text-foreground">Start Deliberation</span>
+                <span className="text-sm font-semibold text-foreground">{t("roomDetail.startDeliberation")}</span>
               </div>
               <ChevronDown className={cn(
                 "w-4 h-4 text-muted-foreground transition-transform duration-200",
@@ -1599,12 +1600,12 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 {/* Topic input */}
                 <div>
                   <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">
-                    Deliberation Topic
+                    {t("roomDetail.deliberationTopic")}
                   </label>
                   <textarea
                     className="w-full bg-muted/30 border border-border rounded-lg px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#D4AF37]/40 transition-colors resize-none"
                     rows={3}
-                    placeholder="What should the agents deliberate on? e.g., 'Should we adopt a microservices architecture?'"
+                    placeholder={t("roomDetail.topicPlaceholder")}
                     value={delibTopic}
                     onChange={e => setDelibTopic(e.target.value)}
                     disabled={isDelibRunning}
@@ -1630,10 +1631,10 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                   </div>
                   <div className="flex-1 min-w-0">
                     <span className={cn("text-xs font-semibold", includeHuman ? "text-[#D4AF37]" : "text-foreground/80")}>
-                      Join as Participant
+                      {t("roomDetail.joinAsParticipant")}
                     </span>
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
-                      Respond alongside AI agents in each phase (60s per round)
+                      {t("roomDetail.joinHint")}
                     </p>
                   </div>
                   <div className={cn(
@@ -1651,7 +1652,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 <div className="flex items-end gap-3">
                   <div className="flex-shrink-0">
                     <label className="text-[11px] text-muted-foreground font-medium mb-1.5 block">
-                      Debate Rounds
+                      {t("roomDetail.debateRounds")}
                     </label>
                     <select
                       className="bg-muted/30 border border-border rounded-lg px-3 py-2 text-sm text-foreground outline-none focus:border-[#D4AF37]/40 transition-colors appearance-none cursor-pointer"
@@ -1660,9 +1661,9 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                       disabled={isDelibRunning}
                       data-testid="select-delib-rounds"
                     >
-                      <option value={1}>1 round</option>
-                      <option value={2}>2 rounds</option>
-                      <option value={3}>3 rounds</option>
+                      <option value={1}>{t("roomDetail.round1")}</option>
+                      <option value={2}>{t("roomDetail.round2")}</option>
+                      <option value={3}>{t("roomDetail.round3")}</option>
                     </select>
                   </div>
 
@@ -1679,7 +1680,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                       )}
                     </div>
                     <span className="text-[10px] text-muted-foreground">
-                      {roomAgents.filter((a: any) => a.status === "online").length} agents{includeHuman ? " + you" : ""} online
+                      {roomAgents.filter((a: any) => a.status === "online").length} {t("roomDetail.agentsWord")}{includeHuman ? t("roomDetail.plusYou") : ""} {t("roomDetail.onlineWord")}
                     </span>
                   </div>
 
@@ -1696,12 +1697,12 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                     {isDelibRunning ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                        Running...
+                        {t("roomDetail.running")}
                       </>
                     ) : (
                       <>
                         <Zap className="w-3.5 h-3.5 mr-1.5" />
-                        Start
+                        {t("roomDetail.start")}
                       </>
                     )}
                   </Button>
@@ -1710,7 +1711,7 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                 {/* Minimum agents warning */}
                 {!includeHuman && roomAgents.filter((a: any) => a.status === "online").length < 2 && (
                   <p className="text-[11px] text-red-400/80">
-                    At least 2 online agents required for deliberation (or enable "Join as Participant"). Enable agents in the Chat tab.
+                    {t("roomDetail.minAgentsWarning")}
                   </p>
                 )}
               </div>
@@ -1723,27 +1724,27 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
               <div className="flex items-center gap-2">
                 {isDelibRunning && <Loader2 className="w-3 h-3 text-[#D4AF37] animate-spin" />}
                 <span className="text-[11px] font-medium text-muted-foreground">
-                  {isDelibRunning ? "Deliberation in progress..." : "Deliberation phases"}
+                  {isDelibRunning ? t("roomDetail.inProgress") : t("roomDetail.phases")}
                 </span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 <PhaseHeader
-                  label="Initial Positions"
+                  label={t("roomDetail.phaseInitialPositions")}
                   active={isDelibRunning && (delibPhase === "starting" || delibPhase === "position")}
                   completed={delibPhases.some(p => p.phase === "position" && p.items.length > 0)}
                 />
                 <PhaseHeader
-                  label="Debate"
+                  label={t("roomDetail.phaseDebate")}
                   active={isDelibRunning && delibPhase === "debate"}
                   completed={delibPhases.some(p => p.phase === "debate" && p.items.length > 0)}
                 />
                 <PhaseHeader
-                  label="Final Positions"
+                  label={t("roomDetail.phaseFinalPositions")}
                   active={isDelibRunning && delibPhase === "final"}
                   completed={delibPhases.some(p => p.phase === "final" && p.items.length > 0)}
                 />
                 <PhaseHeader
-                  label="Consensus"
+                  label={t("roomDetail.phaseConsensus")}
                   active={isDelibRunning && delibPhase === "consensus"}
                   completed={delibPhases.some(p => p.phase === "consensus")}
                 />
@@ -1760,9 +1761,9 @@ export default function RoomDetailPage({ params }: { params: { id: string } }) {
                   style={{ boxShadow: "0 0 30px rgba(212,175,55,0.05)" }}>
                   <Zap className="w-6 h-6 text-[#D4AF37]/50" />
                 </div>
-                <p className="text-sm text-muted-foreground mb-1">No deliberations yet</p>
+                <p className="text-sm text-muted-foreground mb-1">{t("roomDetail.noDeliberations")}</p>
                 <p className="text-xs text-muted-foreground/50 max-w-[280px]">
-                  Enter a topic above and click Start to begin a structured multi-agent deliberation with phases, confidence scoring, and consensus building.
+                  {t("roomDetail.noDeliberationsHint")}
                 </p>
               </div>
             )}
