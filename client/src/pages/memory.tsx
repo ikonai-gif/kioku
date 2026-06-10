@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Search, Trash2, Brain, Plus, Download, Clock, GitBranch, MapPin, Shield, Pencil } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ function confidenceColor(confidence: number): string {
 }
 
 export default function MemoryPage() {
+  const { t } = useI18n();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
@@ -104,7 +106,7 @@ export default function MemoryPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/memories"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      toast({ title: "Memory deleted" });
+      toast({ title: t("memory.toastDeleted") });
     },
   });
 
@@ -115,7 +117,7 @@ export default function MemoryPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       setCreating(false);
       setForm({ content: "", type: "semantic", agentName: "", importance: "0.5", expiresAt: "", causeId: "", contextTrigger: "" });
-      toast({ title: "Memory added" });
+      toast({ title: t("memory.toastAdded") });
     },
   });
 
@@ -143,8 +145,8 @@ export default function MemoryPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">Memory Browser</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{(memories as any[]).length} memories</p>
+          <h1 className="text-lg font-semibold text-foreground">{t("memory.title")}</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">{(memories as any[]).length} {t("memory.count")}</p>
         </div>
         <div className="flex items-center gap-2">
           {/* Export CSV */}
@@ -190,7 +192,7 @@ export default function MemoryPage() {
             onClick={() => setCreating(true)}
             data-testid="button-add-memory"
           >
-            <Plus className="w-3.5 h-3.5" /> Add Memory
+            <Plus className="w-3.5 h-3.5" /> {t("memory.addButton")}
           </Button>
         </div>
       </div>
@@ -200,7 +202,7 @@ export default function MemoryPage() {
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
         <Input
           type="search"
-          placeholder="Search memories..."
+          placeholder={t("memory.searchPlaceholder")}
           value={search}
           onChange={e => handleSearch(e.target.value)}
           className="pl-9 h-9 text-sm"
@@ -210,13 +212,13 @@ export default function MemoryPage() {
 
       {/* Type filter pills */}
       <div className="flex gap-2 flex-wrap items-center">
-        <span className="text-[10px] text-muted-foreground">Filter:</span>
+        <span className="text-[10px] text-muted-foreground">{t("memory.filter")}</span>
         <button
           className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium border transition-all",
             filterType === null ? "border-foreground/30 text-foreground" : "border-border text-muted-foreground hover:border-muted-foreground/50"
           )}
           onClick={() => setFilterType(null)}
-        >all</button>
+        >{t("memory.filterAll")}</button>
         {Object.entries(typeColors).map(([type, cls]) => (
           <button
             key={type}
@@ -243,7 +245,7 @@ export default function MemoryPage() {
         <div className="bg-card border border-card-border rounded-xl p-10 text-center">
           <Brain className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
           <p className="text-sm text-muted-foreground">
-            {debouncedQ ? `No results for "${debouncedQ}"` : "No memories yet"}
+            {debouncedQ ? `${t("memory.noResultsFor")} "${debouncedQ}"` : t("memory.empty")}
           </p>
         </div>
       )}
@@ -276,12 +278,12 @@ export default function MemoryPage() {
                         disabled={!editContent.trim() || updateMutation.isPending}
                         onClick={() => updateMutation.mutate({ id: mem.id, content: editContent.trim() })}
                         data-testid={`button-save-memory-${mem.id}`}
-                      >Save</button>
+                      >{t("memory.saveMemory")}</button>
                       <button
                         className="text-[11px] px-2 py-1 rounded-md bg-muted text-muted-foreground"
                         onClick={() => { setEditingId(null); setEditContent(""); }}
                         data-testid={`button-cancel-memory-${mem.id}`}
-                      >Cancel</button>
+                      >{t("common.cancel")}</button>
                     </div>
                   </div>
                 ) : (
@@ -296,7 +298,7 @@ export default function MemoryPage() {
                     <span className="text-[10px] text-muted-foreground">{mem.agentName}</span>
                   )}
                   <span className="text-[10px] text-muted-foreground/60">{timeAgo(mem.createdAt)}</span>
-                  <span className="text-[10px] text-muted-foreground/50" title="Importance score (0-1): higher = retrieved first">importance: {mem.importance.toFixed(2)}</span>
+                  <span className="text-[10px] text-muted-foreground/50" title={t("memory.importanceTooltip")}>{t("memory.importance")}: {mem.importance.toFixed(2)}</span>
 
                   {/* Confidence indicator */}
                   <span className="inline-flex items-center gap-1 text-[10px]" title={`Confidence: ${(conf * 100).toFixed(0)}% | Reinforced ${mem.reinforcements ?? 0}x`}>
@@ -307,17 +309,17 @@ export default function MemoryPage() {
                   {/* Type-specific metadata */}
                   {mem.type === "temporal" && mem.expiresAt && (
                     <span className="text-[10px] text-cyan-400/70">
-                      expires {new Date(mem.expiresAt).toLocaleDateString()}
+                      {t("memory.expires")} {new Date(mem.expiresAt).toLocaleDateString()}
                     </span>
                   )}
                   {mem.type === "causal" && mem.causeId && (
                     <span className="text-[10px] text-orange-400/70">
-                      cause: #{mem.causeId}
+                      {t("memory.cause")}: #{mem.causeId}
                     </span>
                   )}
                   {mem.type === "contextual" && mem.contextTrigger && (
                     <span className="text-[10px] text-emerald-400/70 truncate max-w-[120px]" title={mem.contextTrigger}>
-                      trigger: {mem.contextTrigger}
+                      {t("memory.trigger")}: {mem.contextTrigger}
                     </span>
                   )}
                 </div>
@@ -358,15 +360,15 @@ export default function MemoryPage() {
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-sm">Add Memory</DialogTitle>
+            <DialogTitle className="text-sm">{t("memory.addTitle")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium">Content *</label>
+              <label className="text-xs font-medium">{t("memory.content")}</label>
               <textarea
                 className="w-full bg-input/30 border border-border rounded-lg p-2.5 text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-1 focus:ring-ring"
                 rows={3}
-                placeholder="What should be remembered?"
+                placeholder={t("memory.contentPlaceholder")}
                 value={form.content}
                 onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
                 data-testid="input-memory-content"
@@ -374,7 +376,7 @@ export default function MemoryPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Type</label>
+                <label className="text-xs font-medium">{t("memory.type")}</label>
                 <Select value={form.type} onValueChange={v => setForm(f => ({ ...f, type: v }))}>
                   <SelectTrigger className="h-9 text-xs">
                     <SelectValue />
@@ -390,7 +392,7 @@ export default function MemoryPage() {
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Importance (0-1)</label>
+                <label className="text-xs font-medium">{t("memory.importanceLabel")}</label>
                 <Input
                   type="number"
                   min="0" max="1" step="0.1"
@@ -404,7 +406,7 @@ export default function MemoryPage() {
             {/* Conditional fields for new types */}
             {form.type === "temporal" && (
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Expires At</label>
+                <label className="text-xs font-medium">{t("memory.expiresAt")}</label>
                 <Input
                   type="datetime-local"
                   value={form.expiresAt}
@@ -417,10 +419,10 @@ export default function MemoryPage() {
 
             {form.type === "causal" && (
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Cause Memory (link to another memory)</label>
+                <label className="text-xs font-medium">{t("memory.causeMemory")}</label>
                 <Select value={form.causeId} onValueChange={v => setForm(f => ({ ...f, causeId: v }))}>
                   <SelectTrigger className="h-9 text-xs">
-                    <SelectValue placeholder="Select a cause memory..." />
+                    <SelectValue placeholder={t("memory.selectCause")} />
                   </SelectTrigger>
                   <SelectContent>
                     {(allMemories as any[]).map((m: any) => (
@@ -435,9 +437,9 @@ export default function MemoryPage() {
 
             {form.type === "contextual" && (
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Context Trigger</label>
+                <label className="text-xs font-medium">{t("memory.contextTrigger")}</label>
                 <Input
-                  placeholder="e.g. in meetings with CEO, always mention..."
+                  placeholder={t("memory.contextTriggerPlaceholder")}
                   value={form.contextTrigger}
                   onChange={e => setForm(f => ({ ...f, contextTrigger: e.target.value }))}
                   className="h-9 text-sm"
@@ -447,9 +449,9 @@ export default function MemoryPage() {
             )}
 
             <div className="space-y-1.5">
-              <label className="text-xs font-medium">Agent Name (optional)</label>
+              <label className="text-xs font-medium">{t("memory.agentName")}</label>
               <Input
-                placeholder="e.g. NIKA"
+                placeholder={t("memory.agentNamePlaceholder")}
                 value={form.agentName}
                 onChange={e => setForm(f => ({ ...f, agentName: e.target.value }))}
                 className="h-9 text-sm"
@@ -462,7 +464,7 @@ export default function MemoryPage() {
               disabled={!form.content || createMutation.isPending}
               data-testid="button-create-memory-submit"
             >
-              {createMutation.isPending ? "Saving..." : "Save Memory"}
+              {createMutation.isPending ? t("memory.saving") : t("memory.saveMemory")}
             </Button>
           </div>
         </DialogContent>
