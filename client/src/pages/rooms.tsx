@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Trash2, MessageSquare, ArrowRight } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { Link } from "wouter";
 import { cn, safeParseIds } from "@/lib/utils";
 
@@ -21,6 +22,7 @@ const statusColors: Record<string, string> = {
 };
 
 export default function RoomsPage() {
+  const { t } = useI18n();
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: "", description: "" });
@@ -39,7 +41,7 @@ export default function RoomsPage() {
       setCreating(false);
       setForm({ name: "", description: "" });
       setSelectedAgents([]);
-      toast({ title: "Room created" });
+      toast({ title: t("rooms.toastCreated") });
     },
   });
 
@@ -47,7 +49,7 @@ export default function RoomsPage() {
     mutationFn: (id: number) => apiRequest("DELETE", `/api/rooms/${id}`).then(r => r.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/rooms"] });
-      toast({ title: "Room deleted" });
+      toast({ title: t("rooms.toastDeleted") });
     },
   });
 
@@ -82,9 +84,9 @@ export default function RoomsPage() {
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4 md:space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">Deliberation Rooms</h1>
+          <h1 className="text-lg font-semibold text-foreground">{t("rooms.title")}</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Spaces where agents discuss, deliberate, and reach decisions
+            {t("rooms.subtitle")}
           </p>
         </div>
         <Button size="sm" className="h-8 text-xs gap-1.5"
@@ -92,7 +94,7 @@ export default function RoomsPage() {
           onClick={() => setCreating(true)}
           data-testid="button-new-room"
         >
-          <Plus className="w-3.5 h-3.5" /> New Room
+          <Plus className="w-3.5 h-3.5" /> {t("rooms.newRoom")}
         </Button>
       </div>
 
@@ -105,10 +107,10 @@ export default function RoomsPage() {
       {!isLoading && (rooms as any[]).length === 0 && (
         <div className="bg-card border border-border rounded-xl p-12 text-center">
           <MessageSquare className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">No rooms yet</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">Create a room and invite agents from your flows</p>
+          <p className="text-sm text-muted-foreground">{t("rooms.empty")}</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">{t("rooms.emptyHint")}</p>
           <Button size="sm" variant="ghost" className="mt-3 text-xs" onClick={() => setCreating(true)}>
-            Create first room
+            {t("rooms.createFirst")}
           </Button>
         </div>
       )}
@@ -136,9 +138,9 @@ export default function RoomsPage() {
 
                   {/* Agents */}
                   <div className="flex items-center gap-2 pl-4 flex-wrap">
-                    <span className="text-[10px] text-muted-foreground">Agents:</span>
+                    <span className="text-[10px] text-muted-foreground">{t("rooms.agents")}</span>
                     {roomAgentIds.length === 0 && (
-                      <span className="text-[10px] text-muted-foreground/50">none</span>
+                      <span className="text-[10px] text-muted-foreground/50">{t("rooms.none")}</span>
                     )}
                     {roomAgentIds.map(id => {
                       const a = agentById(id);
@@ -165,13 +167,13 @@ export default function RoomsPage() {
                           room.status === s ? statusColors[s] : "border-transparent text-muted-foreground hover:text-foreground")}
                         onClick={() => updateStatusMutation.mutate({ id: room.id, status: s })}
                         data-testid={`button-room-status-${room.id}-${s}`}
-                      >{s}</button>
+                      >{t(`rooms.status.${s}`)}</button>
                     ))}
                   </div>
 
                   <Link href={`/rooms/${room.id}`}>
                     <a className="flex items-center gap-1 text-[10px] font-medium text-primary hover:text-primary/80">
-                      Open <ArrowRight className="w-3 h-3" />
+                      {t("rooms.open")} <ArrowRight className="w-3 h-3" />
                     </a>
                   </Link>
 
@@ -193,18 +195,18 @@ export default function RoomsPage() {
       <Dialog open={creating} onOpenChange={() => { setCreating(false); setSelectedAgents([]); setForm({ name: "", description: "" }); }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-sm">New Deliberation Room</DialogTitle>
+            <DialogTitle className="text-sm">{t("rooms.dialogTitle")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium">Room Name</label>
+              <label className="text-xs font-medium">{t("rooms.roomName")}</label>
               <Input placeholder={nextRoomName} value={form.name}
                 onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 className="h-9 text-sm" data-testid="input-room-name" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium">Purpose (optional)</label>
-              <Input placeholder="What will they deliberate on?" value={form.description}
+              <label className="text-xs font-medium">{t("rooms.purpose")}</label>
+              <Input placeholder={t("rooms.purposePlaceholder")} value={form.description}
                 onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                 className="h-9 text-sm" />
             </div>
@@ -212,7 +214,7 @@ export default function RoomsPage() {
             {/* Add from flow */}
             {(flows as any[]).length > 0 && (
               <div className="space-y-1.5">
-                <label className="text-xs font-medium">Add from Flow</label>
+                <label className="text-xs font-medium">{t("rooms.addFromFlow")}</label>
                 <div className="flex flex-wrap gap-1.5">
                   {(flows as any[]).map((f: any, i: number) => {
                     const color = FLOW_COLORS[i % FLOW_COLORS.length];
@@ -230,7 +232,7 @@ export default function RoomsPage() {
 
             {/* Agent selector */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium">Select Agents</label>
+              <label className="text-xs font-medium">{t("rooms.selectAgents")}</label>
               <div className="flex flex-wrap gap-1.5">
                 {(agents as any[]).map((a: any) => {
                   const sel = selectedAgents.includes(a.id);
@@ -246,7 +248,7 @@ export default function RoomsPage() {
                 })}
               </div>
               {selectedAgents.length > 0 && (
-                <p className="text-[10px] text-muted-foreground">{selectedAgents.length} agent{selectedAgents.length > 1 ? "s" : ""} selected</p>
+                <p className="text-[10px] text-muted-foreground">{selectedAgents.length} {t("rooms.agentsSelectedSuffix")}</p>
               )}
             </div>
 
@@ -260,7 +262,7 @@ export default function RoomsPage() {
               disabled={createMutation.isPending}
               data-testid="button-create-room-submit"
             >
-              {createMutation.isPending ? "Creating…" : "Create Room"}
+              {createMutation.isPending ? t("rooms.creating") : t("rooms.createRoom")}
             </Button>
           </div>
         </DialogContent>
