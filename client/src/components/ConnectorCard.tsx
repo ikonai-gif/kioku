@@ -13,21 +13,23 @@ export interface ConnectorDef {
   connectEndpoint?: string;
 }
 
+import { useI18n } from "@/i18n";
+
 export type ConnectorStatus = "connected" | "disconnected" | "coming_soon";
 
-const STATUS_CONFIG: Record<ConnectorStatus, { label: string; dot: string; badge: string }> = {
+const STATUS_CONFIG: Record<ConnectorStatus, { labelKey: string; dot: string; badge: string }> = {
   connected: {
-    label: "Connected",
+    labelKey: "connectors.statusConnected",
     dot: "bg-emerald-400",
     badge: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
   },
   disconnected: {
-    label: "Disconnected",
+    labelKey: "connectors.statusDisconnected",
     dot: "bg-red-400",
     badge: "bg-red-500/15 text-red-400 border-red-500/25",
   },
   coming_soon: {
-    label: "Coming Soon",
+    labelKey: "connectors.statusComingSoon",
     dot: "bg-yellow-400",
     badge: "bg-yellow-500/15 text-yellow-400 border-yellow-500/25",
   },
@@ -50,6 +52,7 @@ export default function ConnectorCard({
   onDisconnect,
   loading,
 }: ConnectorCardProps) {
+  const { t } = useI18n();
   const cfg = STATUS_CONFIG[status];
 
   return (
@@ -71,7 +74,7 @@ export default function ConnectorCard({
         {/* Status badge */}
         <span className={cn("text-[9px] font-medium px-2 py-0.5 rounded-full border flex-shrink-0 flex items-center gap-1", cfg.badge)}>
           <span className={cn("w-1.5 h-1.5 rounded-full", cfg.dot)} />
-          {cfg.label}
+          {t(cfg.labelKey)}
         </span>
       </div>
 
@@ -91,7 +94,7 @@ export default function ConnectorCard({
             disabled={loading}
           >
             {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
-            Disconnect
+            {t("common.disconnect")}
           </Button>
         ) : status === "disconnected" ? (
           <Button
@@ -102,10 +105,10 @@ export default function ConnectorCard({
             disabled={loading}
           >
             {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <ExternalLink className="w-3 h-3 mr-1" />}
-            Connect
+            {t("common.connect")}
           </Button>
         ) : (
-          <span className="text-[10px] text-muted-foreground/30 italic">Available soon</span>
+          <span className="text-[10px] text-muted-foreground/30 italic">{t("connectors.availableSoon")}</span>
         )}
       </div>
     </div>

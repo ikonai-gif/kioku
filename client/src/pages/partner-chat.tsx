@@ -3903,9 +3903,9 @@ export default function PartnerChat() {
             onPaste={handlePaste}
             placeholder={creativeMode
               ? creativeMode.mode === "draw"
-                ? "Describe what you'd like me to create..."
-                : "Describe what you'd like me to write..."
-              : "Message Luca..."}
+                ? t("chat.inputPlaceholder.draw")
+                : t("chat.inputPlaceholder.write")
+              : t("chat.inputPlaceholder")}
             rows={1}
             className="flex-1 resize-none rounded-xl px-4 py-2.5 text-sm bg-white/5 border border-white/10 text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-[#C9A340]/40 focus:ring-1 focus:ring-[#C9A340]/20"
             style={{ maxHeight: 120, minHeight: 44 }}
