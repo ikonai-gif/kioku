@@ -4,6 +4,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Plug } from "lucide-react";
 import ConnectorCard, { type ConnectorDef, type ConnectorStatus } from "@/components/ConnectorCard";
+import { useI18n } from "@/i18n";
 
 // ── Connector definitions ──────────────────────────────────────────────
 const CONNECTORS: ConnectorDef[] = [
@@ -59,6 +60,7 @@ interface GmailAccount { id: number; email: string; createdAt: number }
 
 export default function ConnectorsPage() {
   const { toast } = useToast();
+  const { t } = useI18n();
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [gmailLoading, setGmailLoading] = useState(false);
 
@@ -89,10 +91,10 @@ export default function ConnectorsPage() {
       if (data.url) {
         window.location.href = data.url;
       } else {
-        toast({ title: data.error || "Failed to get connect URL", variant: "destructive" });
+        toast({ title: data.error || t("connectors.connectUrlFailed"), variant: "destructive" });
       }
     } catch {
-      toast({ title: "Connection failed", variant: "destructive" });
+      toast({ title: t("connectors.connectionFailed"), variant: "destructive" });
     } finally {
       setGmailLoading(false);
     }
@@ -126,7 +128,7 @@ export default function ConnectorsPage() {
 
   const handleConnect = async (connector: ConnectorDef) => {
     if (!connector.connectEndpoint) {
-      toast({ title: `${connector.name} integration coming soon` });
+      toast({ title: `${connector.name} ${t("connectors.comingSoonToast")}` });
       return;
     }
     setLoadingId(connector.id);
@@ -136,10 +138,10 @@ export default function ConnectorsPage() {
       if (data.url) {
         window.location.href = data.url;
       } else {
-        toast({ title: "Failed to get connect URL", variant: "destructive" });
+        toast({ title: t("connectors.connectUrlFailed"), variant: "destructive" });
       }
     } catch {
-      toast({ title: "Connection failed", variant: "destructive" });
+      toast({ title: t("connectors.connectionFailed"), variant: "destructive" });
     } finally {
       setLoadingId(null);
     }
@@ -147,7 +149,7 @@ export default function ConnectorsPage() {
 
   const handleDisconnect = (connector: ConnectorDef) => {
     // Disconnect not yet supported in backend — show info
-    toast({ title: `To disconnect ${connector.name}, please contact support` });
+    toast({ title: `${t("connectors.contactSupport")} ${connector.name}` });
   };
 
   const connectedCount = CONNECTORS.filter((c) => getStatus(c) === "connected").length + (gmailAccounts.length > 0 ? 1 : 0);
@@ -159,15 +161,15 @@ export default function ConnectorsPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Plug className="w-5 h-5 text-[#C9A340]" />
-          <h1 className="text-lg font-semibold text-foreground">Connectors</h1>
+          <h1 className="text-lg font-semibold text-foreground">{t("connectors.title")}</h1>
           <span className="text-xs text-muted-foreground/50">
-            {connectedCount} / {totalCount} active
+            {connectedCount} / {totalCount} {t("connectors.active")}
           </span>
         </div>
       </div>
 
       <p className="text-xs text-muted-foreground/60 leading-relaxed max-w-md">
-        Connect external services so your AI agent can access your files, calendar, and messages.
+        {t("connectors.intro")}
       </p>
 
       {/* Gmail — multi-account card */}
@@ -181,7 +183,7 @@ export default function ConnectorsPage() {
             <div>
               <h3 className="text-sm font-medium text-foreground">Gmail</h3>
               <p className="text-[11px] text-muted-foreground/50 mt-0.5 leading-snug">
-                Несколько ящиков, поиск и чтение писем
+                {t("connectors.gmailDesc")}
               </p>
             </div>
           </div>
@@ -193,7 +195,7 @@ export default function ConnectorsPage() {
             }`}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${gmailAccounts.length > 0 ? "bg-emerald-400" : "bg-red-400"}`} />
-            {gmailAccounts.length > 0 ? `${gmailAccounts.length} подключено` : "Не подключен"}
+            {gmailAccounts.length > 0 ? `${gmailAccounts.length} ${t("connectors.connected")}` : t("connectors.notConnected")}
           </span>
         </div>
 
@@ -206,7 +208,7 @@ export default function ConnectorsPage() {
                   onClick={() => handleGmailDisconnect(a.email)}
                   className="ml-3 text-[10px] text-muted-foreground/40 hover:text-red-400"
                 >
-                  отключить
+                  {t("common.disconnect")}
                 </button>
               </li>
             ))}
@@ -220,7 +222,7 @@ export default function ConnectorsPage() {
             className="h-7 text-[10px] px-3 rounded-md font-medium inline-flex items-center gap-1"
             style={{ background: "hsl(43 74% 52%)", color: "hsl(222 47% 8%)" }}
           >
-            {gmailLoading ? "…" : (gmailAccounts.length > 0 ? "Добавить ещё Gmail" : "Подключить Gmail")}
+            {gmailLoading ? "…" : (gmailAccounts.length > 0 ? t("connectors.addGmail") : t("connectors.connectGmail"))}
           </button>
         </div>
       </div>
