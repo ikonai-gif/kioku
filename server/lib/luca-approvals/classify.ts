@@ -148,7 +148,12 @@ export type LucaAdmissibleTool =
   // session. Same risk profile as browse_website — sandboxed, per-domain
   // allowlist, destructive-action guard, $0.50/turn cost cap, 5/h rate
   // cap. No persistence outside the session. READ_ONLY.
-  | "luca_agent_browser";
+  | "luca_agent_browser"
+  // Track B — Gemini second-engine delegate. External model call; no repo
+  // write, no recipient, no persistence. Classified HIGH_STAKES_WRITE for
+  // the cautious first ship (Boss-approved per call); downgrade to
+  // READ_ONLY later for autonomy.
+  | "luca_ask_gemini";
 
 /**
  * Primary classification table by tool name (worst-case upper bound).
@@ -197,6 +202,16 @@ export const TOOL_WRITE_CLASS = {
 
   // ─── Google Calendar (read) — pure GET against primary calendar ───
   luca_calendar_list:   "READ_ONLY",
+
+  // ─── Track B — Gemini second-engine delegate ─────────────────────────
+  // No external side-effect, no recipient, no persistence (like luca_search
+  // / luca_read_url which are READ_ONLY). But it sends a prompt to a THIRD-
+  // PARTY model (Google), so for the cautious first ship we gate it: every
+  // call is Boss-approved. The patent privacy fence inside the handler is
+  // the hard pre-gate; this class is the human-in-the-loop backstop.
+  // Downgrade to READ_ONLY later (one line) once trusted — that makes Luca's
+  // second engine autonomous, same posture as luca_search.
+  luca_ask_gemini:      "HIGH_STAKES_WRITE",
 
   // ─── Media generation — LOW (costs some $$ but ephemeral URLs) ────
   // Returns data URI / signed URL to Luca. Kote sees output in chat.
