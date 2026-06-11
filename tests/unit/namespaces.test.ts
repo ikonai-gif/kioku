@@ -11,6 +11,7 @@ import {
   normalizeNamespace,
   isSensitiveNamespace,
   slugify,
+  INJECTION_ALWAYS_NAMESPACES,
 } from "@shared/namespaces";
 
 describe("normalizeNamespace", () => {
@@ -129,5 +130,21 @@ describe("namespaces.ts <-> namespaces.json consistency", () => {
   it("person-slug registry matches", () => {
     expect([...PERSON_SLUGS.pii].sort()).toEqual([...json.person_slugs.pii].sort());
     expect([...PERSON_SLUGS.internal].sort()).toEqual([...json.person_slugs.internal_agents].sort());
+  });
+});
+
+
+describe("INJECTION_ALWAYS_NAMESPACES — always-inject candidate allow-list [BRO2-A7.1]", () => {
+  it("includes _projects (regression: A7 #228 block rendered empty without it)", () => {
+    expect(INJECTION_ALWAYS_NAMESPACES).toContain("_projects");
+  });
+  it("includes the identity + episode-summary namespaces", () => {
+    expect(INJECTION_ALWAYS_NAMESPACES).toContain("_identity");
+    expect(INJECTION_ALWAYS_NAMESPACES).toContain("_episode_summaries");
+  });
+  it("every entry is a canonical namespace (guards typos)", () => {
+    for (const n of INJECTION_ALWAYS_NAMESPACES) {
+      expect(CANONICAL_NAMES.has(n)).toBe(true);
+    }
   });
 });

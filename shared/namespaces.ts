@@ -61,6 +61,14 @@ export const CANONICAL: readonly NamespaceDef[] = [
 ];
 
 export const CANONICAL_NAMES: ReadonlySet<string> = new Set(CANONICAL.map((d) => d.name));
+
+// ── Always-inject namespaces ──────────────────────────────────────────────
+// Namespaces whose rows storage.getInjectionCandidates loads into the
+// injection-candidate universe regardless of topic relevance. Single source of
+// truth shared with the SQL WHERE so the list cannot silently drift.
+// [BRO2-A7.1] _projects added: A7 (#228) injected the ACTIVE PROJECTS block but
+// this source query never surfaced _projects rows, so the block rendered empty.
+export const INJECTION_ALWAYS_NAMESPACES = ["_identity", "_episode_summaries", "_projects"] as const;
 const SENSITIVE_BASE: ReadonlySet<string> = new Set(CANONICAL.filter((d) => d.sensitive).map((d) => d.name));
 
 // ── Explicit legacy aliases (exact legacy string -> canonical) ────────────
