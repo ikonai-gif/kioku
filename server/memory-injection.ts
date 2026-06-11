@@ -15,6 +15,7 @@ export interface LucaMemoryEnvConfig {
   memoryFetchLimit: number;
   graphExpansionEnabled: boolean;
   bossProfileCharCap: number;
+  projectsCharCap: number;
 }
 
 function parseLucaMemoryFetchLimit(raw: string | undefined): number {
@@ -35,6 +36,15 @@ function parseLucaBossProfileCharCap(raw: string | undefined): number {
   return n;
 }
 
+function parseLucaProjectsCharCap(raw: string | undefined): number {
+  if (raw === undefined) return 2000;
+  const s = String(raw).trim();
+  if (s === "") return 2000;
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n <= 0) return 2000;
+  return n;
+}
+
 function parseLucaGraphExpansionEnabled(raw: string | undefined): boolean {
   if (raw === undefined) return true;
   const s = String(raw).trim().toLowerCase();
@@ -52,6 +62,7 @@ export function getLucaMemoryConfig(env: NodeJS.ProcessEnv = process.env): LucaM
     memoryFetchLimit: parseLucaMemoryFetchLimit(env.LUCA_MEMORY_FETCH_LIMIT),
     graphExpansionEnabled: parseLucaGraphExpansionEnabled(env.LUCA_GRAPH_EXPANSION_ENABLED),
     bossProfileCharCap: parseLucaBossProfileCharCap(env.LUCA_BOSS_PROFILE_CHAR_CAP),
+    projectsCharCap: parseLucaProjectsCharCap(env.LUCA_PROJECTS_CHAR_CAP),
   };
 }
 
@@ -541,6 +552,44 @@ export async function fetchRelevantMemories(
     alwaysInjectIds.add(m.id);
   }
 
+  // [BRO2-A7 / LUCA-071] Always-inject ACTIVE PROJECTS.
+  // _projects rows (e.g. importance=0.95) previously competed in the topic
+  // top-K pool and got evicted on short prompts, so Luca lost sight of her
+  // active projects. Pin them like identity/boss-profile, under their own
+  // char cap (LUCA_PROJECTS_CHAR_CAP, default 2000). De-dupe vs pinned ids;
+  // always admit the first project even if it alone exceeds the cap.
+  const PROJECTS_CHAR_CAP = config.projectsCharCap;
+  const projectCandidates = injectionCandidates
+    .filter((m: any) => {
+      if (alwaysInjectIds.has(m.id)) return false;
+      return (((m as any).namespace ?? null) === "_projects");
+    })
+    .sort((a: any, b: any) => {
+      const impA = typeof a.importance === "number" ? a.importance : 0.5;
+      const impB = typeof b.importance === "number" ? b.importance : 0.5;
+      if (impA !== impB) return impB - impA;
+      const tsA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tsB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tsB - tsA;
+    });
+  let projectsCharUsed = 0;
+  for (const m of projectCandidates) {
+    const content = ((m as any).content ?? "") as string;
+    if (projectsCharUsed + content.length > PROJECTS_CHAR_CAP && projectsCharUsed > 0) break;
+    alwaysInject.push({
+      id: m.id,
+      content,
+      type: (m as any).type,
+      confidence: typeof (m as any).confidence === "number" ? (m as any).confidence : 1.0,
+      expiresAt: (m as any).expiresAt,
+      emotionVector: (m as any).emotionVector ?? null,
+      namespace: (m as any).namespace ?? null,
+      provenance: (m as any).provenance ?? null,
+    });
+    projectsCharUsed += content.length;
+    alwaysInjectIds.add(m.id);
+  }
+
   // Always-inject: 3 most recent episode summaries regardless of keyword match
   const episodeSummaries: InjectedMemory[] = injectionCandidates
     .filter((m: any) => m.namespace === '_episode_summaries')
@@ -852,7 +901,9 @@ export function formatMemoryContext(memories: InjectedMemory[], links?: MemoryLi
   const identityIds = new Set(identityMems.map(m => m.id));
   const episodeMems = memories.filter(m => m.namespace === '_episode_summaries' && !identityIds.has(m.id));
   const episodeIds = new Set(episodeMems.map(m => m.id));
-  const topicMems = memories.filter(m => !isIdentity(m) && !episodeIds.has(m.id));
+  const projectMems = memories.filter(m => m.namespace === '_projects' && !identityIds.has(m.id) && !episodeIds.has(m.id));
+  const projectIds = new Set(projectMems.map(m => m.id));
+  const topicMems = memories.filter(m => !isIdentity(m) && !episodeIds.has(m.id) && !projectIds.has(m.id));
 
   let output = "";
 
@@ -912,6 +963,11 @@ export function formatMemoryContext(memories: InjectedMemory[], links?: MemoryLi
   if (identityMems.length > 0) {
     const idLines = identityMems.map((m, i) => `${i + 1}. ${m.content}`);
     output += `\n\n## WHO YOU ARE (core memories — always active)\n${idLines.join("\n")}\nThese are your foundational memories. They define who you are across every conversation.`;
+  }
+
+  if (projectMems.length > 0) {
+    const prLines = projectMems.map((m, i) => `${i + 1}. ${m.content}`);
+    output += `\n\n## ACTIVE PROJECTS (current work — always active)\n${prLines.join("\n")}\nThese are your active projects. Treat them as current context in every conversation.`;
   }
 
   if (episodeMems.length > 0) {
