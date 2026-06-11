@@ -7,6 +7,7 @@ describe("getLucaMemoryConfig", () => {
       memoryFetchLimit: 500,
       graphExpansionEnabled: true,
       bossProfileCharCap: 4000,
+      projectsCharCap: 2000,
     });
   });
 
@@ -21,7 +22,15 @@ describe("getLucaMemoryConfig", () => {
       memoryFetchLimit: 200,
       graphExpansionEnabled: false,
       bossProfileCharCap: 2500,
+      projectsCharCap: 2000,
     });
+  });
+
+  it("projectsCharCap: default 2000, env override, invalid/zero fallback", () => {
+    expect(getLucaMemoryConfig({} as NodeJS.ProcessEnv).projectsCharCap).toBe(2000);
+    expect(getLucaMemoryConfig({ LUCA_PROJECTS_CHAR_CAP: "1500" } as NodeJS.ProcessEnv).projectsCharCap).toBe(1500);
+    expect(getLucaMemoryConfig({ LUCA_PROJECTS_CHAR_CAP: "xyz" } as NodeJS.ProcessEnv).projectsCharCap).toBe(2000);
+    expect(getLucaMemoryConfig({ LUCA_PROJECTS_CHAR_CAP: "0" } as NodeJS.ProcessEnv).projectsCharCap).toBe(2000);
   });
 
   it("parses boolean true variants", () => {
@@ -50,6 +59,19 @@ describe("getLucaMemoryConfig", () => {
 });
 
 describe("formatMemoryContext", () => {
+  it("renders _projects under ACTIVE PROJECTS and excludes them from Your Memories", () => {
+    const memories: InjectedMemory[] = [
+      { id: 1, content: "Project KIOKU: multi-agent routing", type: "semantic", confidence: 1, namespace: "_projects" },
+      { id: 2, content: "unrelated topical fact", type: "semantic", confidence: 0.8, namespace: null },
+    ];
+    const result = formatMemoryContext(memories);
+    expect(result).toContain("## ACTIVE PROJECTS");
+    expect(result).toContain("Project KIOKU: multi-agent routing");
+    const projIdx = result.indexOf("Project KIOKU: multi-agent routing");
+    const yourMemIdx = result.indexOf("## Your Memories");
+    expect(projIdx).toBeGreaterThan(-1);
+    if (yourMemIdx !== -1) expect(projIdx).toBeLessThan(yourMemIdx);
+  });
   it("returns empty string when no memories", () => {
     expect(formatMemoryContext([])).toBe("");
   });
