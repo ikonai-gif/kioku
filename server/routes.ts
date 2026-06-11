@@ -13,6 +13,7 @@ import {
 } from "./ws";
 import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, abortRoomTurn, isRoomTurnActive, getPartnerToolsForAgent, getLucaStudioToolNames } from "./deliberation";
 import { readLucaEnv } from "./lib/luca/env";
+import { buildRoomExport, serializeRoomExport, exportFilename, PatentRoomExportBlockedError } from "./room-export";
 import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
 import { runHealthCheck, acceptCurrentTruthAsBaseline } from "./lib/self-monitoring/health-job";
 import { runFabricationSelfTest, ensureSelfMonitoringRoom, getProbeFailStreaks } from "./lib/self-monitoring/fabrication";
@@ -2011,6 +2012,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const messages = await storage.getRoomMessages(Number(req.params.id), userId);
     if (messages === null) return res.status(404).json({ error: "Not found" });
     res.json(messages);
+  }));
+
+  // [BRO2-A8 / LUCA-072] Build order #3 PR1 — room audit export (read-only JSON).
+  // Owner-only (rooms.user_id), no enumeration leak; patent rooms blocked 403.
+  // PR1 = JSON only; format param reserved for PR2 (PDF/A-3, Ed25519 per BRO4-002).
+  app.get("/api/rooms/:id/export", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const roomId = Number(req.params.id);
+    if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad room id" });
+    const format = String(req.query.format ?? "json");
+    if (format !== "json") return res.status(400).json({ error: "Only format=json is supported in PR1" });
+    try {
+      const payload = await buildRoomExport(roomId, userId);
+      if (payload === null) return res.status(404).json({ error: "Not found" });
+      const body = serializeRoomExport(payload);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${exportFilename(roomId)}"`);
+      return res.send(body);
+    } catch (e) {
+      if (e instanceof PatentRoomExportBlockedError) {
+        return res.status(403).json({ error: "Export blocked: patent room (K12-K20 privacy rule)" });
+      }
+      throw e;
+    }
   }));
 
   // Feature #2: get tool activity history for a specific Luca message.
