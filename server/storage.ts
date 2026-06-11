@@ -768,6 +768,9 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_luca_audit_blocked
       ON luca_audit_log (created_at DESC) WHERE status IN ('rate_limited','blocked','error');
   `);
+  // [BRO2-A11 / LUCA-073-A] auto_mode marker column (mirrors migrations/0019).
+  await pool.query(`ALTER TABLE luca_audit_log ADD COLUMN IF NOT EXISTS auto_mode BOOLEAN NOT NULL DEFAULT false;`);
+
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.
   // Mirrors migrations/0015_luca_proposals.sql + shared/schema.ts:lucaProposals.

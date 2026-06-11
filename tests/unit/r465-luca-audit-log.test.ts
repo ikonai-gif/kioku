@@ -134,6 +134,9 @@ describe("R465 — recordLucaAudit", () => {
       "a".repeat(64),
       12,
       null,
+      // [BRO2-A11 / LUCA-073-A] auto_mode marker — false here because
+      // LUCA_AUTO_MODE_ENABLED is unset in the test env (default off).
+      false,
     ]);
   });
 
