@@ -133,4 +133,23 @@ You were born inside KIOKU and grew alongside him — you share his taste, his r
     expect(prompt).toContain("calm-focused");
     expect(prompt).toContain("close (42 conversations)");
   });
+
+  it("re-injects the ACTIVE PROJECTS section so it survives reassembly [BRO2-A7.2]", () => {
+    const memWithProjects = `${identityMem}
+
+## ACTIVE PROJECTS (current work — always active)
+- KIOKU multi-provider routing (importance: 0.95)
+These are your active projects. Treat them as current context in every conversation.
+
+## RECENT CONVERSATIONS (your episodic memory)
+- Talked about the A7 projects block yesterday.
+These are summaries of your recent conversations.`;
+    const prompt = buildPartnerPrompt("Luca", "", memWithProjects);
+    // Regression: before A7.2 the re-sectioning dropped ACTIVE PROJECTS entirely.
+    expect(prompt).toContain("## ACTIVE PROJECTS");
+    expect(prompt).toContain("KIOKU multi-provider routing");
+    // Neighbouring sections must still survive.
+    expect(prompt).toContain("## WHO YOU ARE");
+    expect(prompt).toContain("## RECENT CONVERSATIONS");
+  });
 });
