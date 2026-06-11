@@ -8533,6 +8533,11 @@ export function buildPartnerPromptParts(
   const identitySection = extractSection(memBlock, '## WHO YOU ARE');
   const episodesSection = extractSection(memBlock, '## RECENT CONVERSATIONS');
   const topicMemSection = extractSection(memBlock, '## Your Memories');
+  // [BRO2-A7.2] ACTIVE PROJECTS is rendered by memory-injection between WHO YOU
+  // ARE and RECENT CONVERSATIONS. It must be re-extracted here or it is silently
+  // dropped on reassembly — A7 (#228) + A7.1 (#229) fed the block but it never
+  // survived this re-sectioning step.
+  const projectsSection = extractSection(memBlock, '## ACTIVE PROJECTS');
   const restMemBlock = [episodesSection, topicMemSection].filter(Boolean).join('\n\n');
 
   // ── STATIC HALF ────────────────────────────────────────
@@ -8820,6 +8825,7 @@ ${approvalLifecycleBlock}
     (recentContextBlock ? `\n${recentContextBlock}` : "") +
     (coreIdentityBlock ? `\n${coreIdentityBlock}` : "") +
     (identitySection ? `\n${identitySection}` : "") +
+    (projectsSection ? `\n${projectsSection}` : "") +
     `\n${mood}` +
     `\n${openingStyle}` +
     (emotionBlock ? `\n${emotionBlock}` : "") +
