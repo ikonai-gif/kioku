@@ -153,7 +153,17 @@ export type LucaAdmissibleTool =
   // write, no recipient, no persistence. Classified HIGH_STAKES_WRITE for
   // the cautious first ship (Boss-approved per call); downgrade to
   // READ_ONLY later for autonomy.
-  | "luca_ask_gemini";
+  | "luca_ask_gemini"
+  // [BRO2-311] DEV scope - sandbox / build / delegate
+  | "sandbox_shell"
+  | "sandbox_write_file"
+  | "sandbox_read_file"
+  | "sandbox_list_files"
+  | "sandbox_download"
+  | "reset_sandbox"
+  | "build_project"
+  | "delegate_task"
+  | "delegate_parallel";
 
 /**
  * Primary classification table by tool name (worst-case upper bound).
@@ -368,6 +378,16 @@ export const TOOL_WRITE_CLASS = {
   // makes the side-effect surface equivalent. If we ever add login flows
   // or persistent storage, promote to HIGH_STAKES_WRITE.
   luca_agent_browser:       "READ_ONLY",
+  // [BRO2-311] DEV scope
+  sandbox_read_file:    "READ_ONLY",
+  sandbox_list_files:   "READ_ONLY",
+  sandbox_write_file:   "LOW_STAKES_WRITE",
+  sandbox_download:     "LOW_STAKES_WRITE",
+  sandbox_shell:        "HIGH_STAKES_WRITE",
+  build_project:        "HIGH_STAKES_WRITE",
+  reset_sandbox:        "HIGH_STAKES_WRITE",
+  delegate_task:        "HIGH_STAKES_WRITE",
+  delegate_parallel:    "HIGH_STAKES_WRITE",
 } as const satisfies Record<LucaAdmissibleTool, ToolWriteClass>;
 
 /**
@@ -393,19 +413,10 @@ export const TOOL_WRITE_CLASS = {
  *     phantom duplicates of the V1a luca_-prefixed versions
  */
 export const UNADMITTED_TOOLS: ReadonlySet<string> = new Set([
-  "sandbox_shell",
-  "sandbox_write_file",
-  "sandbox_read_file",
-  "sandbox_list_files",
-  "sandbox_download",
-  "reset_sandbox",
   "create_file",
   "read_file",
   "convert_file",
-  "delegate_task",
-  "delegate_parallel",
   "plan_steps",
-  "build_project",
   "composio_action",
   "creative_writing",
   "learn_lesson",
