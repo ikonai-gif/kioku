@@ -17,7 +17,7 @@ import {
   type KnowledgeDomain, type InsertKnowledgeDomain,
   type AestheticPreference, type InsertAestheticPreference,
 } from "@shared/schema";
-import { normalizeNamespace, isValidFactKey } from "@shared/namespaces";
+import { normalizeNamespace, isValidFactKey, INJECTION_ALWAYS_NAMESPACES } from "@shared/namespaces";
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { provenanceWeight } from "./lib/memory-domain";
@@ -1674,7 +1674,7 @@ export class Storage implements IStorage {
     const results = await db.select().from(memories).where(
       sql`${memories.userId} = ${userId}
           AND (${memories.agentId} = ${agentId} OR ${memories.agentId} IS NULL)
-          AND (${memories.namespace} IN ('_identity', '_episode_summaries')
+          AND (${inArray(memories.namespace, [...INJECTION_ALWAYS_NAMESPACES])}
                OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))`
     ).orderBy(desc(memories.importance), desc(memories.createdAt));
     const now = Date.now();
