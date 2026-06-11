@@ -242,14 +242,30 @@ describe("classify: admissible vs unadmitted invariants", () => {
   it("UNADMITTED_TOOLS contains known phantom/legacy tools", () => {
     // Sanity: the main culprits from the W7 P2.5 trim must stay out.
     expect(UNADMITTED_TOOLS.has("composio_action")).toBe(true);
-    expect(UNADMITTED_TOOLS.has("sandbox_shell")).toBe(true);
-    expect(UNADMITTED_TOOLS.has("delegate_task")).toBe(true);
-    expect(UNADMITTED_TOOLS.has("build_project")).toBe(true);
     // Phantoms (no luca_ prefix) must stay out.
     expect(UNADMITTED_TOOLS.has("run_code")).toBe(true);
     expect(UNADMITTED_TOOLS.has("web_search")).toBe(true);
     expect(UNADMITTED_TOOLS.has("read_url")).toBe(true);
     expect(UNADMITTED_TOOLS.has("analyze_image")).toBe(true);
+  });
+
+  it("[BRO2-311] DEV-scope tools are now admissible (moved out of UNADMITTED)", () => {
+    for (const t of [
+      "sandbox_shell", "sandbox_write_file", "sandbox_read_file",
+      "sandbox_list_files", "sandbox_download", "reset_sandbox",
+      "build_project", "delegate_task", "delegate_parallel",
+    ] as const) {
+      expect(isAdmissibleTool(t), `${t} admissible`).toBe(true);
+      expect(UNADMITTED_TOOLS.has(t), `${t} not unadmitted`).toBe(false);
+    }
+    expect(TOOL_WRITE_CLASS.sandbox_shell).toBe("HIGH_STAKES_WRITE");
+    expect(TOOL_WRITE_CLASS.build_project).toBe("HIGH_STAKES_WRITE");
+    expect(TOOL_WRITE_CLASS.delegate_parallel).toBe("HIGH_STAKES_WRITE");
+    expect(TOOL_WRITE_CLASS.reset_sandbox).toBe("HIGH_STAKES_WRITE");
+    expect(TOOL_WRITE_CLASS.sandbox_read_file).toBe("READ_ONLY");
+    expect(TOOL_WRITE_CLASS.sandbox_list_files).toBe("READ_ONLY");
+    expect(TOOL_WRITE_CLASS.sandbox_write_file).toBe("LOW_STAKES_WRITE");
+    expect(TOOL_WRITE_CLASS.sandbox_download).toBe("LOW_STAKES_WRITE");
   });
 
   it("send_telegram_message is HIGH by name (LEO PR-A; tiered downgrade in classifyToolCall)", () => {

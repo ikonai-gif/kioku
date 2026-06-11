@@ -338,6 +338,23 @@ const LUCA_STUDIO_TOOL_NAMES_EXPANDED: readonly string[] = [
   "produce_season",
 ];
 
+// Day 6 part 4 [BRO2-311] - DEV scope: admit existing hardened sandbox/build/
+// delegate tools into Luca effective scope. Every name is classified in
+// classify.ts; HIGH ones are approval-gated. assertLucaEnvConsistency refuses
+// boot if DEV=true and GATE=false.
+const LUCA_STUDIO_TOOL_NAMES_DEV: readonly string[] = [
+  "sandbox_shell",
+  "sandbox_write_file",
+  "sandbox_read_file",
+  "sandbox_list_files",
+  "sandbox_download",
+  "reset_sandbox",
+  "build_project",
+  "delegate_task",
+  "delegate_parallel",
+];
+
+
 /**
  * Legacy base surface (19 tools). Kept exported for call sites that only
  * need the always-on base — tests and static analyses. For Luca's
@@ -355,13 +372,17 @@ export const LUCA_STUDIO_TOOL_NAMES: ReadonlySet<string> = new Set(
  */
 export function getLucaStudioToolNames(): ReadonlySet<string> {
   const env = readLucaEnv();
-  if (env.LUCA_EXPANDED_SCOPE_ENABLED) {
-    return new Set<string>([
-      ...LUCA_STUDIO_TOOL_NAMES_BASE,
-      ...LUCA_STUDIO_TOOL_NAMES_EXPANDED,
-    ]);
+  if (!env.LUCA_EXPANDED_SCOPE_ENABLED && !env.LUCA_DEV_SCOPE_ENABLED) {
+    return LUCA_STUDIO_TOOL_NAMES;
   }
-  return LUCA_STUDIO_TOOL_NAMES;
+  const names = new Set<string>(LUCA_STUDIO_TOOL_NAMES_BASE);
+  if (env.LUCA_EXPANDED_SCOPE_ENABLED) {
+    for (const n of LUCA_STUDIO_TOOL_NAMES_EXPANDED) names.add(n);
+  }
+  if (env.LUCA_DEV_SCOPE_ENABLED) {
+    for (const n of LUCA_STUDIO_TOOL_NAMES_DEV) names.add(n);
+  }
+  return names;
 }
 
 const partnerTools: Anthropic.Messages.Tool[] = [

@@ -140,6 +140,14 @@ export interface LucaEnv {
    */
   LUCA_EXPANDED_SCOPE_ENABLED: boolean;
 
+  /**
+   * [BRO2-311] DEV scope. Admits existing hardened sandbox/build/delegate
+   * tools into LUCA_STUDIO_TOOL_NAMES. Like EXPANDED, safe only when
+   * APPROVAL_GATE_ENABLED=true; startup fails fast if DEV=true and GATE=false.
+   * Default false (ship-dark).
+   */
+  LUCA_DEV_SCOPE_ENABLED: boolean;
+
   // ── LEO PR-A — Luca Event-Driven Outreach (Telegram tool) ─────────────
   // None of these are connected to a master flag yet; the tool itself
   // returns `{ok:false, error:'telegram_not_configured'}` when token/chat
@@ -222,6 +230,7 @@ export function readLucaEnv(): LucaEnv {
     LUCA_APPROVAL_GATE_MODE:
       process.env.LUCA_APPROVAL_GATE_MODE === "log_only" ? "log_only" : "block",
     LUCA_EXPANDED_SCOPE_ENABLED: process.env.LUCA_EXPANDED_SCOPE_ENABLED === "true",
+    LUCA_DEV_SCOPE_ENABLED: process.env.LUCA_DEV_SCOPE_ENABLED === "true",
     // LEO PR-A — additive, no consistency rules. Tool gates itself on
     // missing token/chat at call time.
     LUCA_QUIET_HOURS: (process.env.LUCA_QUIET_HOURS ?? "").trim() || "22:00-08:00",
@@ -256,6 +265,12 @@ export function assertLucaEnvConsistency(env: LucaEnv = readLucaEnv()): void {
     throw new Error(
       "luca_env_inconsistent: LUCA_EXPANDED_SCOPE_ENABLED=true requires LUCA_APPROVAL_GATE_ENABLED=true " +
         "(expanded scope adds Gmail/Drive/GitHub writes; disabling the gate would let Luca send without confirmation)",
+    );
+  }
+  if (env.LUCA_DEV_SCOPE_ENABLED && !env.LUCA_APPROVAL_GATE_ENABLED) {
+    throw new Error(
+      "luca_env_inconsistent: LUCA_DEV_SCOPE_ENABLED=true requires LUCA_APPROVAL_GATE_ENABLED=true " +
+        "(dev scope admits sandbox_shell / build_project / delegate_*; disabling the gate would let Luca run HIGH_STAKES commands without confirmation)",
     );
   }
   if (env.LUCA_APPROVAL_GATE_ENABLED && !env.LUCA_V1A_ENABLED) {
