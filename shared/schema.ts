@@ -690,6 +690,8 @@ export const lucaAuditLog = pgTable("luca_audit_log", {
   inputHash:      varchar("input_hash", { length: 64 }).notNull(),
   latencyMs:      integer("latency_ms").notNull().default(0),
   errorDetail:    text("error_detail"),
+  // [BRO2-A11 / LUCA-073-A] true when the call ran autonomously under LUCA_AUTO_MODE_ENABLED.
+  autoMode:       boolean("auto_mode").notNull().default(false),
   createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("idx_luca_audit_user_created").on(t.userId, t.createdAt),

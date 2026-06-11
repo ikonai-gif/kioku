@@ -27,6 +27,7 @@
  *   when needed.
  */
 
+import { autoModeMarker } from "./auto-mode";
 import { createHash } from "node:crypto";
 import { pool } from "../../storage";
 import logger from "../../logger";
@@ -91,8 +92,8 @@ export async function recordLucaAudit(params: {
   try {
     await pool.query(
       `INSERT INTO luca_audit_log
-         (user_id, agent_id, tool, classification, status, input_hash, latency_ms, error_detail)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (user_id, agent_id, tool, classification, status, input_hash, latency_ms, error_detail, auto_mode)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         params.userId,
         params.agentId ?? null,
@@ -102,6 +103,8 @@ export async function recordLucaAudit(params: {
         params.inputHash,
         Math.max(0, Math.floor(params.latencyMs)),
         (params.errorDetail ?? null) === null ? null : (params.errorDetail as string).slice(0, 500),
+        // [BRO2-A11 / LUCA-073-A] single chokepoint: marking only, never gates.
+        autoModeMarker(params.classification),
       ],
     );
   } catch (e: any) {
