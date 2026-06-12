@@ -785,6 +785,20 @@ export async function initDb() {
   await pool.query(`ALTER TABLE rooms FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS rooms_user_isolation ON rooms;`);
   await pool.query(`CREATE POLICY rooms_user_isolation ON rooms USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  // [LUCA-087] RLS Phase 2 (mirrors migrations/0022): room_messages (JOIN policy),
+  // agent_turns, agents. Same legacy-safe COALESCE/NULLIF shape; backdoor stays until PR3.
+  await pool.query(`ALTER TABLE room_messages ENABLE ROW LEVEL SECURITY;`);
+  await pool.query(`ALTER TABLE room_messages FORCE ROW LEVEL SECURITY;`);
+  await pool.query(`DROP POLICY IF EXISTS room_messages_user_isolation ON room_messages;`);
+  await pool.query(`CREATE POLICY room_messages_user_isolation ON room_messages USING (COALESCE(current_setting('app.user_id', true), '') = '' OR room_id IN (SELECT id FROM rooms WHERE user_id = NULLIF(current_setting('app.user_id', true), '')::int));`);
+  await pool.query(`ALTER TABLE agent_turns ENABLE ROW LEVEL SECURITY;`);
+  await pool.query(`ALTER TABLE agent_turns FORCE ROW LEVEL SECURITY;`);
+  await pool.query(`DROP POLICY IF EXISTS agent_turns_user_isolation ON agent_turns;`);
+  await pool.query(`CREATE POLICY agent_turns_user_isolation ON agent_turns USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`ALTER TABLE agents ENABLE ROW LEVEL SECURITY;`);
+  await pool.query(`ALTER TABLE agents FORCE ROW LEVEL SECURITY;`);
+  await pool.query(`DROP POLICY IF EXISTS agents_user_isolation ON agents;`);
+  await pool.query(`CREATE POLICY agents_user_isolation ON agents USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
 
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.
@@ -2167,14 +2181,30 @@ export class Storage implements IStorage {
     // Verify room belongs to user
     const room = await this.getRoom(roomId, userId);
     if (!room) return null;
-    return db.select().from(roomMessages).where(eq(roomMessages.roomId, roomId))
-      .orderBy(roomMessages.createdAt);
+    // [LUCA-087] RLS Phase 2: GUC-scoped transaction so the JOIN policy on
+    // room_messages enforces visibility at the DB layer under the app check.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.user_id', ${String(userId)}, true)`);
+      return tx.select().from(roomMessages).where(eq(roomMessages.roomId, roomId))
+        .orderBy(roomMessages.createdAt);
+    });
   }
   async addRoomMessage(data: InsertRoomMessage, userId?: number): Promise<RoomMessage | null> {
     // If userId provided, verify room belongs to user
     if (userId !== undefined) {
       const room = await this.getRoom(data.roomId, userId);
       if (!room) return null;
+    }
+    // [LUCA-087] RLS Phase 2: when the caller is user-scoped, run the INSERT
+    // under the GUC so WITH CHECK rejects writes into rooms the user does not
+    // own. Internal callers (userId undefined) stay on the legacy path.
+    if (userId !== undefined) {
+      const uid = userId;
+      const [result] = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('app.user_id', ${String(uid)}, true)`);
+        return tx.insert(roomMessages).values({ ...data, createdAt: Date.now() }).returning();
+      });
+      return result;
     }
     const [result] = await db
       .insert(roomMessages)

@@ -61,10 +61,13 @@ describe("withRLS (LUCA-086)", () => {
 
 describe("migration 0021 policy guard (BRO2 fix #5 to LUCA-086)", () => {
   it("keeps FORCE and the COALESCE/NULLIF legacy-safe policy", () => {
-    const m = readFileSync(join(__dirname, "..", "..", "migrations", "0021_rls_phase1.sql"), "utf-8");
-    expect(m).toContain("FORCE ROW LEVEL SECURITY");
-    expect(m).toContain("COALESCE(current_setting(");
-    expect(m).toContain("NULLIF(current_setting(");
-    expect(m).toContain(")::int");
+    // Phase 1 and Phase 2 migrations both carry fix #5 — guard them all.
+    for (const f of ["0021_rls_phase1.sql", "0022_rls_phase2.sql"]) {
+      const m = readFileSync(join(__dirname, "..", "..", "migrations", f), "utf-8");
+      expect(m).toContain("FORCE ROW LEVEL SECURITY");
+      expect(m).toContain("COALESCE(current_setting(");
+      expect(m).toContain("NULLIF(current_setting(");
+      expect(m).toContain(")::int");
+    }
   });
 });
