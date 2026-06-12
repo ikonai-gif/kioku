@@ -82,6 +82,8 @@ import { sendTelegramMessage } from "./lib/telegram";
 import { broadcastTelegramInboundEvent } from "./lib/luca-approvals/ws-events";
 import { telegramInboundLog } from "@shared/schema";
 import { db } from "./storage";
+import { withRLS } from "./lib/rls";
+import { toAgentSkillExport, parseAgentSkillImport } from "./lib/skills-format";
 import { eq } from "drizzle-orm";
 
 /** Extract a single-string route param (Express 5 types params as string | string[]). */
@@ -3926,6 +3928,177 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e: any) {
       logger.error({ source: "luca-skills", err: e?.message }, "[luca] skills/get failed");
       res.status(500).json({ error: e?.message || "get failed" });
+    }
+  }));
+
+  // -- [LUCA-089 Parts 3-4 / BRO2] Skills PR2: /api/skills namespace --
+  //
+  // RLS-scoped per-user skills API on top of migrations 0024/0025. The legacy
+  // R470 owner-only /api/luca/skills endpoints above stay untouched. Reads run
+  // inside withRLS(userId) so the DB policy (globals + own rows) is the single
+  // source of truth. Boss review ops (create/import/approve/reject) are
+  // owner-only and intentionally use the plain pool path so Boss can supervise
+  // pending skills of any user (RLS backdoor by design until RLS PR3).
+  // Pending = auto_created = TRUE AND approved_at IS NULL.
+
+  app.get("/api/skills", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const categoryParam = typeof req.query.category === "string" ? req.query.category.trim() : "";
+    if (categoryParam.length > 32) return res.status(400).json({ error: "category_too_long" });
+    const pendingOnly = req.query.pending === "true";
+    const limitParam = Number(req.query.limit ?? 200);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 200 ? Math.floor(limitParam) : 200;
+    try {
+      const rows = await withRLS(userId, async (client) => {
+        const conds: string[] = [];
+        const args: unknown[] = [];
+        if (categoryParam) { args.push(categoryParam); conds.push(`category = $${args.length}`); }
+        if (pendingOnly) { conds.push(`auto_created = TRUE AND approved_at IS NULL`); }
+        args.push(limit);
+        const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+        const r = await client.query(
+          `SELECT id, user_id, agent_id, name, category, description, prompt_template, trigger_pattern, auto_created, tool_sequence, use_count, last_used_at, approved_at, created_at, updated_at FROM luca_skills ${where} ORDER BY category ASC, name ASC LIMIT $${args.length}`,
+          args,
+        );
+        return r.rows;
+      });
+      res.json({ skills: rows, count: rows.length });
+    } catch (e: any) {
+      logger.error({ source: "skills-api", err: e?.message }, "[skills] list failed");
+      res.status(500).json({ error: e?.message || "list failed" });
+    }
+  }));
+
+  app.get("/api/skills/export", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    try {
+      const rows = await withRLS(userId, async (client) => {
+        const r = await client.query(`SELECT id, user_id, agent_id, name, category, description, prompt_template, trigger_pattern, auto_created, tool_sequence, use_count, last_used_at, approved_at, created_at, updated_at FROM luca_skills ORDER BY category ASC, name ASC`);
+        return r.rows;
+      });
+      res.json({ format: "agentskills.io/v1", count: rows.length, skills: rows.map(toAgentSkillExport) });
+    } catch (e: any) {
+      logger.error({ source: "skills-api", err: e?.message }, "[skills] export failed");
+      res.status(500).json({ error: e?.message || "export failed" });
+    }
+  }));
+
+  app.get("/api/skills/:name", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const name = typeof req.params.name === "string" ? req.params.name.trim() : "";
+    if (!name || name.length > 64) return res.status(400).json({ error: "invalid_name" });
+    try {
+      const rows = await withRLS(userId, async (client) => {
+        const r = await client.query(`SELECT id, user_id, agent_id, name, category, description, prompt_template, trigger_pattern, auto_created, tool_sequence, use_count, last_used_at, approved_at, created_at, updated_at FROM luca_skills WHERE name = $1 LIMIT 1`, [name]);
+        return r.rows;
+      });
+      if (rows.length === 0) return res.status(404).json({ error: "not_found" });
+      res.json({ skill: rows[0] });
+    } catch (e: any) {
+      logger.error({ source: "skills-api", err: e?.message }, "[skills] get failed");
+      res.status(500).json({ error: e?.message || "get failed" });
+    }
+  }));
+
+  app.post("/api/skills", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    const parsed = parseAgentSkillImport(req.body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    const isGlobal = req.body?.global === true;
+    try {
+      const r = await pool.query(
+        `INSERT INTO luca_skills (user_id, name, category, description, prompt_template, trigger_pattern, tool_sequence, auto_created)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
+         ON CONFLICT (user_id, name) DO NOTHING
+         RETURNING id, user_id, agent_id, name, category, description, prompt_template, trigger_pattern, auto_created, tool_sequence, use_count, last_used_at, approved_at, created_at, updated_at`,
+        [isGlobal ? null : userId, parsed.value.name, parsed.value.category, parsed.value.description, parsed.value.prompt_template, parsed.value.trigger_pattern, parsed.value.tool_sequence],
+      );
+      if (r.rows.length === 0) return res.status(409).json({ error: "already_exists" });
+      res.status(201).json({ skill: r.rows[0] });
+    } catch (e: any) {
+      logger.error({ source: "skills-api", err: e?.message }, "[skills] create failed");
+      res.status(500).json({ error: e?.message || "create failed" });
+    }
+  }));
+
+  app.post("/api/skills/import", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    const items: unknown[] = Array.isArray(req.body?.skills) ? req.body.skills : [];
+    if (items.length === 0) return res.status(400).json({ error: "empty_import" });
+    if (items.length > 100) return res.status(400).json({ error: "too_many_items" });
+    let imported = 0;
+    let skipped = 0;
+    const errors: { index: number; error: string }[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const parsed = parseAgentSkillImport(items[i]);
+      if (!parsed.ok) { errors.push({ index: i, error: parsed.error }); continue; }
+      try {
+        const r = await pool.query(
+          `INSERT INTO luca_skills (user_id, name, category, description, prompt_template, trigger_pattern, tool_sequence, auto_created)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
+           ON CONFLICT (user_id, name) DO NOTHING RETURNING id`,
+          [userId, parsed.value.name, parsed.value.category, parsed.value.description, parsed.value.prompt_template, parsed.value.trigger_pattern, parsed.value.tool_sequence],
+        );
+        if (r.rows.length > 0) imported++; else skipped++;
+      } catch (e: any) {
+        errors.push({ index: i, error: e?.message || "insert_failed" });
+      }
+    }
+    res.json({ imported, skipped, errors });
+  }));
+
+  app.patch("/api/skills/:id/approve", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "invalid_id" });
+    try {
+      const r = await pool.query(
+        `UPDATE luca_skills SET approved_at = NOW(), updated_at = NOW()
+          WHERE id = $1 AND auto_created = TRUE AND approved_at IS NULL
+          RETURNING id, user_id, agent_id, name, category, description, prompt_template, trigger_pattern, auto_created, tool_sequence, use_count, last_used_at, approved_at, created_at, updated_at`,
+        [id],
+      );
+      if (r.rows.length === 0) {
+        const probe = await pool.query(`SELECT id FROM luca_skills WHERE id = $1`, [id]);
+        if (probe.rows.length === 0) return res.status(404).json({ error: "not_found" });
+        return res.status(409).json({ error: "not_pending" });
+      }
+      res.json({ status: "approved", skill: r.rows[0] });
+    } catch (e: any) {
+      logger.error({ source: "skills-api", err: e?.message }, "[skills] approve failed");
+      res.status(500).json({ error: e?.message || "approve failed" });
+    }
+  }));
+
+  app.patch("/api/skills/:id/reject", asyncHandler(async (req, res) => {
+    const userId = await getUser(req);
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!(await isOwner(userId))) return res.status(403).json({ error: "Forbidden" });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "invalid_id" });
+    try {
+      const r = await pool.query(
+        `DELETE FROM luca_skills WHERE id = $1 AND auto_created = TRUE AND approved_at IS NULL RETURNING id`,
+        [id],
+      );
+      if (r.rows.length === 0) {
+        const probe = await pool.query(`SELECT id FROM luca_skills WHERE id = $1`, [id]);
+        if (probe.rows.length === 0) return res.status(404).json({ error: "not_found" });
+        return res.status(409).json({ error: "not_pending" });
+      }
+      res.json({ status: "rejected", deleted_id: r.rows[0].id });
+    } catch (e: any) {
+      logger.error({ source: "skills-api", err: e?.message }, "[skills] reject failed");
+      res.status(500).json({ error: e?.message || "reject failed" });
     }
   }));
 
