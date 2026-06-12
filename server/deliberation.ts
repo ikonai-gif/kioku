@@ -41,6 +41,7 @@ import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile,
 import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
 import { TRUST_POLICY_PROMPT_SECTION } from "./lib/luca-tools/trust-policy";
 import { recordLucaAudit, hashLucaInput, inferStatusFromResult } from "./lib/luca-tools/audit-log";
+import { checkToolPatternForSkillCreation } from "./skill-auto-creator";
 import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
 import {
   readLucaEnv,
@@ -1978,6 +1979,8 @@ export async function executePartnerTool(
         inputHash: hashLucaInput(toolInput),
         latencyMs: __v1aEnded - __v1aStarted,
       }).catch(() => { /* best-effort */ });
+      // [LUCA-089] Skills PR1 — flag-gated pattern detector (default OFF).
+      checkToolPatternForSkillCreation({ userId, agentId, tool: toolName }).catch(() => { /* best-effort */ });
 
       // Phase 2 (R-luca-computer-ui): persist agent_browser screenshots so the
       // activity timeline can show inline thumbnails. Best-effort — a failure
@@ -6814,6 +6817,8 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         latencyMs: Date.now() - __activityStarted,
       }).catch(() => { /* best-effort */ });
     }
+    // [LUCA-089] Skills PR1 — flag-gated pattern detector (default OFF).
+    checkToolPatternForSkillCreation({ userId, agentId, tool: toolName }).catch(() => { /* best-effort */ });
     return __finalResult;
   } catch (err: any) {
     const message = err?.message || String(err);
