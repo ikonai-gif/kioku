@@ -137,6 +137,9 @@ describe("R465 — recordLucaAudit", () => {
       // [BRO2-A11 / LUCA-073-A] auto_mode marker — false here because
       // LUCA_AUTO_MODE_ENABLED is unset in the test env (default off).
       false,
+      // [BRO2-A15 / LUCA-076 par4] source/job_id default to user/null outside cron context.
+      "user",
+      null,
     ]);
   });
 
