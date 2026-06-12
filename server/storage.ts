@@ -47,6 +47,42 @@ pool.on('error', (err) => {
   // Don't crash — pool will auto-reconnect on next query
 });
 
+/**
+ * [LUCA-091] module-local service-scoped client runner (storage cannot
+ * import lib/rls without a cycle). Mirrors lib/rls withService.
+ */
+async function runAsService<T>(fn: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.kioku_service', 'true', true)`);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* released below */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function runAsUser<T>(userId: number, fn: (client: import('pg').PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.user_id', $1::text, true)`, [String(userId)]);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* released below */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export const db = drizzle(pool);
 
 // ── DB readiness flag (Item 3) ──────────────────────────────────────────────────
@@ -1681,7 +1717,12 @@ export class Storage implements IStorage {
     return db.select().from(agents).where(eq(agents.userId, userId));
   }
   async getAgent(id: number) {
-    return db.select().from(agents).where(eq(agents.id, id)).limit(1).then(r => r[0]);
+    // [LUCA-091] internal agent lookup (token paths, circuit breaker) --
+    // service-scoped so it keeps working once the 0026 strict policies land.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.kioku_service', 'true', true)`);
+      return tx.select().from(agents).where(eq(agents.id, id)).limit(1).then(r => r[0]);
+    });
   }
   async createAgent(data: InsertAgent): Promise<Agent> {
     const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
@@ -1702,7 +1743,11 @@ export class Storage implements IStorage {
   async updateAgentCircuitBreaker(id: number, consecutiveFailures: number, errorMessage: string | null, status?: string): Promise<boolean> {
     const data: any = { consecutiveFailures, errorMessage };
     if (status) data.status = status;
-    const result = await db.update(agents).set(data).where(sql`${agents.id} = ${id}`).returning();
+    // [LUCA-091] internal write without user context -- service-scoped.
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.kioku_service', 'true', true)`);
+      return tx.update(agents).set(data).where(sql`${agents.id} = ${id}`).returning();
+    });
     return result.length > 0;
   }
   async resetAgentError(id: number, userId: number): Promise<boolean> {
@@ -2110,7 +2155,7 @@ export class Storage implements IStorage {
    * Uses recursive CTE for BFS through memory_links graph.
    */
   async getLinkedMemories(userId: number, memoryId: number, maxDepth: number = 2, maxResults: number = 20): Promise<any[]> {
-    const result = await pool.query(`
+    const result = await runAsUser(userId, (client) => client.query(`
       WITH RECURSIVE linked AS (
         -- Seed
         SELECT $1::int as memory_id, 0 as depth, ARRAY[$1::int] as path
@@ -2132,7 +2177,7 @@ export class Storage implements IStorage {
       WHERE l.memory_id != $1
       ORDER BY l.depth, m.importance DESC
       LIMIT $4
-    `, [memoryId, userId, maxDepth, maxResults]);
+    `, [memoryId, userId, maxDepth, maxResults]));
 
     return result.rows;
   }
@@ -2192,7 +2237,7 @@ export class Storage implements IStorage {
     if (!q) return [];
     const lim = Math.min(50, Math.max(1, limit));
     const like = `%${q}%`;
-    const result = await pool.query(
+    const result = await runAsUser(userId, (client) => client.query(
       `SELECT m.id AS message_id, m.room_id, m.content, m.created_at
          FROM room_messages m
          JOIN rooms r ON r.id = m.room_id
@@ -2201,7 +2246,7 @@ export class Storage implements IStorage {
         ORDER BY m.created_at DESC
         LIMIT $3`,
       [userId, like, lim]
-    );
+    ));
     return result.rows.map((row: any) => ({
       messageId: Number(row.message_id),
       roomId: Number(row.room_id),
@@ -2252,7 +2297,11 @@ export class Storage implements IStorage {
    */
   async getRoomMessagesByIds(ids: number[]): Promise<RoomMessage[]> {
     if (ids.length === 0) return [];
-    return db.select().from(roomMessages).where(inArray(roomMessages.id, ids));
+    // [LUCA-091] trusted internal lookup by explicit ids -- service-scoped.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.kioku_service', 'true', true)`);
+      return tx.select().from(roomMessages).where(inArray(roomMessages.id, ids));
+    });
   }
 
   // ── PR-A.6 Multimodal helpers ──────────────────────────────────────────────
@@ -2762,59 +2811,63 @@ export class Storage implements IStorage {
 
   // ── GDPR Art. 17: Full account deletion ─────────────────────────────────
   async deleteAccount(userId: number): Promise<void> {
+    // [LUCA-091] GDPR delete crosses every table for one user -- service-scoped
+    // so it keeps deleting once strict policies land.
+    await runAsService(async (client) => {
     // Delete in order respecting foreign key dependencies
     // 1. Memory links (references memories)
-    await pool.query('DELETE FROM memory_links WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM memory_links WHERE user_id = $1', [userId]);
     // 2. Emotional state + relationships (references agents)
-    await pool.query('DELETE FROM agent_emotional_state WHERE user_id = $1', [userId]);
-    await pool.query('DELETE FROM agent_relationships WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM agent_emotional_state WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM agent_relationships WHERE user_id = $1', [userId]);
     // 3. Memories
-    await pool.query('DELETE FROM memories WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM memories WHERE user_id = $1', [userId]);
     // 4. Room messages (references rooms)
-    await pool.query('DELETE FROM room_messages WHERE room_id IN (SELECT id FROM rooms WHERE user_id = $1)', [userId]);
+    await client.query('DELETE FROM room_messages WHERE room_id IN (SELECT id FROM rooms WHERE user_id = $1)', [userId]);
     // 4. Rooms
-    await pool.query('DELETE FROM rooms WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM rooms WHERE user_id = $1', [userId]);
     // 5. Agents
-    await pool.query('DELETE FROM agents WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM agents WHERE user_id = $1', [userId]);
     // 6. Flows
-    await pool.query('DELETE FROM flows WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM flows WHERE user_id = $1', [userId]);
     // 7. Logs
-    await pool.query('DELETE FROM logs WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM logs WHERE user_id = $1', [userId]);
     // 8. Deliberation sessions
-    await pool.query('DELETE FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]);
     // 9. Agent tokens
-    await pool.query('DELETE FROM kioku_agent_tokens WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM kioku_agent_tokens WHERE user_id = $1', [userId]);
     // 10. Webhooks
-    await pool.query('DELETE FROM kioku_webhooks WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM kioku_webhooks WHERE user_id = $1', [userId]);
     // 10b. Scheduled tasks
-    await pool.query('DELETE FROM scheduled_tasks WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM scheduled_tasks WHERE user_id = $1', [userId]);
     // 10c. Knowledge domains
-    await pool.query('DELETE FROM knowledge_domains WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM knowledge_domains WHERE user_id = $1', [userId]);
     // 10c. Aesthetic preferences
-    await pool.query('DELETE FROM aesthetic_preferences WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM aesthetic_preferences WHERE user_id = $1', [userId]);
     // 11. Magic tokens (keyed by email, resolve from user)
-    const userRow = await pool.query('SELECT email FROM users WHERE id = $1', [userId]);
+    const userRow = await client.query('SELECT email FROM users WHERE id = $1', [userId]);
     if (userRow.rows[0]?.email) {
-      await pool.query('DELETE FROM magic_tokens WHERE email = $1', [userRow.rows[0].email]);
+      await client.query('DELETE FROM magic_tokens WHERE email = $1', [userRow.rows[0].email]);
     }
     // 12. User record
-    await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+    await client.query('DELETE FROM users WHERE id = $1', [userId]);
+    });
   }
 
   // ── GDPR Art. 20: Full data export ─────────────────────────────────────────
   async exportAllUserData(userId: number): Promise<any> {
-    const [user, memoriesData, agentsData, roomsData, messagesData, flowsData, logsData, deliberations, webhooks, tokens] = await Promise.all([
-      pool.query('SELECT id, email, name, plan, created_at FROM users WHERE id = $1', [userId]),
-      pool.query('SELECT id, content, type, importance, namespace, created_at, strength, emotional_valence FROM memories WHERE user_id = $1', [userId]),
-      pool.query('SELECT id, name, description, status, created_at FROM agents WHERE user_id = $1', [userId]),
-      pool.query('SELECT id, name, description, created_at FROM rooms WHERE user_id = $1', [userId]),
-      pool.query('SELECT rm.id, rm.content, rm.agent_name, rm.created_at, rm.room_id FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1', [userId]),
-      pool.query('SELECT id, name, description, created_at FROM flows WHERE user_id = $1', [userId]),
-      pool.query('SELECT id, operation, detail, created_at FROM logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1000', [userId]),
-      pool.query('SELECT id, room_id, topic, status, started_at FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]),
-      pool.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
-      pool.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
-    ]);
+    const [user, memoriesData, agentsData, roomsData, messagesData, flowsData, logsData, deliberations, webhooks, tokens] = await runAsUser(userId, (client) => Promise.all([
+      client.query('SELECT id, email, name, plan, created_at FROM users WHERE id = $1', [userId]),
+      client.query('SELECT id, content, type, importance, namespace, created_at, strength, emotional_valence FROM memories WHERE user_id = $1', [userId]),
+      client.query('SELECT id, name, description, status, created_at FROM agents WHERE user_id = $1', [userId]),
+      client.query('SELECT id, name, description, created_at FROM rooms WHERE user_id = $1', [userId]),
+      client.query('SELECT rm.id, rm.content, rm.agent_name, rm.created_at, rm.room_id FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1', [userId]),
+      client.query('SELECT id, name, description, created_at FROM flows WHERE user_id = $1', [userId]),
+      client.query('SELECT id, operation, detail, created_at FROM logs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1000', [userId]),
+      client.query('SELECT id, room_id, topic, status, started_at FROM kioku_deliberation_sessions WHERE user_id = $1', [userId]),
+      client.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
+      client.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
+    ]));
 
     return {
       exportDate: new Date().toISOString(),
@@ -3166,16 +3219,19 @@ export class Storage implements IStorage {
   }
 
   async getPendingTurns(agentId: number) {
+    // [LUCA-091] agent polling path has no user context -- service-scoped.
+    return runAsService(async (client) => {
     // Expire stale turns first
-    await pool.query(
+    await client.query(
       `UPDATE agent_turns SET status = 'expired' WHERE agent_id = $1 AND status = 'pending' AND expires_at < $2`,
       [agentId, Date.now()]
     );
-    const { rows } = await pool.query(
+    const { rows } = await client.query(
       `SELECT * FROM agent_turns WHERE agent_id = $1 AND status = 'pending' ORDER BY created_at ASC`,
       [agentId]
     );
     return rows.map((r: any) => this.mapAgentTurnRow(r));
+    });
   }
 
   async respondToTurn(turnId: number, agentId: number, response: { position: string; confidence: number; reasoning: string }): Promise<boolean> {
