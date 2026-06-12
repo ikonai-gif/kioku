@@ -770,6 +770,9 @@ export async function initDb() {
   `);
   // [BRO2-A11 / LUCA-073-A] auto_mode marker column (mirrors migrations/0019).
   await pool.query(`ALTER TABLE luca_audit_log ADD COLUMN IF NOT EXISTS auto_mode BOOLEAN NOT NULL DEFAULT false;`);
+  // [BRO2-A15 / LUCA-076 par4] scheduled-run tagging columns (mirrors migrations/0020).
+  await pool.query(`ALTER TABLE luca_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'user';`);
+  await pool.query(`ALTER TABLE luca_audit_log ADD COLUMN IF NOT EXISTS job_id TEXT;`);
 
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.

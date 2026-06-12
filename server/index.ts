@@ -11,6 +11,7 @@ Sentry.init({
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
+import { registerCronJobs } from "./cron";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import crypto from "crypto";
@@ -311,6 +312,9 @@ void runInitLoop();
   }
 
   await registerRoutes(httpServer, app);
+
+  // [BRO2-A15 / LUCA-076] CRON-1 registry: no-op behavior while LUCA_ROUTINES_ENABLED=false (default).
+  registerCronJobs();
 
   // Sentry error handler — must be AFTER all routes, BEFORE custom error handler
   Sentry.setupExpressErrorHandler(app);

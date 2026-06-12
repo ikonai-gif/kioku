@@ -28,6 +28,7 @@
  */
 
 import { autoModeMarker } from "./auto-mode";
+import { currentAuditContext } from "./audit-context";
 import { createHash } from "node:crypto";
 import { pool } from "../../storage";
 import logger from "../../logger";
@@ -90,10 +91,11 @@ export async function recordLucaAudit(params: {
   errorDetail?: string | null;
 }): Promise<void> {
   try {
+    const auditCtx = currentAuditContext();
     await pool.query(
       `INSERT INTO luca_audit_log
-         (user_id, agent_id, tool, classification, status, input_hash, latency_ms, error_detail, auto_mode)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         (user_id, agent_id, tool, classification, status, input_hash, latency_ms, error_detail, auto_mode, source, job_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         params.userId,
         params.agentId ?? null,
@@ -105,6 +107,9 @@ export async function recordLucaAudit(params: {
         (params.errorDetail ?? null) === null ? null : (params.errorDetail as string).slice(0, 500),
         // [BRO2-A11 / LUCA-073-A] single chokepoint: marking only, never gates.
         autoModeMarker(params.classification),
+        // [BRO2-A15 / LUCA-076 par4] scheduled-run tagging via AsyncLocalStorage (default user/null).
+        auditCtx.source,
+        auditCtx.jobId,
       ],
     );
   } catch (e: any) {

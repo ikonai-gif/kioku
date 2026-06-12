@@ -692,6 +692,9 @@ export const lucaAuditLog = pgTable("luca_audit_log", {
   errorDetail:    text("error_detail"),
   // [BRO2-A11 / LUCA-073-A] true when the call ran autonomously under LUCA_AUTO_MODE_ENABLED.
   autoMode:       boolean("auto_mode").notNull().default(false),
+  // [BRO2-A15 / LUCA-076 par4] scheduled-run tagging: 'user' (default) | 'cron'; job id e.g. 'CRON-1'.
+  source:         text("source").notNull().default("user"),
+  jobId:          text("job_id"),
   createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("idx_luca_audit_user_created").on(t.userId, t.createdAt),
