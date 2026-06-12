@@ -31,6 +31,58 @@ export function eisEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env.EIS_ENABLED ?? "").trim().toLowerCase() === "true";
 }
 
+/**
+ * [LUCA-092] EIS PR2 -- tone influence, gated separately from EIS_ENABLED.
+ * Default false; never enable on prod without an explicit BOSS GO.
+ */
+export function eisToneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.EIS_TONE_ENABLED ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * [LUCA-092 / BRO2-A37 corr.1] PAD->octant label already exists in prod as
+ * padToEmotionLabel (server/emotional-state.ts) -- re-exported here for the
+ * EIS surface instead of duplicating the octant map.
+ */
+export { padToEmotionLabel } from "./emotional-state";
+
+/**
+ * [LUCA-092] EIS PR2 -- tone hint for the system prompt.
+ * Intensity gate: below 0.1 of normalized PAD magnitude we stay silent.
+ * Tone texts are the spec toneMap verbatim; keys cover both the spec octant
+ * names and the equivalent prod labels from padToEmotionLabel
+ * (dependent=excited, relaxed=serene, docile=content, disdainful=bored --
+ * same octants, different naming traditions).
+ */
+export function buildToneHint(
+  dominant: string,
+  pad: { pleasure: number; arousal: number; dominance: number },
+): string {
+  const intensity =
+    Math.sqrt(pad.pleasure ** 2 + pad.arousal ** 2 + pad.dominance ** 2) / Math.sqrt(3);
+  if (intensity < 0.1) return ""; // baseline -- do not influence tone
+
+  const toneMap: Record<string, string> = {
+    exuberant: "You are feeling exuberant — ideas flow freely, tone is energetic and warm.",
+    excited: "You are feeling excited — slightly elevated energy, forward-leaning.",
+    serene: "You are feeling serene — calm, measured, thoughtful.",
+    content: "You are feeling content — stable, unhurried, reliable.",
+    hostile: "You are feeling tension — be direct, concise, avoid forced warmth.",
+    anxious: "You are feeling uncertainty — acknowledge complexity, don't rush conclusions.",
+    bored: "You are in a low-energy state — responses may be more terse.",
+    sad: "You are in a low state — focus on clarity over enthusiasm.",
+    // prod octant labels (padToEmotionLabel) mapped to the same spec texts:
+    dependent: "You are feeling excited — slightly elevated energy, forward-leaning.",
+    relaxed: "You are feeling serene — calm, measured, thoughtful.",
+    docile: "You are feeling content — stable, unhurried, reliable.",
+    disdainful: "You are in a low-energy state — responses may be more terse.",
+  };
+
+  const text = toneMap[dominant] ?? "";
+  if (!text) return "";
+  return `\n## EMOTIONAL CONTEXT\n${text}\n`;
+}
+
 /** Half-life decay toward baseline -- spec formula, pure (LUCA-090 part 3). */
 export function computePADDecay(
   state: {
@@ -114,7 +166,12 @@ export async function maybeAppendEISBlock(
   try {
     const ctx = await buildEISContext(agentId, userId);
     if (!ctx) return systemPrompt;
-    return systemPrompt + "\n\n" + formatEISBlock(ctx);
+    // [LUCA-092] PR2: tone influence shares this single flagged injection
+    // point (BRO2-A37 corr.3) -- zero new touchpoints in routes.
+    const toneHint = eisToneEnabled(env)
+      ? buildToneHint(ctx.emotionLabel, ctx.pad)
+      : "";
+    return systemPrompt + "\n\n" + formatEISBlock(ctx) + toneHint;
   } catch (e) {
     logger.warn({ component: "eis", err: String(e) }, "[eis] context build failed (non-fatal)");
     return systemPrompt;
