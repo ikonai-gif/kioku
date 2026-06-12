@@ -9,6 +9,8 @@
 import cron from "node-cron";
 import logger from "../logger";
 import { runMorningBrief, CRON1_JOB_ID } from "./morning-brief";
+import { CronExpressionParser } from "cron-parser";
+import { pool } from "../storage";
 
 const DEFAULT_MORNING_BRIEF_SCHEDULE = "0 9 * * *"; // 09:00 daily
 const TIMEZONE = "America/Los_Angeles";
@@ -34,4 +36,57 @@ export function registerCronJobs(): void {
     { component: "cron", job: CRON1_JOB_ID, schedule, timezone: TIMEZONE },
     "[cron] CRON-1 morning brief registered",
   );
+
+  // [LUCA-088] startup missed-run check. Delayed 30s (unref) so the initDb
+  // retry loop has time to bring the pool up; a failed check is non-fatal.
+  setTimeout(() => { void checkMissedMorningBrief(); }, 30_000).unref();
+}
+
+/** Window within which a missed scheduled fire is still worth flagging (mirrors the 6h rate cap). */
+const MISSED_RUN_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * [LUCA-088] CRON PR2 — startup missed-run checker.
+ *
+ * SPEC DEVIATION (flagged to LUCA): the spec queried a scheduled_tasks table
+ * that does not exist — CRON-1 lives in code. Detection instead derives the
+ * previous expected fire from the live cron expression (cron-parser) and
+ * checks luca_telegram_log for a delivery attempt after it. Auto-run of a
+ * missed brief is gated by LUCA_CRON_RUN_MISSED_ON_STARTUP (default OFF) —
+ * and even then runMorningBrief() still enforces the master flag, standing
+ * telegram approval and the rate cap.
+ */
+export async function checkMissedMorningBrief(
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): Promise<void> {
+  try {
+    const schedule = morningBriefSchedule(env);
+    const prevFire = CronExpressionParser.parse(schedule, { tz: TIMEZONE, currentDate: new Date(now) })
+      .prev()
+      .getTime();
+    const ageMs = now - prevFire;
+    if (ageMs > MISSED_RUN_WINDOW_MS) {
+      logger.info({ component: "cron", job: CRON1_JOB_ID, prevFire, ageMs }, "[cron] missed-run check: last expected fire outside window — skip");
+      return;
+    }
+    const { rows } = await pool.query(
+      `SELECT 1 FROM luca_telegram_log WHERE reason LIKE 'cron:%' || $1 || '%' AND sent_at >= to_timestamp($2 / 1000.0) LIMIT 1`,
+      [CRON1_JOB_ID, prevFire],
+    );
+    if (rows.length > 0) {
+      logger.info({ component: "cron", job: CRON1_JOB_ID }, "[cron] missed-run check: last scheduled run accounted for");
+      return;
+    }
+    logger.warn(
+      { component: "cron", job: CRON1_JOB_ID, expectedAt: new Date(prevFire).toISOString(), ageMinutes: Math.round(ageMs / 60000) },
+      "[cron] STARTUP: CRON-1 missed run detected",
+    );
+    if ((env.LUCA_CRON_RUN_MISSED_ON_STARTUP ?? "").trim().toLowerCase() === "true") {
+      logger.info({ component: "cron", job: CRON1_JOB_ID }, "[cron] running missed CRON-1 now (LUCA_CRON_RUN_MISSED_ON_STARTUP=true)");
+      await runMorningBrief();
+    }
+  } catch (e) {
+    logger.warn({ component: "cron", err: String(e) }, "[cron] missed-run check failed (non-fatal)");
+  }
 }

@@ -799,6 +799,16 @@ export async function initDb() {
   await pool.query(`ALTER TABLE agents FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS agents_user_isolation ON agents;`);
   await pool.query(`CREATE POLICY agents_user_isolation ON agents USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  // [LUCA-088] CRON PR2 (mirrors migrations/0023): server lifecycle events for
+  // the startup missed-run checker.
+  await pool.query(`CREATE TABLE IF NOT EXISTS server_lifecycle (
+    id          SERIAL PRIMARY KEY,
+    event       TEXT NOT NULL,
+    timestamp   BIGINT NOT NULL,
+    version     TEXT,
+    hostname    TEXT
+  );`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_lifecycle_event_ts ON server_lifecycle(event, timestamp DESC);`);
 
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.

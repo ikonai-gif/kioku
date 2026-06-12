@@ -5,13 +5,23 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { __execTool, __sendTg } = vi.hoisted(() => ({
+const { __execTool, __sendTg, __audit } = vi.hoisted(() => ({
   __execTool: vi.fn(),
   __sendTg: vi.fn(),
+  __audit: vi.fn(async () => {}),
 }));
 vi.mock("../../server/deliberation", () => ({ executePartnerTool: __execTool }));
 vi.mock("../../server/lib/telegram", () => ({ sendTelegramMessage: __sendTg }));
 vi.mock("../../server/lib/redis", () => ({ getRedisClient: () => null }));
+// [LUCA-088] audit chokepoint is mocked so unit tests assert the explicit
+// cron-path audit for non-luca_ tools without touching a real pool.
+vi.mock("../../server/lib/luca-tools/audit-log", () => ({
+  recordLucaAudit: __audit,
+  hashLucaInput: () => "h".repeat(64),
+  inferStatusFromResult: () => "ok",
+}));
+vi.mock("../../server/lib/luca-approvals/classify", () => ({ classifyTool: () => "READ_ONLY" }));
+vi.mock("../../server/storage", () => ({ pool: { query: vi.fn(async () => ({ rows: [] })) } }));
 vi.mock("../../server/logger", () => {
   const l = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return { logger: l, default: l };
@@ -30,6 +40,7 @@ import { currentAuditContext, runWithAuditContext } from "../../server/lib/luca-
 beforeEach(() => {
   __execTool.mockReset();
   __sendTg.mockReset();
+  __audit.mockClear();
   __resetCronRateLimiterForTests();
 });
 
@@ -69,6 +80,32 @@ describe("CRON-1 — telegram gate (LUCA-076 §3, HARD RULE)", () => {
     expect(arg.chatId).toBe("12345");
     expect(arg.urgency).toBe("normal");
     expect(arg.reason).toContain("LUCA-076");
+  });
+});
+
+describe("CRON-1 — explicit audit for non-luca_ tools (LUCA-088)", () => {
+  it("records email_triage and list_tasks; leaves luca_calendar_list to the dispatcher", async () => {
+    __execTool.mockResolvedValue("[]");
+    await runMorningBrief({ LUCA_ROUTINES_ENABLED: "true" } as any);
+    const audited = __audit.mock.calls.map((c) => c[0].tool);
+    expect(audited).toContain("email_triage");
+    expect(audited).toContain("list_tasks");
+    // luca_* tools are audited inside the dispatcher (R465 scope) — a second
+    // row here would be a duplicate.
+    expect(audited).not.toContain("luca_calendar_list");
+    for (const call of __audit.mock.calls) {
+      expect(call[0].classification).toBe("READ_ONLY");
+      expect(call[0].latencyMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("audits even when the tool call rejects (error result hashed, not thrown)", async () => {
+    __execTool.mockRejectedValue(new Error("gmail down"));
+    const res = await runMorningBrief({ LUCA_ROUTINES_ENABLED: "true" } as any);
+    expect(res).toEqual({ status: "skipped", reason: "telegram_not_approved" });
+    const audited = __audit.mock.calls.map((c) => c[0].tool);
+    expect(audited).toContain("email_triage");
+    expect(audited).toContain("list_tasks");
   });
 });
 
