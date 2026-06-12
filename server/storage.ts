@@ -773,6 +773,18 @@ export async function initDb() {
   // [BRO2-A15 / LUCA-076 par4] scheduled-run tagging columns (mirrors migrations/0020).
   await pool.query(`ALTER TABLE luca_audit_log ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'user';`);
   await pool.query(`ALTER TABLE luca_audit_log ADD COLUMN IF NOT EXISTS job_id TEXT;`);
+  // [LUCA-086] RLS Phase 1 (mirrors migrations/0021). FORCE is mandatory: pool
+  // connects as table owner. Policy uses COALESCE/NULLIF (BRO2 fix #5): bare
+  // current_setting()='' yields NULL when the GUC is unset and would hide
+  // every row from all legacy (unwrapped) query paths.
+  await pool.query(`ALTER TABLE memories ENABLE ROW LEVEL SECURITY;`);
+  await pool.query(`ALTER TABLE memories FORCE ROW LEVEL SECURITY;`);
+  await pool.query(`DROP POLICY IF EXISTS memories_user_isolation ON memories;`);
+  await pool.query(`CREATE POLICY memories_user_isolation ON memories USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;`);
+  await pool.query(`ALTER TABLE rooms FORCE ROW LEVEL SECURITY;`);
+  await pool.query(`DROP POLICY IF EXISTS rooms_user_isolation ON rooms;`);
+  await pool.query(`CREATE POLICY rooms_user_isolation ON rooms USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
 
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.
@@ -1657,8 +1669,15 @@ export class Storage implements IStorage {
 
   // ── Memories ───────────────────────────────────────────────────────────────
   async getMemories(userId: number, limit = 100, offset = 0) {
-    const results = await db.select().from(memories).where(eq(memories.userId, userId))
-      .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit).offset(offset);
+    // [LUCA-086] RLS Phase 1: set app.user_id transaction-locally so the
+    // memories_user_isolation policy enforces row visibility at the DB layer
+    // (belt = existing WHERE filter, suspenders = RLS). Legacy callers that
+    // do not set the GUC are unaffected — see migrations/0021 policy comment.
+    const results = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.user_id', ${String(userId)}, true)`);
+      return tx.select().from(memories).where(eq(memories.userId, userId))
+        .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit).offset(offset);
+    });
     const now = Date.now();
     return results.map((m: any) => ({
       ...m,
@@ -2092,7 +2111,11 @@ export class Storage implements IStorage {
 
   // ── Rooms ──────────────────────────────────────────────────────────────────
   async getRooms(userId: number) {
-    return db.select().from(rooms).where(eq(rooms.userId, userId));
+    // [LUCA-086] RLS Phase 1 — see getMemories note.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.user_id', ${String(userId)}, true)`);
+      return tx.select().from(rooms).where(eq(rooms.userId, userId));
+    });
   }
   async getRoom(id: number, userId?: number) {
     if (userId !== undefined) {
