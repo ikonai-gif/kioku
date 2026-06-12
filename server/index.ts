@@ -267,6 +267,18 @@ async function runInitLoop(): Promise<void> {
       await initDemoUser();
       markDbReady();
       logger.info({ source: "db", attempt }, "initialized");
+      // [LUCA-088] lifecycle: record server start (best-effort) for the
+      // cron missed-run checker.
+      try {
+        const { pool } = await import("./storage");
+        const os = await import("node:os");
+        await pool.query(
+          `INSERT INTO server_lifecycle (event, timestamp, version, hostname) VALUES ('start', $1, $2, $3)`,
+          [Date.now(), process.env.npm_package_version ?? "unknown", os.hostname()],
+        );
+      } catch (err) {
+        logger.warn({ err: (err as Error).message }, "[lifecycle] start event insert failed");
+      }
       return true;
     } catch (err) {
       logger.error({ source: "db", attempt, err }, "initDb failed — will retry");
@@ -517,6 +529,19 @@ void runInitLoop();
       logger.warn({ err: (err as Error).message }, '[shutdown] tool-activity reaper stop error');
     }
 
+    // 3d. [LUCA-088] lifecycle: record graceful shutdown so the startup
+    // missed-run checker can distinguish deploy from crash (best-effort,
+    // must run BEFORE the pool closes).
+    try {
+      const { pool } = await import('./storage');
+      await pool.query(
+        `INSERT INTO server_lifecycle (event, timestamp) VALUES ('shutdown', $1)`,
+        [Date.now()],
+      );
+      logger.info('[shutdown] lifecycle event recorded');
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '[shutdown] lifecycle insert error');
+    }
     // 4. Close Postgres pool (the `pool` export from storage.ts)
     try {
       const { pool } = await import('./storage');

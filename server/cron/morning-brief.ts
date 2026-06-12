@@ -21,6 +21,46 @@ import { executePartnerTool } from "../deliberation";
 import { sendTelegramMessage } from "../lib/telegram";
 import { runWithAuditContext } from "../lib/luca-tools/audit-context";
 import { checkAndMarkCronRun } from "./rate-limiter";
+import { recordLucaAudit, hashLucaInput, inferStatusFromResult } from "../lib/luca-tools/audit-log";
+import { classifyTool } from "../lib/luca-approvals/classify";
+
+/**
+ * [LUCA-088] CRON PR2 — audit chokepoint for the composed brief surface.
+ *
+ * Root cause (verified in deliberation.ts): the R465 dispatcher audit is
+ * intentionally scoped to luca_*-prefixed tools. email_triage / list_tasks
+ * therefore never reached luca_audit_log (not a race, not a swallowed error
+ * — design scope). Scheduled runs must be answerable from the single audit
+ * table, so this wrapper records non-luca_ tools explicitly; luca_* tools
+ * stay untouched to avoid double rows. source/job_id arrive via the
+ * AsyncLocalStorage audit context already active inside runWithAuditContext.
+ */
+async function auditedCronTool(
+  toolName: string,
+  toolInput: Record<string, any>,
+  userId: number,
+  agentId: number,
+): Promise<string> {
+  const started = Date.now();
+  let resultStr: string;
+  try {
+    resultStr = await executePartnerTool(toolName, toolInput, userId, agentId);
+  } catch (e) {
+    resultStr = `{"error":"${String(e).slice(0, 80)}"}`;
+  }
+  if (!toolName.startsWith("luca_")) {
+    recordLucaAudit({
+      userId,
+      agentId,
+      tool: toolName,
+      classification: classifyTool(toolName),
+      status: inferStatusFromResult(resultStr),
+      inputHash: hashLucaInput(toolInput),
+      latencyMs: Date.now() - started,
+    }).catch(() => { /* audit must never break the brief */ });
+  }
+  return resultStr;
+}
 
 export const CRON1_JOB_ID = "CRON-1";
 
@@ -111,9 +151,9 @@ export async function runMorningBrief(env: NodeJS.ProcessEnv = process.env): Pro
       // READ_ONLY composition through the real dispatcher — audit +
       // auto_mode marking happen exactly as in interactive runs.
       const [calRaw, mailRaw, tasksRaw] = await Promise.all([
-        executePartnerTool("luca_calendar_list", { maxResults: 5, timeMin: dayStart.toISOString(), timeMax: dayEnd.toISOString() }, userId, agentId).catch((e) => `{"error":"${String(e).slice(0, 80)}"}`),
-        executePartnerTool("email_triage", { max_messages: 20, only_unread: true }, userId, agentId).catch((e) => `{"error":"${String(e).slice(0, 80)}"}`),
-        executePartnerTool("list_tasks", { status: "active" }, userId, agentId).catch((e) => `{"error":"${String(e).slice(0, 80)}"}`),
+        auditedCronTool("luca_calendar_list", { maxResults: 5, timeMin: dayStart.toISOString(), timeMax: dayEnd.toISOString() }, userId, agentId),
+        auditedCronTool("email_triage", { max_messages: 20, only_unread: true }, userId, agentId),
+        auditedCronTool("list_tasks", { status: "active" }, userId, agentId),
       ]);
 
       const text = formatMorningBrief({
