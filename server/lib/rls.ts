@@ -32,3 +32,31 @@ export async function withRLS<T>(
     client.release();
   }
 }
+
+/**
+ * withService -- [LUCA-091] RLS PR3 service marker.
+ *
+ * For internal paths that legitimately operate without a single acting
+ * user (agent polling, circuit breaker, Boss supervision ops, GDPR
+ * delete). Sets app.kioku_service='true' transaction-locally; under the
+ * current (backdoor) policies this is a no-op, and under the strict 0026
+ * policies it becomes the only legitimate cross-user path. Never call
+ * this from a request handler that has a real userId -- use withRLS.
+ */
+export async function withService<T>(
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.kioku_service', 'true', true)`);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* released below */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}

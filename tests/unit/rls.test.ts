@@ -70,4 +70,16 @@ describe("migration 0021 policy guard (BRO2 fix #5 to LUCA-086)", () => {
       expect(m).toContain(")::int");
     }
   });
+
+  it("0026 strict policies use the service marker and drop the empty-GUC backdoor", () => {
+    const m = readFileSync(join(__dirname, "..", "..", "migrations", "0026_rls_strict.sql"), "utf-8");
+    expect(m).toContain("app.kioku_service");
+    // the backdoor shape COALESCE(...) = '' must be gone from strict policies
+    expect(m).not.toMatch(/COALESCE\(current_setting\([^)]*\),\s*''\)\s*=\s*''/);
+    // luca_skills globals stay public
+    expect(m).toContain("user_id IS NULL");
+    // never wired into bootstrap without a dedicated GO
+    const storage = readFileSync(join(__dirname, "..", "..", "server", "storage.ts"), "utf-8");
+    expect(storage).not.toContain("0026_rls_strict");
+  });
 });

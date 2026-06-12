@@ -7,6 +7,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { __poolQuery } = vi.hoisted(() => ({ __poolQuery: vi.fn() }));
 
 vi.mock("../../server/storage", () => ({ pool: { query: __poolQuery } }));
+// [LUCA-091] creator now routes luca_skills ops through withService -- mock it
+// transparently so the same query spy observes the calls.
+vi.mock("../../server/lib/rls", () => ({
+  withService: (fn: (c: { query: typeof __poolQuery }) => unknown) => fn({ query: __poolQuery }),
+  withRLS: (_userId: number, fn: (c: { query: typeof __poolQuery }) => unknown) => fn({ query: __poolQuery }),
+}));
 vi.mock("../../server/logger", () => {
   const l = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return { logger: l, default: l };

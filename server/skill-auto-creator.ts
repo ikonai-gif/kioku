@@ -18,6 +18,7 @@
  * - master flag default OFF (spec assumed always-on).
  */
 import { pool } from "./storage";
+import { withService } from "./lib/rls";
 import logger from "./logger";
 
 const PATTERN_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -59,12 +60,14 @@ export async function maybeCreateSkill(params: {
   useCount: number;
 }): Promise<void> {
   const skillName = `auto_${params.tool}`.slice(0, 64);
-  const existing = await pool.query(
+  // [LUCA-091] detector writes have no request user context -- service-scoped
+  // so dedup + insert keep working once strict policies land.
+  const existing = await withService((client) => client.query(
     `SELECT id FROM luca_skills WHERE user_id = $1 AND auto_created = TRUE AND tool_sequence::jsonb @> $2::jsonb`,
     [params.userId, JSON.stringify([params.tool])],
-  );
+  ));
   if (existing.rows.length > 0) return;
-  await pool.query(
+  await withService((client) => client.query(
     `INSERT INTO luca_skills
        (user_id, agent_id, name, category, description, prompt_template, tool_sequence, auto_created, use_count)
      VALUES ($1, $2, $3, 'auto', $4, $5, $6, TRUE, $7)
@@ -78,7 +81,7 @@ export async function maybeCreateSkill(params: {
       JSON.stringify([params.tool]),
       params.useCount,
     ],
-  );
+  ));
   logger.info(
     { component: "skills", userId: params.userId, tool: params.tool, useCount: params.useCount, skillName },
     "[skills] auto-created skill pending Boss review",

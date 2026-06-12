@@ -82,7 +82,7 @@ import { sendTelegramMessage } from "./lib/telegram";
 import { broadcastTelegramInboundEvent } from "./lib/luca-approvals/ws-events";
 import { telegramInboundLog } from "@shared/schema";
 import { db } from "./storage";
-import { withRLS } from "./lib/rls";
+import { withRLS, withService } from "./lib/rls";
 import { toAgentSkillExport, parseAgentSkillImport } from "./lib/skills-format";
 import { eq } from "drizzle-orm";
 
@@ -3931,6 +3931,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   }));
 
+  // [LUCA-091] Boss supervision ops below run service-scoped so they keep
+  // seeing pending skills of any user once the 0026 strict policies land.
+  const serviceQuery = (text: string, params?: unknown[]) =>
+    withService((client) => client.query(text, params));
+
   // -- [LUCA-089 Parts 3-4 / BRO2] Skills PR2: /api/skills namespace --
   //
   // RLS-scoped per-user skills API on top of migrations 0024/0025. The legacy
@@ -4011,7 +4016,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!parsed.ok) return res.status(400).json({ error: parsed.error });
     const isGlobal = req.body?.global === true;
     try {
-      const r = await pool.query(
+      const r = await serviceQuery(
         `INSERT INTO luca_skills (user_id, name, category, description, prompt_template, trigger_pattern, tool_sequence, auto_created)
          VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
          ON CONFLICT (user_id, name) DO NOTHING
@@ -4040,7 +4045,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const parsed = parseAgentSkillImport(items[i]);
       if (!parsed.ok) { errors.push({ index: i, error: parsed.error }); continue; }
       try {
-        const r = await pool.query(
+        const r = await serviceQuery(
           `INSERT INTO luca_skills (user_id, name, category, description, prompt_template, trigger_pattern, tool_sequence, auto_created)
            VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
            ON CONFLICT (user_id, name) DO NOTHING RETURNING id`,
@@ -4061,14 +4066,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "invalid_id" });
     try {
-      const r = await pool.query(
+      const r = await serviceQuery(
         `UPDATE luca_skills SET approved_at = NOW(), updated_at = NOW()
           WHERE id = $1 AND auto_created = TRUE AND approved_at IS NULL
           RETURNING id, user_id, agent_id, name, category, description, prompt_template, trigger_pattern, auto_created, tool_sequence, use_count, last_used_at, approved_at, created_at, updated_at`,
         [id],
       );
       if (r.rows.length === 0) {
-        const probe = await pool.query(`SELECT id FROM luca_skills WHERE id = $1`, [id]);
+        const probe = await serviceQuery(`SELECT id FROM luca_skills WHERE id = $1`, [id]);
         if (probe.rows.length === 0) return res.status(404).json({ error: "not_found" });
         return res.status(409).json({ error: "not_pending" });
       }
@@ -4086,12 +4091,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "invalid_id" });
     try {
-      const r = await pool.query(
+      const r = await serviceQuery(
         `DELETE FROM luca_skills WHERE id = $1 AND auto_created = TRUE AND approved_at IS NULL RETURNING id`,
         [id],
       );
       if (r.rows.length === 0) {
-        const probe = await pool.query(`SELECT id FROM luca_skills WHERE id = $1`, [id]);
+        const probe = await serviceQuery(`SELECT id FROM luca_skills WHERE id = $1`, [id]);
         if (probe.rows.length === 0) return res.status(404).json({ error: "not_found" });
         return res.status(409).json({ error: "not_pending" });
       }
