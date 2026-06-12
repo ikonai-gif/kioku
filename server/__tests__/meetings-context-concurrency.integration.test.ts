@@ -94,6 +94,12 @@ describe("Meeting Room — PG concurrency (integration)", () => {
     // test's synthetic worst case so we're measuring app correctness, not
     // acquire-queue timeouts.
     testPool = new Pool({ connectionString: container.getConnectionUri(), max: 50 });
+    // [BRO2 / PR233] 57P01 teardown race: fire-and-forget queries leave idle
+    // clients that receive FATAL ProcessInterrupts when container.stop() lands
+    // before their sockets finish closing after testPool.end(). With no error
+    // listener, pg surfaces these as unhandled errors and vitest fails the run
+    // even with 3/3 tests green (observed flaking on main as well). Swallow.
+    testPool.on("error", () => {});
     holder.pool = testPool;
 
     // Hardcoded migration list (plan v2.1 decision). Using readdirSync would
@@ -131,6 +137,8 @@ describe("Meeting Room — PG concurrency (integration)", () => {
 
   afterAll(async () => {
     await testPool?.end();
+    // Drain grace so in-flight socket teardown completes before postgres dies.
+    await new Promise((r) => setTimeout(r, 250));
     await container?.stop();
   });
 
