@@ -809,6 +809,27 @@ export async function initDb() {
     hostname    TEXT
   );`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_lifecycle_event_ts ON server_lifecycle(event, timestamp DESC);`);
+  // [LUCA-089] Skills PR1 (mirrors migrations/0024): user_id + RLS from day
+  // one on luca_skills; old table-wide UNIQUE(name) replaced by a per-user
+  // namespace (NULLS NOT DISTINCT keeps NULL=global unique too). Existing
+  // rows stay user_id=NULL = Boss-seeded globals visible to everyone.
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS agent_id INTEGER REFERENCES agents(id) ON DELETE CASCADE;`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS trigger_pattern TEXT;`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS auto_created BOOLEAN NOT NULL DEFAULT FALSE;`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS tool_sequence TEXT NOT NULL DEFAULT '[]';`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();`);
+  await pool.query(`ALTER TABLE luca_skills DROP CONSTRAINT IF EXISTS luca_skills_name_key;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS luca_skills_user_name_key ON luca_skills (user_id, name) NULLS NOT DISTINCT;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_luca_skills_user_category ON luca_skills(user_id, category, name);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_luca_skills_agent ON luca_skills(agent_id) WHERE agent_id IS NOT NULL;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_luca_skills_auto ON luca_skills(auto_created, use_count DESC) WHERE auto_created = TRUE;`);
+  await pool.query(`ALTER TABLE luca_skills ENABLE ROW LEVEL SECURITY;`);
+  await pool.query(`ALTER TABLE luca_skills FORCE ROW LEVEL SECURITY;`);
+  await pool.query(`DROP POLICY IF EXISTS skills_user_isolation ON luca_skills;`);
+  await pool.query(`CREATE POLICY skills_user_isolation ON luca_skills USING (user_id IS NULL OR COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
 
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.
