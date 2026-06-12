@@ -868,6 +868,9 @@ export async function initDb() {
   await pool.query(`CREATE POLICY skills_user_isolation ON luca_skills USING (user_id IS NULL OR COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
   // [LUCA-089 Part 4] Skills PR2 (mirrors migrations/0025): Boss review flow.
   await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;`);
+  // [LUCA-092] EIS PR2 (mirrors migrations/0027): last EIS event audit columns.
+  await pool.query(`ALTER TABLE agent_emotional_state ADD COLUMN IF NOT EXISTS last_event_type TEXT;`);
+  await pool.query(`ALTER TABLE agent_emotional_state ADD COLUMN IF NOT EXISTS last_event_at BIGINT;`);
 
 
   // R467 (BRO2) — luca_proposals: persistent self-improvement proposal queue.

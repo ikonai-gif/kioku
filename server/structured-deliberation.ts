@@ -14,6 +14,7 @@
 
 import { createHmac } from "crypto";
 import { storage } from "./storage";
+import { handleEISEvent } from "./eis-events";
 import { broadcastToRoom, broadcastHumanTurn } from "./ws";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type InjectedMemory } from "./memory-injection";
 import { allocateBudget, countTokens } from "./token-budget";
@@ -743,6 +744,9 @@ export async function runDeliberation(
   // Persist initial session to DB
   await persistSession(session, userId);
 
+  // [LUCA-092] captured for the failure-path EIS event (agents is try-scoped)
+  let participatingAgentIds: number[] = [];
+
   try {
     // Get agents in the room
     const room = await storage.getRoom(roomId);
@@ -753,6 +757,7 @@ export async function runDeliberation(
     const agents = allAgents.filter(
       (a) => roomAgentIds.includes(a.id) && a.status !== "offline"
     );
+    participatingAgentIds = agents.map((a) => a.id);
 
     const minAgents = includeHuman ? 1 : 2;
     if (agents.length < minAgents) throw new Error(`Need at least ${minAgents} non-offline agent${minAgents > 1 ? 's' : ''} for deliberation`);
@@ -916,6 +921,12 @@ export async function runDeliberation(
       fastAppraisal(agent.id, userId, `Deliberation on "${topic.slice(0, 100)}". Position: "${vote?.position?.slice(0, 100) || 'unknown'}"`, storage).catch(() => {});
     }
 
+    // [LUCA-092] EIS PR2: consensus reached -> PAD event per agent.
+    // Flag-gated inside handleEISEvent (EIS_ENABLED); fire-and-forget.
+    for (const agent of agents) {
+      handleEISEvent(agent.id, userId, "deliberation_consensus", { sessionId }).catch(() => {});
+    }
+
     // Fire-and-forget: auto-link to provenance chain if topic relates to a prior deliberation
     autoLinkToProvenanceChain(roomId, sessionId, topic).catch(() => {});
 
@@ -924,6 +935,10 @@ export async function runDeliberation(
     session.status = "failed";
     session.completedAt = Date.now();
     await persistSession(session, userId).catch(() => {});
+    // [LUCA-092] EIS PR2: deliberation failed -> PAD event per agent.
+    for (const agentId of participatingAgentIds) {
+      handleEISEvent(agentId, userId, "deliberation_failed", { sessionId }).catch(() => {});
+    }
     await postSystemMessage(roomId, `❌ Deliberation failed: ${(err as Error).message}`);
     throw err;
   } finally {
