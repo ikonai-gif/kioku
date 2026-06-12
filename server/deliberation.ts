@@ -42,6 +42,7 @@ import { getLucaTools, dispatchLucaTool } from "./lib/luca-tools/registry";
 import { TRUST_POLICY_PROMPT_SECTION } from "./lib/luca-tools/trust-policy";
 import { recordLucaAudit, hashLucaInput, inferStatusFromResult } from "./lib/luca-tools/audit-log";
 import { checkToolPatternForSkillCreation } from "./skill-auto-creator";
+import { maybeAppendEISBlock } from "./eis-context";
 import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
 import {
   readLucaEnv,
@@ -7278,9 +7279,12 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
             recentContextBlock,
           )
         : null;
-      const systemPrompt = isPartnerChat && partnerPromptParts
+      let systemPrompt = isPartnerChat && partnerPromptParts
         ? partnerPromptParts.static + partnerPromptParts.dynamic
         : buildSystemPrompt(agent.name, agent.description ?? "", memoryContext + knowledgeBlock, emotionContext, relationship);
+      // [LUCA-090] EIS PR1 -- flag-gated [Emotional Context] block. With
+      // EIS_ENABLED unset (default) this is a pure pass-through.
+      systemPrompt = await maybeAppendEISBlock(systemPrompt, agent.id, userId);
 
       // Build conversation history for context.
       // PR-A.6: if any recent message has a queued attachment summary, give the
