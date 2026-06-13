@@ -6064,20 +6064,24 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           let reasserted = false;
 
           if (factKey) {
-            const client = await pool.connect();
+            // [BRO2 RLS-fix] previously used raw pool.connect() with manual
+            // BEGIN/COMMIT — that path bypassed memories_user_isolation
+            // policy and silently 500-ed every Luca `remember()` write.
+            // withRLS sets app.user_id transaction-locally and owns the
+            // BEGIN/COMMIT/ROLLBACK lifecycle.
             try {
-              await client.query("BEGIN");
-              const active = await client.query(
-                `SELECT id, content, provenance, namespace FROM memories
-                  WHERE user_id = $1 AND fact_key = $2 AND valid_to IS NULL`,
-                [userId, factKey]
-              );
-              const identical = active.rows.find((row: any) => row.content === enrichedContent);
-              if (identical) {
-                await client.query("COMMIT");
-                reasserted = true;
-                newId = identical.id;
-              } else {
+              await withRLS(userId, async (client) => {
+                const active = await client.query(
+                  `SELECT id, content, provenance, namespace FROM memories
+                    WHERE user_id = $1 AND fact_key = $2 AND valid_to IS NULL`,
+                  [userId, factKey]
+                );
+                const identical = active.rows.find((row: any) => row.content === enrichedContent);
+                if (identical) {
+                  reasserted = true;
+                  newId = identical.id;
+                  return;
+                }
                 const r = await client.query(insertMemorySql, insertMemoryParams);
                 newId = r.rows[0]?.id;
                 // New provenance from this tool path is always 'luca_inferred'.
@@ -6097,16 +6101,15 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
                     supersededIds.push(row.id);
                   }
                 }
-                await client.query("COMMIT");
-              }
+              });
             } catch (txErr: any) {
-              try { await client.query("ROLLBACK"); } catch {}
-              client.release();
               return `remember: write failed — ${txErr?.message || String(txErr)}`;
             }
-            client.release();
           } else {
-            const r = await pool.query(insertMemorySql, insertMemoryParams);
+            // [BRO2 RLS-fix] previously raw pool.query — same regression.
+            const r = await withRLS(userId, async (client) =>
+              client.query(insertMemorySql, insertMemoryParams)
+            );
             newId = r.rows[0]?.id;
           }
 

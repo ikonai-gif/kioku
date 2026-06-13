@@ -3,6 +3,7 @@
  * Used for Agent O's deep expertise in hair art, art history, music, fashion
  */
 import { pool } from "./storage";
+import { withRLS } from "./lib/rls";
 
 interface KnowledgeChunk {
   domain: string;
@@ -29,21 +30,28 @@ export async function loadKnowledgePack(userId: number, agentId: number, chunks:
   for (const chunk of chunks) {
     try {
       const sanitizedContent = sanitizeHtml(`[${chunk.domain}/${chunk.category}] ${chunk.title}: ${chunk.content}`);
-      await pool.query(
-        `INSERT INTO memories (user_id, agent_id, content, type, importance, namespace, created_at)
-         VALUES ($1, $2, $3, 'semantic', $4, $5, $6)`,
-        [userId, agentId, sanitizedContent, chunk.importance, `_knowledge_${chunk.domain}`, Date.now()]
-      );
+      // [BRO2 RLS-fix] withRLS wrap — direct pool.query bypassed
+      // memories_user_isolation policy and silently failed under "skip
+      // duplicates" catch, hiding the regression for weeks.
+      await withRLS(userId, async (client) => {
+        await client.query(
+          `INSERT INTO memories (user_id, agent_id, content, type, importance, namespace, created_at)
+           VALUES ($1, $2, $3, 'semantic', $4, $5, $6)`,
+          [userId, agentId, sanitizedContent, chunk.importance, `_knowledge_${chunk.domain}`, Date.now()]
+        );
+      });
       loaded++;
     } catch { /* skip duplicates */ }
   }
   // Update domain chunk count
-  await pool.query(
-    `INSERT INTO knowledge_domains (user_id, name, slug, description, category, chunk_count, status, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7)
-     ON CONFLICT (user_id, slug) DO UPDATE SET chunk_count = EXCLUDED.chunk_count, status = 'active', updated_at = EXCLUDED.updated_at`,
-    [userId, chunks[0]?.domain || "unknown", chunks[0]?.domain?.toLowerCase().replace(/\s+/g, "_") || "unknown", `Knowledge pack: ${chunks[0]?.domain}`, chunks[0]?.category || "general", loaded, Date.now()]
-  );
+  await withRLS(userId, async (client) => {
+    await client.query(
+      `INSERT INTO knowledge_domains (user_id, name, slug, description, category, chunk_count, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7)
+       ON CONFLICT (user_id, slug) DO UPDATE SET chunk_count = EXCLUDED.chunk_count, status = 'active', updated_at = EXCLUDED.updated_at`,
+      [userId, chunks[0]?.domain || "unknown", chunks[0]?.domain?.toLowerCase().replace(/\s+/g, "_") || "unknown", `Knowledge pack: ${chunks[0]?.domain}`, chunks[0]?.category || "general", loaded, Date.now()]
+    );
+  });
   return loaded;
 }
 
