@@ -35,6 +35,65 @@ import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY } from 
 import { withLocalBreaker, HAS_LOCAL_LLM } from "./lib/local-llm";
 import logger from "./logger";
 import { assessRoomHeterogeneity } from "./lib/heterogeneity";
+
+// ── [LUCA-096] Deliberation v2: sparse topology + adaptive stopping ──────────
+
+const DELIBERATION_V2_ENABLED = process.env.DELIBERATION_V2_ENABLED === "true";
+const DELIBERATION_TOPOLOGY = (process.env.DELIBERATION_TOPOLOGY as "full" | "ring" | "random_sparse") || "ring";
+
+/** Build sparse communication graph. ring: each agent sees prev+next only.
+ *  random_sparse: each sees ceil(sqrt(n)) random peers. full: everyone. */
+function buildCommunicationGraph(agents: { id: number }[], type: "full" | "ring" | "random_sparse"): Map<number, number[]> {
+  const n = agents.length;
+  const graph = new Map<number, number[]>();
+  if (type === "full" || n <= 2) {
+    for (const a of agents) graph.set(a.id, agents.filter(b => b.id !== a.id).map(b => b.id));
+    return graph;
+  }
+  if (type === "ring") {
+    for (let i = 0; i < n; i++) {
+      const prev = agents[(i - 1 + n) % n].id;
+      const next = agents[(i + 1) % n].id;
+      graph.set(agents[i].id, [prev, next]);
+    }
+    return graph;
+  }
+  // random_sparse
+  const k = Math.ceil(Math.sqrt(n));
+  for (let i = 0; i < n; i++) {
+    const others = agents.filter((_, j) => j !== i);
+    const shuffled = others.sort(() => Math.random() - 0.5).slice(0, k);
+    graph.set(agents[i].id, shuffled.map(b => b.id));
+  }
+  return graph;
+}
+
+/** Returns true if >= 80% agents held same position across last windowSize rounds */
+function checkStabilityStop(positionHistory: string[][], windowSize = 2): boolean {
+  if (positionHistory.length < windowSize + 1) return false;
+  const last = positionHistory.slice(-windowSize - 1);
+  const agentCount = last[0].length;
+  if (agentCount === 0) return false;
+  let stableCount = 0;
+  for (let i = 0; i < agentCount; i++) {
+    const firstPos = last[0][i];
+    if (last.every(round => round[i] === firstPos)) stableCount++;
+  }
+  return stableCount / agentCount >= 0.8;
+}
+
+/** Filter priorPositions to only those visible to agentId given topology graph */
+function filterByTopology(
+  agentId: number,
+  priorPositions: AgentPosition[],
+  graph: Map<number, number[]> | null
+): AgentPosition[] {
+  if (!graph) return priorPositions;
+  const visible = graph.get(agentId);
+  if (!visible) return priorPositions;
+  return priorPositions.filter(p => visible.includes(p.agentId));
+}
+
 import { patentRoomBlocks } from "./lib/patent-routing";
 
 // Strip common prompt injection patterns from user-provided content
@@ -643,6 +702,7 @@ export interface ConsensusResult {
     changedMind: boolean;
   }>;
   dissent: string[];
+  minority_view?: string;
 }
 
 // Sessions now persisted to kioku_deliberation_sessions table (storage.ts CRUD)
@@ -788,16 +848,45 @@ export async function runDeliberation(
     await persistSession(session, userId);
 
     // ── Phase 2: Debate Rounds ──
+    // [LUCA-096] v2: topology graph for sparse communication
+    const topology = DELIBERATION_V2_ENABLED ? DELIBERATION_TOPOLOGY : "full";
+    const commGraph = DELIBERATION_V2_ENABLED && topology !== "full"
+      ? buildCommunicationGraph(agents, topology)
+      : null;
+
+    // Track position history for adaptive stopping (per-agent first word of position)
+    const positionHistory: string[][] = [
+      initialResult.round.positions.map(p => p.position.split(" ").slice(0, 5).join(" ")),
+    ];
+    let roundsTaken = 0;
+
     let previousPositions = initialResult.round.positions;
     for (let r = 1; r <= debateRounds; r++) {
+      // [LUCA-096] sparse topology: each agent sees only its graph neighbours
+      const topologyFilteredPositions = commGraph
+        ? previousPositions // passed to collectPositions; filtered per-agent inside
+        : previousPositions;
+
       const debateResult = await collectPositions(
-        roomId, userId, agents, topic, "debate", r, fallbackModel, previousPositions, sessionId,
-        includeHuman, humanName, room.patentRoom ?? false
+        roomId, userId, agents, topic, "debate", r, fallbackModel, topologyFilteredPositions, sessionId,
+        includeHuman, humanName, room.patentRoom ?? false, commGraph
       );
       session.rounds.push(debateResult.round);
       allInjectedMemories.push(...debateResult.injectedMemories);
       previousPositions = debateResult.round.positions;
+      roundsTaken = r;
       await persistSession(session, userId);
+
+      // [LUCA-096] Adaptive stopping: if >= 80% stable across last 2 rounds, stop early
+      if (DELIBERATION_V2_ENABLED && r >= 2) {
+        positionHistory.push(previousPositions.map(p => p.position.split(" ").slice(0, 5).join(" ")));
+        if (checkStabilityStop(positionHistory)) {
+          await postSystemMessage(roomId, `⏹ Early stop at round ${r}: positions stable (80%+ convergence)`);
+          break;
+        }
+      } else {
+        positionHistory.push(previousPositions.map(p => p.position.split(" ").slice(0, 5).join(" ")));
+      }
     }
 
     // ── Phase 3: Final Positions ──
@@ -960,7 +1049,8 @@ async function collectPositions(
   sessionId: string,
   includeHuman: boolean = false,
   humanName: string = "Human Participant",
-  patentRoom: boolean = false
+  patentRoom: boolean = false,
+  commGraph: Map<number, number[]> | null = null
 ): Promise<{ round: DeliberationRound; injectedMemories: InjectedMemory[] }> {
   const phaseLabel =
     phase === "position" ? "📍 Phase 1 — Initial Positions" :
@@ -1122,8 +1212,10 @@ async function collectPositions(
       const userMsg = `${positionLockContext}Topic for deliberation: "${sanitizeForPrompt(topic)}"\n\nRespond with your position in the EXACT format:\nPOSITION: [your clear position in 1-2 sentences]\nCONFIDENCE: [number 0.0 to 1.0]\nREASONING: [your argument in 2-3 sentences]`;
 
       // Build prior positions block for budget allocation
-      const priorBlock = priorPositions.length > 0
-        ? priorPositions.map(
+      // [LUCA-096] topology: filter to only visible peers
+      const visiblePositions = filterByTopology(agent.id, priorPositions, commGraph);
+      const priorBlock = visiblePositions.length > 0
+        ? visiblePositions.map(
             (p) => `- ${p.agentName}: "${sanitizeForPrompt(p.position)}" (confidence: ${(p.confidence * 100).toFixed(0)}%) — Reasoning: ${sanitizeForPrompt(p.reasoning)}`
           ).join("\n")
         : "";
@@ -1584,6 +1676,7 @@ function buildConsensus(
     method: "weighted_majority",
     votes,
     dissent,
+    minority_view: dissent.length > 0 ? dissent.join("; ") : undefined,
   };
 }
 
