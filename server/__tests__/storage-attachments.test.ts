@@ -48,6 +48,16 @@ import { Storage, db, pool } from "../storage";
 
 // Patch db.select/update at runtime so each test controls the chain results.
 beforeEach(() => {
+  // [PR3b] these helpers now run through txAsService (db.transaction +
+  // set_config). Transparent transaction: hand fn a tx that defers to the
+  // runtime-mocked chains below.
+  (db as any).transaction = vi.fn(async (fn: any) =>
+    fn({
+      execute: vi.fn().mockResolvedValue(undefined),
+      select: (...a: any[]) => (db as any).select(...a),
+      update: (...a: any[]) => (db as any).update(...a),
+    }),
+  );
   (db as any).select = vi.fn(() => ({
     from: () => ({
       where: () => Promise.resolve(dbState.selectRows),
@@ -112,23 +122,39 @@ describe("storage.patchAttachment — JSONB merge + persist", () => {
 });
 
 describe("storage.listExpiredAttachments — SQL shape + mapping", () => {
+  // [PR3b] runs under runAsService: pool.connect() client with BEGIN /
+  // set_config / COMMIT around the real query.
+  const clientQuery = vi.fn();
   beforeEach(() => {
-    (pool.query as any).mockReset();
+    clientQuery.mockReset();
+    (pool as any).connect = vi.fn().mockResolvedValue({
+      query: clientQuery,
+      release: vi.fn(),
+    });
   });
 
   it("queries jsonb_array_elements with expires_at + storage_key predicates", async () => {
-    (pool.query as any).mockResolvedValue({
-      rows: [
-        { msg_id: 1, att_id: "a1", key: "k1" },
-        { msg_id: 2, att_id: "a2", key: "k2" },
-      ],
+    clientQuery.mockImplementation((q: any) => {
+      if (typeof q === "string" && q.includes("jsonb_array_elements")) {
+        return Promise.resolve({
+          rows: [
+            { msg_id: 1, att_id: "a1", key: "k1" },
+            { msg_id: 2, att_id: "a2", key: "k2" },
+          ],
+        });
+      }
+      return Promise.resolve({ rows: [] });
     });
     const s = new Storage();
     const now = 1714500000000;
     const out = await s.listExpiredAttachments(now);
 
-    expect(pool.query).toHaveBeenCalledTimes(1);
-    const [sql, params] = (pool.query as any).mock.calls[0];
+    const mainCall = clientQuery.mock.calls.find(
+      (c: any[]) => typeof c[0] === "string" && c[0].includes("jsonb_array_elements"),
+    );
+    expect(mainCall).toBeTruthy();
+    expect(clientQuery.mock.calls.some((c: any[]) => String(c[0]).includes("kioku_service"))).toBe(true);
+    const [sql, params] = mainCall as any[];
     expect(sql).toContain("jsonb_array_elements");
     expect(sql).toContain("'expires_at'");
     expect(sql).toContain("'storage_key'");
