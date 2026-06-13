@@ -38,7 +38,7 @@ describe("W7 P2.3 — routing reads only llmModel (legacy `model` fallback remov
   it("deliberation.ts model-selection line reads `llmModel`, NOT `|| agent.model`", () => {
     const src = readFileSync(join(serverDir, "deliberation.ts"), "utf8");
     // The canonical line. Match the whole statement up to ;.
-    const line = src.match(/const\s+chatModel\s*=\s*\(agent\s+as\s+any\)\.llmModel[^\n;]*;/);
+    const line = src.match(/(?:const|let)\s+chatModel\s*=\s*\(agent\s+as\s+any\)\.llmModel[^\n;]*;/);
     expect(line, "chatModel assignment not found").toBeTruthy();
     const stmt = line![0];
     // Must read llmModel.

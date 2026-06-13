@@ -33,6 +33,7 @@ import { fastAppraisal } from "./fast-appraisal";
 import { getDecayedEmotionalState } from "./emotional-state";
 import { sendPushNotification } from "./push";
 import { checkSycophancy } from "./sycophancy-checker";
+import { cascadeEnabled, cascadeSimpleModel, classifyComplexity } from "./cost-cascade";
 import { applyVoiceGate, buildRewriteDirective } from "./voice-gate";
 import dns from "dns/promises";
 import { searchGoogleDrive, readGoogleDriveFile, searchDropbox, readDropboxFile, getIntegrationStatus, InvalidGrantError } from "./cloud-integrations";
@@ -7386,7 +7387,29 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // rows where `model` was set but `llmModel` was null are fixed in
         // that migration's UP step (COPY model → llm_model WHERE llm_model IS NULL).
         const defaultModel = "gpt-4.1-mini";
-        const chatModel = (agent as any).llmModel || defaultModel;
+        let chatModel = (agent as any).llmModel || defaultModel;
+
+        // [LUCA-097 / SPEC-2] Cost cascade — conservative. When CASCADE_ENABLED
+        // and the user message is explicit smalltalk (simple tier), route this
+        // turn to the cheap model. Everything else keeps the agent's model
+        // unchanged. Flag off → zero change to the hot path. Partner chat only;
+        // never touches the self-test probe room or non-Luca pipelines.
+        if (cascadeEnabled() && isPartnerChat) {
+          try {
+            const tier = classifyComplexity(triggerContent);
+            if (tier === "simple") {
+              const cheap = cascadeSimpleModel();
+              logger.info(
+                { component: "deliberation", event: "cascade_downshift", agentId: agent.id, from: chatModel, to: cheap },
+                `[cascade] simple tier → ${cheap} (was ${chatModel})`,
+              );
+              chatModel = cheap;
+            }
+          } catch (e) {
+            // Classifier must never break a turn — fall through to the agent's model.
+            logger.warn({ component: "deliberation", event: "cascade_error", err: String(e) }, "[cascade] classify failed (non-fatal)");
+          }
+        }
         const isGemini = chatModel.startsWith("gemini-") || ((agent as any).llmProvider === "gemini");
         const isClaude = chatModel.startsWith("claude-") || ((agent as any).llmProvider === "anthropic");
         const isKimi = chatModel.startsWith("kimi-")
