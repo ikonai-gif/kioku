@@ -15,6 +15,7 @@ import AppLayout from "./components/layout";
 import { resolveInitialTheme, themeToStored, THEME_KEY } from "@/lib/theme";
 import { I18nProvider } from "@/i18n";
 import RouteErrorBoundary from "./components/RouteErrorBoundary";
+import { UI_V2_CANVAS_ENABLED } from "@/lib/flags";
 
 // Route-level code splitting. Only the public landing (first paint) and the
 // trivial 404 load eagerly. The whole authenticated app and secondary public
@@ -38,6 +39,7 @@ const CookiesPage = lazy(() => import("./pages/cookies"));
 const BossBoardPage = lazy(() => import("./pages/boss-board"));
 const LucaBoardPage = lazy(() => import("./pages/luca-board"));
 const PartnerChatPage = lazy(() => import("./pages/partner-chat"));
+const V2WorkbenchPage = lazy(() => import("./pages/v2-workbench"));
 const GalleryPage = lazy(() => import("./pages/gallery"));
 const KnowledgePage = lazy(() => import("./pages/knowledge"));
 const FilesPage = lazy(() => import("./pages/files"));
@@ -277,6 +279,10 @@ export default function App() {
                   {/* Partner chat: full-screen, no sidebar layout */}
                   <Route path="/" component={PartnerChatPage} />
                   <Route path="/partner" component={PartnerChatPage} />
+                  {/* UI V2 prototype: full-screen, behind VITE_UI_V2_CANVAS_ENABLED */}
+                  {UI_V2_CANVAS_ENABLED && (
+                    <Route path="/v2" component={V2WorkbenchPage} />
+                  )}
                   {/* All other pages wrapped in AppLayout */}
                   <Route>{() => (
                     <AppLayout>
