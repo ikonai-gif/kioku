@@ -194,7 +194,7 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
     // Locate a guarded `if` whose condition references llmProvider === "openrouter"
     // AND chatModel.startsWith("anthropic/"). This is the new branch.
     expect(src).toMatch(
-      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+      /orNormalized\s*&&[\s\S]{0,200}?orNormalized\.startsWith\("anthropic\//,
     );
   });
 
@@ -202,7 +202,7 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
     // Find the new branch block (between the openrouter+anthropic guard and
     // the existing isKimi block) and confirm it passes chatModel through.
     const newBranchStart = src.search(
-      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+      /orNormalized\s*&&[\s\S]{0,200}?orNormalized\.startsWith\("anthropic\//,
     );
     expect(newBranchStart).toBeGreaterThan(-1);
     const kimiBranchStart = src.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
@@ -211,7 +211,7 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
     // Within the new branch, OpenRouter chat completions are invoked with
     // model: chatModel (not the kimi default).
     expect(newBranchBody).toMatch(/orClient\.chat\.completions\.create\(/);
-    expect(newBranchBody).toMatch(/model:\s*chatModel,/);
+    expect(newBranchBody).toMatch(/model:\s*orNormalized,/);
     expect(newBranchBody).not.toMatch(/moonshotai\/kimi-k2\.6/);
   });
 
@@ -222,7 +222,7 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
     // Strategy: locate the kimiModel ternary and assert the final `:` arm is
     // not the literal default we want to be rid of.
     const kimiModelTernary = src.match(
-      /const\s+kimiModel\s*=\s*chatModel\.startsWith\("moonshotai\/[\s\S]{0,400}?;/,
+      /const\s+kimiNormalized\s*=\s*normalizeOpenRouterSlug\(chatModel\);[\s\S]{0,200}?const\s+kimiModel\s*=[\s\S]{0,400}?;/,
     );
     expect(kimiModelTernary, "kimiModel ternary not found").toBeTruthy();
     expect(kimiModelTernary![0]).not.toMatch(/:\s*"moonshotai\/kimi-k2\.6"\s*\)?;?\s*$/);
@@ -234,7 +234,7 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
     // The new branch must respect the existing patent-privacy gate so that
     // K12-K20 / USPTO content does NOT leak to OpenRouter even via Claude.
     const newBranchStart = src.search(
-      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+      /orNormalized\s*&&[\s\S]{0,200}?orNormalized\.startsWith\("anthropic\//,
     );
     expect(newBranchStart).toBeGreaterThan(-1);
     // The condition expression includes !kimiBlockedByPrivacy.
@@ -244,7 +244,7 @@ describe("Chat-path: Claude via OpenRouter (anthropic/* slug fix)", () => {
 
   it("Order: the new Claude-via-OR branch comes BEFORE the existing isKimi block (so isKimi cannot catch anthropic/* first)", () => {
     const newBranchStart = src.search(
-      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+      /orNormalized\s*&&[\s\S]{0,200}?orNormalized\.startsWith\("anthropic\//,
     );
     const kimiBranchStart = src.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
     expect(newBranchStart).toBeGreaterThan(-1);
@@ -285,15 +285,16 @@ describe("PR #168a — OpenRouter circuit-breaker timeoutMs bump (Kimi reasoning
   const orSrc = readFileSync(join(serverDir, "lib", "openrouter-client.ts"), "utf8");
   const oaSrc = readFileSync(join(serverDir, "lib", "openai-client.ts"), "utf8");
 
-  it("OpenRouter breaker timeoutMs is 60_000 (not 30_000) — reasoning models need headroom", () => {
+  it("OpenRouter breaker timeoutMs is 80_000 (not 60_000 or 30_000) — Kimi reasoning headroom + AbortSignal coordination", () => {
     // Locate the CircuitBreaker config and read the timeoutMs literal.
     const m = orSrc.match(
       /new\s+CircuitBreaker\(\{[^}]*?name:\s*"openrouter"[^}]*?timeoutMs:\s*([0-9_]+)/,
     );
     expect(m, "openrouter breaker timeoutMs not found").toBeTruthy();
     const literal = m![1].replace(/_/g, "");
-    expect(parseInt(literal, 10)).toBe(60_000);
+    expect(parseInt(literal, 10)).toBe(80_000);
     expect(parseInt(literal, 10)).not.toBe(30_000);
+    expect(parseInt(literal, 10)).not.toBe(60_000);
   });
 
   it("OpenAI breaker timeoutMs stays at 30_000 — gpt-4o is non-reasoning, no bump needed", () => {
@@ -340,7 +341,7 @@ describe("PR #169 — OpenRouter content+reasoning fallback (reasoning-model rec
     // handle empty-content with reasoning fallback for future reasoning-class
     // Anthropic slugs (e.g. claude-sonnet-thinking).
     const branchStart = chatSrc.search(
-      /\(agent\s+as\s+any\)\.llmProvider\s*===\s*"openrouter"[\s\S]{0,200}?chatModel\.startsWith\("anthropic\//,
+      /orNormalized\s*&&[\s\S]{0,200}?orNormalized\.startsWith\("anthropic\//,
     );
     expect(branchStart).toBeGreaterThan(-1);
     const kimiStart = chatSrc.indexOf("if (!reply && isKimi && !kimiBlockedByPrivacy)");
