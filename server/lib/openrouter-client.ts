@@ -34,6 +34,42 @@ const OPENROUTER_HEADERS = {
 
 export const HAS_OPENROUTER_KEY = Boolean(process.env.OPENROUTER_API_KEY);
 
+/**
+ * [BRO2 overnight P1] Normalize raw model slugs to OpenRouter vendor-prefixed form.
+ *
+ * Background: some agents in the agents table store provider="openrouter"
+ * with llm_model values like "claude-sonnet-4-6", "kimi-k2.6", or "gpt-4o"
+ * — bare names without the vendor prefix OpenRouter requires. When these
+ * pass through to OpenRouter the API replies 400 model-not-found, the
+ * caller's AbortSignal or the breaker fires it as a failure, and the
+ * agent falls into abstain on every turn.
+ *
+ * This helper rewrites known vendor families to their OpenRouter slug.
+ * Vendor-prefixed inputs (anthropic/..., moonshotai/..., etc.) pass
+ * through untouched. Unknown families return unchanged so OpenRouter
+ * errors explicitly instead of being silently rewritten to the wrong
+ * model. Also collapses "version-4-6" → "version-4.6" so legacy DB
+ * entries that used "-" as the version separator still resolve.
+ *
+ * Usage: call only when provider === "openrouter". For slug-only
+ * (vendor-prefixed) detection paths the input is already valid.
+ */
+export function normalizeOpenRouterSlug(model: string): string {
+  if (/^(moonshotai|anthropic|deepseek|meta-llama|mistralai|qwen|google|x-ai|cohere|openai)\//.test(model)) {
+    return model;
+  }
+  const versionNormalized = model.replace(/-(\d+)-(\d+)$/, "-$1.$2");
+  if (/^claude-/i.test(versionNormalized))  return `anthropic/${versionNormalized}`;
+  if (/^kimi-/i.test(versionNormalized))    return `moonshotai/${versionNormalized}`;
+  if (/^gpt-/i.test(versionNormalized))     return `openai/${versionNormalized}`;
+  if (/^gemini-/i.test(versionNormalized))  return `google/${versionNormalized}`;
+  if (/^llama/i.test(versionNormalized))    return `meta-llama/${versionNormalized}`;
+  if (/^deepseek/i.test(versionNormalized)) return `deepseek/${versionNormalized}`;
+  if (/^qwen/i.test(versionNormalized))     return `qwen/${versionNormalized}`;
+  if (/^mistral/i.test(versionNormalized))  return `mistralai/${versionNormalized}`;
+  return versionNormalized;
+}
+
 // Single process-wide breaker — thresholds tuned for OpenRouter specifically.
 // timeoutMs is 60s (not 30s like OpenAI breaker) because OpenRouter hosts
 // reasoning-models like Kimi K2.6 that consistently spend 30-50s in their
@@ -47,7 +83,7 @@ const openrouterBreaker = new CircuitBreaker({
   failureThreshold: 5,
   cooldownMs: 30_000,
   successThreshold: 2,
-  timeoutMs: 60_000, // bumped 30s→60s for reasoning-model headroom (Kimi K2.6) [BRO2-317]
+  timeoutMs: 80_000, // [BRO2 overnight P1] 60s→80s — must stay ABOVE structured-deliberation AbortSignal (70s) so caller-side abort fires first, leaving breaker as last-resort. Kimi K2.6 reasoning chain consistently spends 30-50s in hidden chain before emitting visible content; 60s was tight against the 45s AbortSignal regression that this PR also fixes.
   isFailure: isOpenAIFailure, // identical HTTP failure policy (4xx≠429 = caller error)
   onStateChange: (from, to, reason) => {
     logger.warn(

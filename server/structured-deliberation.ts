@@ -31,7 +31,7 @@ import { checkSycophancy } from "./sycophancy-checker";
 import { autoLinkDeliberation as provenanceAutoLink } from "./provenance";
 import { withOpenAIBreaker } from "./lib/openai-client";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
-import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY } from "./lib/openrouter-client";
+import { withOpenRouterBreaker, makeOpenRouterClient, HAS_OPENROUTER_KEY, normalizeOpenRouterSlug } from "./lib/openrouter-client";
 import { withLocalBreaker, HAS_LOCAL_LLM } from "./lib/local-llm";
 import logger from "./logger";
 import { assessRoomHeterogeneity } from "./lib/heterogeneity";
@@ -154,16 +154,32 @@ function isLocalModel(model: string, provider?: string | null): boolean {
  * Resolve agent model to a supported one. OpenRouter-routed models pass through
  * untouched (they are validated by OpenRouter, not by our model lists).
  * Only genuinely unroutable models fall back to DEFAULT_MODEL.
+ *
+ * [BRO2 overnight P1] Bug #2 fix — normalize OpenRouter raw slugs:
+ *   BD stored "claude-sonnet-4-6" / "kimi-k2.6" / "gpt-4o" with
+ *   provider=openrouter but missing vendor prefix → OpenRouter rejects
+ *   with 400 model-not-found → AbortError → breaker fail → abstain.
+ *   Slug normalization lives in lib/openrouter-client.ts so deliberation.ts
+ *   chat-path can reuse it (Kimi/Claude branches there had the same gap).
  */
 function resolveModel(model: string, provider?: string | null): string {
   if (isLocalModel(model, provider)) return model;
-  if (isOpenRouterModel(model, provider)) return model;
+  if (isOpenRouterModel(model, provider)) {
+    if (provider === "openrouter") {
+      const normalized = normalizeOpenRouterSlug(model);
+      if (normalized !== model) {
+        console.info(`[deliberation] OpenRouter slug normalized: "${model}" → "${normalized}"`);
+      }
+      return normalized;
+    }
+    return model;
+  }
   if (isGeminiModel(model) || isOpenAIModel(model)) return model;
   console.warn(`[deliberation] Unsupported model "${model}" (provider=${provider ?? "none"}), falling back to ${DEFAULT_MODEL}`);
   return DEFAULT_MODEL;
 }
 
-const LLM_TIMEOUT_MS = 45_000; // 45s per LLM call
+const LLM_TIMEOUT_MS = 70_000; // [BRO2 overnight P1] bumped 45s→70s — Kimi K2.6 reasoning chain alone takes 30-50s; 45s aborted before content emit, cascading LLMAbstainError. Must stay BELOW openrouter breaker timeout (80s) so caller-side abort runs first.
 
 /**
  * Call OpenAI LLM directly, behind the appropriate circuit breaker.

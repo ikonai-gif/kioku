@@ -17,6 +17,7 @@ import {
 } from "./lib/luca-tools/workspace-save-media";
 import { broadcastToRoom, broadcastStreamChunk, broadcastToolActivity } from "./ws";
 import { withOpenAIBreaker, withOpenAIImageBreaker } from "./lib/openai-client";
+import { normalizeOpenRouterSlug } from "./lib/openrouter-client";
 import { isCircuitOpenError } from "./lib/http-errors";
 import { withAgentBreaker } from "./lib/openai-per-agent-breaker";
 import { withAnthropicBreaker } from "./lib/anthropic-client";
@@ -6966,7 +6967,7 @@ function getLocalClient(agent: { llmApiKey?: string | null; llmProvider?: string
   return null;
 }
 
-const LLM_TIMEOUT_MS = 60_000; // gpt-5-mini reasoning can take longer
+const LLM_TIMEOUT_MS = 70_000; // [BRO2 overnight P1] 60s→70s aligned with structured-deliberation. Kimi K2.6 reasoning headroom; stays below openrouter breaker (80s) so caller-side abort fires first.
 
 // Prevent simultaneous agent responses for same room (simple lock)
 // Room locks with auto-expiry to prevent permanent deadlocks
@@ -7672,11 +7673,18 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
         // Claude-via-OpenRouter agent would actually answer through Kimi.
         // The patent-privacy gate (`kimiBlockedByPrivacy`) is shared with the
         // Kimi block because both share the OpenRouter third-party data path.
+        // [BRO2 overnight P1] Bug #2 expansion: also accept legacy raw
+        // "claude-*" slugs (e.g. Luca id=16 stored "claude-sonnet-4-6"). We
+        // normalize first and route via the same OR Claude path so DB legacy
+        // entries don't fall through to the Kimi branch and silently abstain.
+        const orNormalized =
+          (agent as any).llmProvider === "openrouter" && typeof chatModel === "string"
+            ? normalizeOpenRouterSlug(chatModel)
+            : null;
         if (
           !reply &&
-          (agent as any).llmProvider === "openrouter" &&
-          typeof chatModel === "string" &&
-          chatModel.startsWith("anthropic/") &&
+          orNormalized &&
+          orNormalized.startsWith("anthropic/") &&
           !kimiBlockedByPrivacy
         ) {
           const orClient = getOpenRouterClient(agent as any);
@@ -7687,7 +7695,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                 : `[${sanitizeForPrompt(triggerAgentName)}]: ${sanitizeForPrompt(triggerContent)}`;
 
               const resp = await orClient.chat.completions.create({
-                model: chatModel, // pass-through, e.g. "anthropic/claude-sonnet-4.6"
+                model: orNormalized, // pass-through normalized
                 max_tokens: isPartnerChat ? 8000 : 2000,
                 temperature: isPartnerChat ? 0.85 : 0.75,
                 messages: [
@@ -7726,16 +7734,18 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
           if (orClient) {
             try {
               // Normalize model slug. Accepted forms:
-              //   "moonshotai/kimi-k2.6" → used as-is
-              //   "kimi-k2.6"            → prefixed with moonshotai/
+              //   "moonshotai/kimi-k2.6"         → used as-is
+              //   "kimi-k2.6" / "kimi-k2-6"      → normalized via openrouter-client helper
               //   anything else when llmProvider="openrouter" → SKIP (do NOT
               //   silently default to k2.6 — that previously swallowed any
               //   Claude/DeepSeek/etc. slug routed through this provider).
-              const kimiModel = chatModel.startsWith("moonshotai/")
-                ? chatModel
-                : (chatModel.startsWith("kimi-")
-                    ? `moonshotai/${chatModel}`
-                    : null);
+              // [BRO2 overnight P1] use shared normalizeOpenRouterSlug for
+              // legacy DB entries ("kimi-k2-6" form) — collapses 4-6 → 4.6
+              // and prefixes vendor consistently with structured-deliberation.
+              const kimiNormalized = normalizeOpenRouterSlug(chatModel);
+              const kimiModel = kimiNormalized.startsWith("moonshotai/")
+                ? kimiNormalized
+                : null;
 
               if (!kimiModel) {
                 // Slug doesn't look Kimi-shaped — let later branches handle
