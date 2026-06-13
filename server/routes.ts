@@ -812,11 +812,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
       }
 
-      const r = await pool.query(
-        `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, embedding, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, user_id, agent_id, type, namespace, importance, created_at`,
-        [userId, agentId, agentName, content, type, namespace, importance, embeddingJson, now]
+      const r = await withRLS(userId, async (client) =>
+        client.query(
+          `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, embedding, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id, user_id, agent_id, type, namespace, importance, created_at`,
+          [userId, agentId, agentName, content, type, namespace, importance, embeddingJson, now]
+        )
       );
       res.json({ ok: true, memory: r.rows[0], embedding: embeddingStatus });
     } catch (e: any) {
@@ -6917,22 +6919,24 @@ Do NOT:
           continue;
         }
 
-        await pool.query(
-          `INSERT INTO memories (user_id, content, type, importance, namespace, strength, confidence, encrypted, iv, auth_tag, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-          [
-            userId,
-            sanitizeHtml(mem.content),
-            mem.type || "semantic",
-            Math.min(1, Math.max(0, mem.importance ?? 0.5)),
-            mem.namespace || null,
-            mem.strength ?? 1.0,
-            mem.confidence ?? 1.0,
-            mem.encrypted || false,
-            mem.iv || null,
-            mem.authTag || null,
-            mem.createdAt || Date.now(),
-          ]
+        await withRLS(userId, async (client) =>
+          client.query(
+            `INSERT INTO memories (user_id, content, type, importance, namespace, strength, confidence, encrypted, iv, auth_tag, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [
+              userId,
+              sanitizeHtml(mem.content),
+              mem.type || "semantic",
+              Math.min(1, Math.max(0, mem.importance ?? 0.5)),
+              mem.namespace || null,
+              mem.strength ?? 1.0,
+              mem.confidence ?? 1.0,
+              mem.encrypted || false,
+              mem.iv || null,
+              mem.authTag || null,
+              mem.createdAt || Date.now(),
+            ]
+          )
         );
         existingSet.add(mem.content);
         imported++;
