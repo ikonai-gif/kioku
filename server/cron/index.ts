@@ -9,10 +9,12 @@
 import cron from "node-cron";
 import logger from "../logger";
 import { runMorningBrief, CRON1_JOB_ID } from "./morning-brief";
+import { runNightlyConsolidation, CRON2_JOB_ID, consolidationEnabled } from "./consolidation";
 import { CronExpressionParser } from "cron-parser";
 import { pool } from "../storage";
 
 const DEFAULT_MORNING_BRIEF_SCHEDULE = "0 9 * * *"; // 09:00 daily
+const DEFAULT_CONSOLIDATION_SCHEDULE = "0 3 * * *"; // 03:00 daily (sleep-time)
 const TIMEZONE = "America/Los_Angeles";
 
 export function morningBriefSchedule(env: NodeJS.ProcessEnv = process.env): string {
@@ -35,6 +37,19 @@ export function registerCronJobs(): void {
   logger.info(
     { component: "cron", job: CRON1_JOB_ID, schedule, timezone: TIMEZONE },
     "[cron] CRON-1 morning brief registered",
+  );
+
+  // [LUCA-098 / SPEC-3b] CRON-2 — nightly sleep-time memory consolidation.
+  // Registers always; runNightlyConsolidation no-ops unless MEMORY_CONSOLIDATION_ENABLED=true.
+  const consolidationSchedule = DEFAULT_CONSOLIDATION_SCHEDULE;
+  cron.schedule(consolidationSchedule, () => {
+    runNightlyConsolidation().catch((e) =>
+      logger.error({ component: "cron", job: CRON2_JOB_ID, err: String(e) }, "[CRON-2] unhandled"),
+    );
+  }, { timezone: TIMEZONE });
+  logger.info(
+    { component: "cron", job: CRON2_JOB_ID, schedule: consolidationSchedule, timezone: TIMEZONE, enabled: consolidationEnabled() },
+    "[cron] CRON-2 consolidation registered",
   );
 
   // [LUCA-088] startup missed-run check. Delayed 30s (unref) so the initDb
