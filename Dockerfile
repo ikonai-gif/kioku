@@ -7,6 +7,14 @@ RUN apk add --no-cache python3 make g++ ffmpeg
 COPY package*.json ./
 RUN npm install --production=false
 COPY . .
+
+# Build-time env vars (VITE_*) — must be declared as ARG and re-exported as
+# ENV so that `vite build` sees them. Railway passes its env vars as docker
+# build args automatically; without these lines they are invisible to vite.
+# Add a new ARG/ENV pair here for every new VITE_* flag.
+ARG VITE_UI_V2_CANVAS_ENABLED
+ENV VITE_UI_V2_CANVAS_ENABLED=${VITE_UI_V2_CANVAS_ENABLED}
+
 RUN npm run build
 
 FROM node:20-alpine
