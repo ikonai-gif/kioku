@@ -816,25 +816,25 @@ export async function initDb() {
   await pool.query(`ALTER TABLE memories ENABLE ROW LEVEL SECURITY;`);
   await pool.query(`ALTER TABLE memories FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS memories_user_isolation ON memories;`);
-  await pool.query(`CREATE POLICY memories_user_isolation ON memories USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`CREATE POLICY memories_user_isolation ON memories USING (current_setting('app.kioku_service', true) = 'true' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
   await pool.query(`ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;`);
   await pool.query(`ALTER TABLE rooms FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS rooms_user_isolation ON rooms;`);
-  await pool.query(`CREATE POLICY rooms_user_isolation ON rooms USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`CREATE POLICY rooms_user_isolation ON rooms USING (current_setting('app.kioku_service', true) = 'true' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
   // [LUCA-087] RLS Phase 2 (mirrors migrations/0022): room_messages (JOIN policy),
   // agent_turns, agents. Same legacy-safe COALESCE/NULLIF shape; backdoor stays until PR3.
   await pool.query(`ALTER TABLE room_messages ENABLE ROW LEVEL SECURITY;`);
   await pool.query(`ALTER TABLE room_messages FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS room_messages_user_isolation ON room_messages;`);
-  await pool.query(`CREATE POLICY room_messages_user_isolation ON room_messages USING (COALESCE(current_setting('app.user_id', true), '') = '' OR room_id IN (SELECT id FROM rooms WHERE user_id = NULLIF(current_setting('app.user_id', true), '')::int));`);
+  await pool.query(`CREATE POLICY room_messages_user_isolation ON room_messages USING (current_setting('app.kioku_service', true) = 'true' OR room_id IN (SELECT id FROM rooms WHERE user_id = NULLIF(current_setting('app.user_id', true), '')::int));`);
   await pool.query(`ALTER TABLE agent_turns ENABLE ROW LEVEL SECURITY;`);
   await pool.query(`ALTER TABLE agent_turns FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS agent_turns_user_isolation ON agent_turns;`);
-  await pool.query(`CREATE POLICY agent_turns_user_isolation ON agent_turns USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`CREATE POLICY agent_turns_user_isolation ON agent_turns USING (current_setting('app.kioku_service', true) = 'true' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
   await pool.query(`ALTER TABLE agents ENABLE ROW LEVEL SECURITY;`);
   await pool.query(`ALTER TABLE agents FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS agents_user_isolation ON agents;`);
-  await pool.query(`CREATE POLICY agents_user_isolation ON agents USING (COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`CREATE POLICY agents_user_isolation ON agents USING (current_setting('app.kioku_service', true) = 'true' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
   // [LUCA-088] CRON PR2 (mirrors migrations/0023): server lifecycle events for
   // the startup missed-run checker.
   await pool.query(`CREATE TABLE IF NOT EXISTS server_lifecycle (
@@ -865,7 +865,7 @@ export async function initDb() {
   await pool.query(`ALTER TABLE luca_skills ENABLE ROW LEVEL SECURITY;`);
   await pool.query(`ALTER TABLE luca_skills FORCE ROW LEVEL SECURITY;`);
   await pool.query(`DROP POLICY IF EXISTS skills_user_isolation ON luca_skills;`);
-  await pool.query(`CREATE POLICY skills_user_isolation ON luca_skills USING (user_id IS NULL OR COALESCE(current_setting('app.user_id', true), '') = '' OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
+  await pool.query(`CREATE POLICY skills_user_isolation ON luca_skills USING (current_setting('app.kioku_service', true) = 'true' OR user_id IS NULL OR user_id = NULLIF(current_setting('app.user_id', true), '')::int);`);
   // [LUCA-089 Part 4] Skills PR2 (mirrors migrations/0025): Boss review flow.
   await pool.query(`ALTER TABLE luca_skills ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;`);
 
@@ -1713,8 +1713,23 @@ export class Storage implements IStorage {
   }
 
   // ── Agents ─────────────────────────────────────────────────────────────────
-  async getAgents(userId: number) {
-    return db.select().from(agents).where(eq(agents.userId, userId));
+  // [LUCA-093] PR3b -- class-level GUC transaction helpers for drizzle paths.
+  private async txAsUser(userId: number, fn: (tx: any) => any): Promise<any> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.user_id', ${String(userId)}, true)`);
+      return fn(tx);
+    });
+  }
+
+  private async txAsService(fn: (tx: any) => any): Promise<any> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.kioku_service', 'true', true)`);
+      return fn(tx);
+    });
+  }
+
+  async getAgents(userId: number): Promise<Agent[]> {
+    return this.txAsUser(userId, (tx) => tx.select().from(agents).where(eq(agents.userId, userId)));
   }
   async getAgent(id: number) {
     // [LUCA-091] internal agent lookup (token paths, circuit breaker) --
@@ -1725,7 +1740,7 @@ export class Storage implements IStorage {
     });
   }
   async createAgent(data: InsertAgent): Promise<Agent> {
-    const [result] = await db.insert(agents).values({ ...data, createdAt: Date.now() }).returning();
+    const [result] = await this.txAsUser(Number(data.userId), (tx) => tx.insert(agents).values({ ...data, createdAt: Date.now() }).returning());
     return result;
   }
   async updateAgent(id: number, userId: number, data: Partial<{ name: string; description: string; color: string; model: string; role: string; llmProvider: string | null; llmApiKey: string | null; llmModel: string | null; agentType: string; webhookUrl: string | null; webhookSecret: string | null }>): Promise<boolean> {
@@ -1788,12 +1803,12 @@ export class Storage implements IStorage {
   // in JS on the hot path; also avoids the importance-ranked LIMIT 500 silently
   // dropping identity rows for users with many memories.
   async getInjectionCandidates(userId: number, agentId: number) {
-    const results = await db.select().from(memories).where(
+    const results = await this.txAsUser(userId, (tx) => tx.select().from(memories).where(
       sql`${memories.userId} = ${userId}
           AND (${memories.agentId} = ${agentId} OR ${memories.agentId} IS NULL)
           AND (${inArray(memories.namespace, [...INJECTION_ALWAYS_NAMESPACES])}
                OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))`
-    ).orderBy(desc(memories.importance), desc(memories.createdAt));
+    ).orderBy(desc(memories.importance), desc(memories.createdAt)));
     const now = Date.now();
     return results.map((m: any) => ({
       ...m,
@@ -1839,7 +1854,7 @@ export class Storage implements IStorage {
       `;
       params.push(40); // Fetch more for post-filtering
 
-      const result = await pool.query(sqlQuery, params);
+      const result = await runAsUser(userId, (client) => client.query(sqlQuery, params));
 
       // Apply importance + decay + confidence scoring
       const now = Date.now();
@@ -1882,7 +1897,7 @@ export class Storage implements IStorage {
       // Fire-and-forget: update access stats + reinforce confidence
       if (scored.length > 0) {
         const ids = scored.map((s: any) => s.id);
-        pool.query(
+        runAsUser(userId, (client) => client.query(
           `UPDATE memories SET
             last_accessed_at = $1,
             access_count = COALESCE(access_count, 0) + 1,
@@ -1890,7 +1905,7 @@ export class Storage implements IStorage {
             reinforcements = COALESCE(reinforcements, 0) + 1
           WHERE id = ANY($2)`,
           [now, ids]
-        ).catch(() => {});
+        )).catch(() => {});
       }
 
       if (scored.length > 0) return scored;
@@ -1913,7 +1928,7 @@ export class Storage implements IStorage {
     }
     sqlQuery += ` ORDER BY importance DESC, created_at DESC LIMIT $${idx}`;
     params.push(limit);
-    const result = await pool.query(sqlQuery, params);
+    const result = await runAsUser(userId, (client) => client.query(sqlQuery, params));
     return result.rows;
   }
   async createMemory(data: InsertMemory): Promise<Memory> {
@@ -1936,14 +1951,14 @@ export class Storage implements IStorage {
       data = { ...data, factKey: null };
     }
     const now = Date.now();
-    const [mem] = await db.insert(memories).values({
+    const [mem] = await this.txAsUser(Number(data.userId), (tx) => tx.insert(memories).values({
       ...data,
       createdAt: now,
       lastReinforcedAt: now,
       confidence: data.confidence ?? 1.0,
       decayRate: data.decayRate ?? 0.01,
       reinforcements: 0,
-    }).returning();
+    }).returning());
 
     // Write embedding_vec for pgvector search — use provided embedding or generate one
     let embeddingVec: number[] | null = null;
@@ -1967,10 +1982,10 @@ export class Storage implements IStorage {
     if (embeddingVec) {
       try {
         const vecStr = `[${embeddingVec.join(',')}]`;
-        await pool.query(
+        await runAsUser(Number(data.userId), (client) => client.query(
           'UPDATE memories SET embedding_vec = $1::vector WHERE id = $2',
           [vecStr, mem.id]
-        );
+        ));
       } catch { /* embedding_vec will be null — text search fallback */ }
     }
 
@@ -1980,20 +1995,20 @@ export class Storage implements IStorage {
         // Auto-link: find 5 most similar memories and create 'related' links
         if (embeddingVec && data.userId) {
           const vecStr = `[${embeddingVec.join(',')}]`;
-          const similar = await pool.query(`
+          const similar = await runAsUser(Number(data.userId), (client) => client.query(`
             SELECT id, 1 - (embedding_vec <=> $1::vector) as sim
             FROM memories
             WHERE user_id = $2 AND embedding_vec IS NOT NULL AND id != $3
             ORDER BY embedding_vec <=> $1::vector LIMIT 5
-          `, [vecStr, data.userId, mem.id]);
+          `, [vecStr, data.userId, mem.id]));
 
           for (const row of similar.rows) {
             if (row.sim > 0.7) {
-              await pool.query(`
+              await runAsUser(Number(data.userId), (client) => client.query(`
                 INSERT INTO memory_links (user_id, source_memory_id, target_memory_id, link_type, strength, created_at)
                 VALUES ($1, $2, $3, 'related', $4, $5)
                 ON CONFLICT DO NOTHING
-              `, [data.userId, mem.id, row.id, Math.round(row.sim * 1000) / 1000, Date.now()]);
+              `, [data.userId, mem.id, row.id, Math.round(row.sim * 1000) / 1000, Date.now()]));
             }
           }
         }
@@ -2003,7 +2018,7 @@ export class Storage implements IStorage {
         // Emotion scoring (Phase 4b)
         const emotionVec = await scoreEmotion(data.content);
         if (emotionVec && mem.id) {
-          await pool.query('UPDATE memories SET emotion_vector = $1 WHERE id = $2', [JSON.stringify(emotionVec), mem.id]);
+          await runAsUser(Number(data.userId), (client) => client.query('UPDATE memories SET emotion_vector = $1 WHERE id = $2', [JSON.stringify(emotionVec), mem.id]));
         }
       } catch { /* emotion scoring failure is non-fatal */ }
     })();
@@ -2011,22 +2026,24 @@ export class Storage implements IStorage {
     if (data.agentId) {
       const agent = await this.getAgent(data.agentId);
       if (agent) {
-        await db.update(agents).set({
+        // [LUCA-093] internal counter bump, no user scoping -- service-scoped.
+        const bumpAgentId = data.agentId;
+        await this.txAsService((tx) => tx.update(agents).set({
           memoriesCount: agent.memoriesCount + 1,
           lastActiveAt: Date.now(),
           status: "online",
-        }).where(eq(agents.id, data.agentId));
+        }).where(eq(agents.id, bumpAgentId)));
       }
     }
     return mem;
   }
   async getMemory(id: number, userId: number): Promise<Memory | undefined> {
-    return db.select().from(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).limit(1).then(r => r[0]);
+    return this.txAsUser(userId, (tx) => tx.select().from(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).limit(1).then((r: any[]) => r[0]));
   }
 
   async reinforceMemory(id: number, userId: number): Promise<void> {
     const now = Date.now();
-    await pool.query(
+    await runAsUser(userId, (client) => client.query(
       `UPDATE memories SET
         last_accessed_at = $1,
         access_count = COALESCE(access_count, 0) + 1,
@@ -2034,7 +2051,7 @@ export class Storage implements IStorage {
         reinforcements = COALESCE(reinforcements, 0) + 1
       WHERE id = $2 AND user_id = $3`,
       [now, id, userId]
-    );
+    ));
   }
 
   // Phase 0.5 — honesty layer: a human (the owner) elevates a memory to verified=true.
@@ -2043,11 +2060,11 @@ export class Storage implements IStorage {
   // by (id, userId). Returns the updated Memory, or undefined if nothing matched.
   async setMemoryVerified(id: number, userId: number): Promise<Memory | undefined> {
     const now = Date.now();
-    const rows = await db
+    const rows = await this.txAsUser(userId, (tx) => tx
       .update(memories)
       .set({ verified: true, lastVerifiedAt: now })
       .where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`)
-      .returning();
+      .returning());
     return rows[0];
   }
 
@@ -2078,20 +2095,22 @@ export class Storage implements IStorage {
   }
 
   async deleteMemory(id: number, userId: number): Promise<boolean> {
-    const result = await db.delete(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).returning();
+    const result = await this.txAsUser(userId, (tx) => tx.delete(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).returning());
     return result.length > 0;
   }
   async purgeMemories(userId: number, scope: 'all' | 'agent', agentId?: string): Promise<number> {
-    if (scope === 'agent' && agentId) {
-      const result = await db.delete(memories).where(sql`${memories.userId} = ${userId} AND ${memories.agentId} = ${Number(agentId)}`).returning();
+    return this.txAsUser(userId, async (tx) => {
+      if (scope === 'agent' && agentId) {
+        const result = await tx.delete(memories).where(sql`${memories.userId} = ${userId} AND ${memories.agentId} = ${Number(agentId)}`).returning();
+        return result.length;
+      }
+      const result = await tx.delete(memories).where(eq(memories.userId, userId)).returning();
       return result.length;
-    }
-    const result = await db.delete(memories).where(eq(memories.userId, userId)).returning();
-    return result.length;
+    });
   }
 
   async exportMemories(userId: number): Promise<any[]> {
-    const all = await db.select({
+    const all = await this.txAsUser(userId, (tx) => tx.select({
       id: memories.id,
       content: memories.content,
       type: memories.type,
@@ -2100,54 +2119,56 @@ export class Storage implements IStorage {
       agentName: memories.agentName,
       namespace: memories.namespace,
       createdAt: memories.createdAt,
-    }).from(memories).where(eq(memories.userId, userId)).orderBy(desc(memories.createdAt));
+    }).from(memories).where(eq(memories.userId, userId)).orderBy(desc(memories.createdAt)));
     return all;
   }
 
   async getMemoriesCount(userId: number) {
-    const result = await pool.query<{ count: string }>(
+    const result = await runAsUser(userId, (client) => client.query<{ count: string }>(
       "SELECT COUNT(*) as count FROM memories WHERE user_id = $1", [userId]
-    );
+    ));
     return parseInt(result.rows[0]?.count ?? "0");
   }
 
   // ── Memory Links (synaptic connections) ────────────────────────────────────
   async createMemoryLink(userId: number, sourceId: number, targetId: number, linkType: string = "related", strength: number = 0.5) {
-    const [source, target] = await Promise.all([
-      pool.query('SELECT id FROM memories WHERE id = $1 AND user_id = $2', [sourceId, userId]),
-      pool.query('SELECT id FROM memories WHERE id = $1 AND user_id = $2', [targetId, userId]),
-    ]);
-    if (!source.rows.length || !target.rows.length) return null;
-    const result = await pool.query(
-      'INSERT INTO memory_links (source_memory_id, target_memory_id, user_id, link_type, strength, created_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [sourceId, targetId, userId, linkType, strength, Date.now()]
-    );
-    return result.rows[0];
+    return runAsUser(userId, async (client) => {
+      const [source, target] = await Promise.all([
+        client.query('SELECT id FROM memories WHERE id = $1 AND user_id = $2', [sourceId, userId]),
+        client.query('SELECT id FROM memories WHERE id = $1 AND user_id = $2', [targetId, userId]),
+      ]);
+      if (!source.rows.length || !target.rows.length) return null;
+      const result = await client.query(
+        'INSERT INTO memory_links (source_memory_id, target_memory_id, user_id, link_type, strength, created_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [sourceId, targetId, userId, linkType, strength, Date.now()]
+      );
+      return result.rows[0];
+    });
   }
 
   async getMemoryLinks(userId: number, memoryId: number) {
-    const result = await pool.query(
+    const result = await runAsUser(userId, (client) => client.query(
       `SELECT ml.*, m.content as linked_content, m.type as linked_type
        FROM memory_links ml
        JOIN memories m ON (ml.target_memory_id = m.id OR ml.source_memory_id = m.id) AND m.id != $1
        WHERE ml.user_id = $2 AND (ml.source_memory_id = $1 OR ml.target_memory_id = $1)`,
       [memoryId, userId]
-    );
+    ));
     return result.rows;
   }
 
   async deleteMemoryLink(userId: number, memoryId: number, linkId: number) {
-    await pool.query(
+    await runAsUser(userId, (client) => client.query(
       'DELETE FROM memory_links WHERE id = $1 AND user_id = $2 AND (source_memory_id = $3 OR target_memory_id = $3)',
       [linkId, userId, memoryId]
-    );
+    ));
   }
 
   async deleteMemoryLinks(userId: number, memoryId: number) {
-    await pool.query(
+    await runAsUser(userId, (client) => client.query(
       'DELETE FROM memory_links WHERE user_id = $1 AND (source_memory_id = $2 OR target_memory_id = $2)',
       [userId, memoryId]
-    );
+    ));
   }
 
   /**
@@ -2209,21 +2230,22 @@ export class Storage implements IStorage {
       return tx.select().from(rooms).where(eq(rooms.userId, userId));
     });
   }
-  async getRoom(id: number, userId?: number) {
+  async getRoom(id: number, userId?: number): Promise<Room | undefined> {
     if (userId !== undefined) {
-      return db.select().from(rooms).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).limit(1).then(r => r[0]);
+      return this.txAsUser(userId, (tx) => tx.select().from(rooms).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).limit(1).then((r: any[]) => r[0]));
     }
-    return db.select().from(rooms).where(eq(rooms.id, id)).limit(1).then(r => r[0]);
+    // [LUCA-093] internal lookup without user context -- service-scoped.
+    return this.txAsService((tx) => tx.select().from(rooms).where(eq(rooms.id, id)).limit(1).then((r: any[]) => r[0]));
   }
   async createRoom(data: InsertRoom): Promise<Room> {
-    const [result] = await db.insert(rooms).values({ ...data, createdAt: Date.now() }).returning();
+    const [result] = await this.txAsUser(Number(data.userId), (tx) => tx.insert(rooms).values({ ...data, createdAt: Date.now() }).returning());
     return result;
   }
   async updateRoom(id: number, userId: number, data: Partial<{ name: string; description: string; status: string; agentIds: string }>): Promise<Room | undefined> {
-    return db.update(rooms).set(data).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).returning().then(r => r[0]);
+    return this.txAsUser(userId, (tx) => tx.update(rooms).set(data).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).returning().then((r: any[]) => r[0]));
   }
   async deleteRoom(id: number, userId: number): Promise<boolean> {
-    const result = await db.delete(rooms).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).returning();
+    const result = await this.txAsUser(userId, (tx) => tx.delete(rooms).where(sql`${rooms.id} = ${id} AND ${rooms.userId} = ${userId}`).returning());
     return result.length > 0;
   }
 
@@ -2284,10 +2306,11 @@ export class Storage implements IStorage {
       });
       return result;
     }
-    const [result] = await db
+    // [LUCA-093] internal pipeline write without user context -- service-scoped.
+    const [result] = await this.txAsService((tx) => tx
       .insert(roomMessages)
       .values({ ...data, createdAt: Date.now() })
-      .returning();
+      .returning());
     return result;
   }
   /**
@@ -2314,10 +2337,10 @@ export class Storage implements IStorage {
     messageId: number,
     attachmentId: string,
   ): Promise<AttachmentMeta | null> {
-    const [row] = await db
+    const [row] = await this.txAsService((tx) => tx
       .select({ attachments: roomMessages.attachments })
       .from(roomMessages)
-      .where(eq(roomMessages.id, messageId));
+      .where(eq(roomMessages.id, messageId)));
     if (!row) return null;
     const arr = (row.attachments ?? []) as AttachmentMeta[];
     return arr.find((a) => a.id === attachmentId) ?? null;
@@ -2334,19 +2357,19 @@ export class Storage implements IStorage {
     attachmentId: string,
     patch: Partial<AttachmentMeta>,
   ): Promise<RoomMessage | null> {
-    const [row] = await db
+    const [row] = await this.txAsService((tx) => tx
       .select()
       .from(roomMessages)
-      .where(eq(roomMessages.id, messageId));
+      .where(eq(roomMessages.id, messageId)));
     if (!row) return null;
     const arr = ((row.attachments ?? []) as AttachmentMeta[]).map((a) =>
       a.id === attachmentId ? { ...a, ...patch } : a,
     );
-    const [updated] = await db
+    const [updated] = await this.txAsService((tx) => tx
       .update(roomMessages)
       .set({ attachments: arr })
       .where(eq(roomMessages.id, messageId))
-      .returning();
+      .returning());
     return updated ?? null;
   }
 
@@ -2356,10 +2379,10 @@ export class Storage implements IStorage {
    * FTS indexes pick up the new content.
    */
   async updateMessageSearchText(messageId: number): Promise<void> {
-    const [row] = await db
+    const [row] = await this.txAsService((tx) => tx
       .select()
       .from(roomMessages)
-      .where(eq(roomMessages.id, messageId));
+      .where(eq(roomMessages.id, messageId)));
     if (!row) return;
     const arr = (row.attachments ?? []) as AttachmentMeta[];
     const parts = [row.content];
@@ -2370,10 +2393,10 @@ export class Storage implements IStorage {
       if (a.original_name) parts.push(a.original_name);
     }
     const searchText = parts.filter(Boolean).join(" ").slice(0, 32_000);
-    await db
+    await this.txAsService((tx) => tx
       .update(roomMessages)
       .set({ searchText })
-      .where(eq(roomMessages.id, messageId));
+      .where(eq(roomMessages.id, messageId)));
   }
 
   /**
@@ -2400,7 +2423,7 @@ export class Storage implements IStorage {
   async listExpiredAttachments(
     now: number,
   ): Promise<Array<{ messageId: number; attachmentId: string; storageKey: string }>> {
-    const rows = await pool.query<{
+    const rows = await runAsService((client) => client.query<{
       msg_id: number;
       att_id: string;
       key: string;
@@ -2415,7 +2438,7 @@ export class Storage implements IStorage {
          AND (a->>'expires_at')::bigint < $1
          AND a->>'storage_key' IS NOT NULL`,
       [now],
-    );
+    ));
     return rows.rows.map((r) => ({
       messageId: r.msg_id,
       attachmentId: r.att_id,
@@ -2820,6 +2843,9 @@ export class Storage implements IStorage {
     // 2. Emotional state + relationships (references agents)
     await client.query('DELETE FROM agent_emotional_state WHERE user_id = $1', [userId]);
     await client.query('DELETE FROM agent_relationships WHERE user_id = $1', [userId]);
+    // [LUCA-093/BRO2-A34] agent_turns has no FK at all (verified pg_constraint
+    // 2026-06-12) -- without this line turns survive account deletion (GDPR gap).
+    await client.query('DELETE FROM agent_turns WHERE user_id = $1', [userId]);
     // 3. Memories
     await client.query('DELETE FROM memories WHERE user_id = $1', [userId]);
     // 4. Room messages (references rooms)
@@ -2890,28 +2916,28 @@ export class Storage implements IStorage {
       userData, memoriesData, agentsData, roomsData, messagesData,
       flowsData, deliberationsData, memoryLinksData, usageData, usageHistoryData,
       webhooksData, tokensData,
-    ] = await Promise.all([
-      pool.query('SELECT id, email, name, company, plan, billing_cycle, created_at FROM users WHERE id = $1', [userId]),
-      pool.query(`SELECT id, content, type, importance, confidence, decay_rate, strength,
+    ] = await runAsUser(userId, (client) => Promise.all([
+      client.query('SELECT id, email, name, company, plan, billing_cycle, created_at FROM users WHERE id = $1', [userId]),
+      client.query(`SELECT id, content, type, importance, confidence, decay_rate, strength,
         emotional_valence, agent_id, agent_name, namespace, access_count,
         last_accessed_at, last_reinforced_at, reinforcements,
         expires_at, cause_id, context_trigger, created_at
         FROM memories WHERE user_id = $1 ORDER BY created_at DESC`, [userId]),
-      pool.query(`SELECT id, name, description, role, model, llm_provider, agent_type,
+      client.query(`SELECT id, name, description, role, model, llm_provider, agent_type,
         status, memories_count, enabled, created_at
         FROM agents WHERE user_id = $1`, [userId]),
-      pool.query('SELECT id, name, description, status, agent_ids, created_at FROM rooms WHERE user_id = $1', [userId]),
-      pool.query(`SELECT rm.id, rm.content, rm.agent_id, rm.agent_name, rm.is_decision, rm.created_at, rm.room_id
+      client.query('SELECT id, name, description, status, agent_ids, created_at FROM rooms WHERE user_id = $1', [userId]),
+      client.query(`SELECT rm.id, rm.content, rm.agent_id, rm.agent_name, rm.is_decision, rm.created_at, rm.room_id
         FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1 ORDER BY rm.created_at`, [userId]),
-      pool.query('SELECT id, name, description, agent_ids, created_at FROM flows WHERE user_id = $1', [userId]),
-      pool.query(`SELECT id, room_id, topic, status, model, models_used, rounds, consensus,
+      client.query('SELECT id, name, description, agent_ids, created_at FROM flows WHERE user_id = $1', [userId]),
+      client.query(`SELECT id, room_id, topic, status, model, models_used, rounds, consensus,
         started_at, completed_at FROM kioku_deliberation_sessions WHERE user_id = $1 ORDER BY started_at DESC`, [userId]),
-      pool.query(`SELECT ml.* FROM memory_links ml WHERE ml.user_id = $1`, [userId]),
-      pool.query(`SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT 1`, [userId]),
-      pool.query(`SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT 12`, [userId]),
-      pool.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
-      pool.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
-    ]);
+      client.query(`SELECT ml.* FROM memory_links ml WHERE ml.user_id = $1`, [userId]),
+      client.query(`SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT 1`, [userId]),
+      client.query(`SELECT * FROM usage_tracking WHERE user_id = $1 ORDER BY period_start DESC LIMIT 12`, [userId]),
+      client.query('SELECT id, url, events, created_at FROM kioku_webhooks WHERE user_id = $1', [userId]),
+      client.query('SELECT id, name, scopes, expires_at, created_at FROM kioku_agent_tokens WHERE user_id = $1', [userId]),
+    ]));
 
     const user = userData.rows[0];
     const currentUsage = usageData.rows[0];
@@ -3064,12 +3090,12 @@ export class Storage implements IStorage {
 
   // ── CSV export for memories ─────────────────────────────────────────────────
   async exportMemoriesCSV(userId: number): Promise<string> {
-    const { rows } = await pool.query(
+    const { rows } = await runAsUser(userId, (client) => client.query(
       `SELECT id, content, type, importance, confidence, strength, emotional_valence,
         agent_id, agent_name, namespace, access_count, decay_rate,
         reinforcements, expires_at, cause_id, context_trigger, created_at
         FROM memories WHERE user_id = $1 ORDER BY created_at DESC`, [userId]
-    );
+    ));
 
     const headers = [
       'id', 'content', 'type', 'importance', 'confidence', 'strength',
@@ -3106,12 +3132,12 @@ export class Storage implements IStorage {
 
   // ── Per-user resource counts ───────────────────────────────────────────────
   async getUserResourceCounts(userId: number): Promise<{ agents: number; memories: number; rooms: number; flows: number }> {
-    const [agentsCount, memoriesCount, roomsCount, flowsCount] = await Promise.all([
-      pool.query('SELECT COUNT(*)::int as count FROM agents WHERE user_id = $1', [userId]),
-      pool.query('SELECT COUNT(*)::int as count FROM memories WHERE user_id = $1 AND COALESCE(strength, 1) > 0', [userId]),
-      pool.query('SELECT COUNT(*)::int as count FROM rooms WHERE user_id = $1', [userId]),
-      pool.query('SELECT COUNT(*)::int as count FROM flows WHERE user_id = $1', [userId]),
-    ]);
+    const [agentsCount, memoriesCount, roomsCount, flowsCount] = await runAsUser(userId, (client) => Promise.all([
+      client.query('SELECT COUNT(*)::int as count FROM agents WHERE user_id = $1', [userId]),
+      client.query('SELECT COUNT(*)::int as count FROM memories WHERE user_id = $1 AND COALESCE(strength, 1) > 0', [userId]),
+      client.query('SELECT COUNT(*)::int as count FROM rooms WHERE user_id = $1', [userId]),
+      client.query('SELECT COUNT(*)::int as count FROM flows WHERE user_id = $1', [userId]),
+    ]));
     return {
       agents: agentsCount.rows[0]?.count || 0,
       memories: memoriesCount.rows[0]?.count || 0,
@@ -3202,19 +3228,20 @@ export class Storage implements IStorage {
     phase: string; round: number; topic: string;
     otherPositions: any[]; memories: any[]; expiresAt: number;
   }) {
-    const { rows } = await pool.query(
+    const { rows } = await runAsUser(Number(data.userId), (client) => client.query(
       `INSERT INTO agent_turns (session_id, agent_id, room_id, user_id, phase, round, topic, other_positions, memories, status, expires_at, created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11)
        RETURNING *`,
       [data.sessionId, data.agentId, data.roomId, data.userId, data.phase, data.round,
        data.topic, JSON.stringify(data.otherPositions), JSON.stringify(data.memories),
        data.expiresAt, Date.now()]
-    );
+    ));
     return this.mapAgentTurnRow(rows[0]);
   }
 
   async getAgentTurn(turnId: number) {
-    const { rows } = await pool.query(`SELECT * FROM agent_turns WHERE id = $1`, [turnId]);
+    // [LUCA-093] internal lookup without user context -- service-scoped.
+    const { rows } = await runAsService((client) => client.query(`SELECT * FROM agent_turns WHERE id = $1`, [turnId]));
     return rows[0] ? this.mapAgentTurnRow(rows[0]) : undefined;
   }
 
@@ -3235,12 +3262,12 @@ export class Storage implements IStorage {
   }
 
   async respondToTurn(turnId: number, agentId: number, response: { position: string; confidence: number; reasoning: string }): Promise<boolean> {
-    const result = await pool.query(
+    const result = await runAsService((client) => client.query(
       `UPDATE agent_turns SET status = 'responded', response = $1, responded_at = $2
        WHERE id = $3 AND agent_id = $4 AND status = 'pending'
        RETURNING id`,
       [JSON.stringify(response), Date.now(), turnId, agentId]
-    );
+    ));
     return result.rows.length > 0;
   }
 

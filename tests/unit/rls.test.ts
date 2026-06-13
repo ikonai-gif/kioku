@@ -78,8 +78,11 @@ describe("migration 0021 policy guard (BRO2 fix #5 to LUCA-086)", () => {
     expect(m).not.toMatch(/COALESCE\(current_setting\([^)]*\),\s*''\)\s*=\s*''/);
     // luca_skills globals stay public
     expect(m).toContain("user_id IS NULL");
-    // never wired into bootstrap without a dedicated GO
+    // [PR3b] bootstrap policies are now the strict (0026) shape: the empty-GUC
+    // backdoor is gone and the service marker is the only cross-user path.
     const storage = readFileSync(join(__dirname, "..", "..", "server", "storage.ts"), "utf-8");
-    expect(storage).not.toContain("0026_rls_strict");
+    const backdoor = "COALESCE(current_setting(" + String.fromCharCode(39) + "app.user_id" + String.fromCharCode(39) + ", true), " + String.fromCharCode(39, 39) + ") = " + String.fromCharCode(39, 39);
+    expect(storage).not.toContain(backdoor);
+    expect((storage.match(/app\.kioku_service/g) ?? []).length).toBeGreaterThanOrEqual(8);
   });
 });
