@@ -515,22 +515,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const user = userR.rows[0];
 
       // agents
-      const agentsR = await pool.query(`SELECT * FROM agents WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+      const agentsR = await withRLS(userId, (client) => client.query(`SELECT * FROM agents WHERE user_id = $1 ORDER BY id ASC`, [userId]));
 
       // memories — strip embedding by default to keep dump small
       const memCols = includeEmbeddings
         ? "*"
         : "id, user_id, agent_id, agent_name, content, type, importance, namespace, created_at";
-      const memoriesR = await pool.query(`SELECT ${memCols} FROM memories WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+      const memoriesR = await withRLS(userId, (client) => client.query(`SELECT ${memCols} FROM memories WHERE user_id = $1 ORDER BY id ASC`, [userId]));
 
       // rooms
-      const roomsR = await pool.query(`SELECT * FROM rooms WHERE user_id = $1 ORDER BY id ASC`, [userId]);
+      const roomsR = await withRLS(userId, (client) => client.query(`SELECT * FROM rooms WHERE user_id = $1 ORDER BY id ASC`, [userId]));
 
       // room_messages — only those belonging to user's rooms
-      const roomMsgsR = await pool.query(
+      const roomMsgsR = await withRLS(userId, (client) => client.query(
         `SELECT rm.* FROM room_messages rm JOIN rooms r ON r.id = rm.room_id WHERE r.user_id = $1 ORDER BY rm.id ASC`,
         [userId]
-      );
+      ));
 
       // flows
       const flowsR = await pool.query(`SELECT * FROM flows WHERE user_id = $1 ORDER BY id ASC`, [userId]);
@@ -3109,12 +3109,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
 
-    const [deliberations, messages, memories, apiCalls] = await Promise.all([
-      pool.query(`SELECT COUNT(*) FROM kioku_deliberation_sessions WHERE user_id = $1 AND started_at > $2`, [userId, monthStart.getTime()]),
-      pool.query(`SELECT COUNT(*) FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1 AND rm.created_at > $2`, [userId, monthStart.getTime()]),
-      pool.query(`SELECT COUNT(*) FROM memories WHERE user_id = $1 AND created_at > $2`, [userId, monthStart.getTime()]),
-      pool.query(`SELECT COUNT(*) FROM kioku_request_logs rl JOIN users u ON rl.api_key_id = u.api_key WHERE u.id = $1 AND rl.timestamp > $2`, [userId, monthStart.getTime()]),
-    ]);
+    const [deliberations, messages, memories, apiCalls] = await withRLS(userId, (client) => Promise.all([
+      client.query(`SELECT COUNT(*) FROM kioku_deliberation_sessions WHERE user_id = $1 AND started_at > $2`, [userId, monthStart.getTime()]),
+      client.query(`SELECT COUNT(*) FROM room_messages rm JOIN rooms r ON rm.room_id = r.id WHERE r.user_id = $1 AND rm.created_at > $2`, [userId, monthStart.getTime()]),
+      client.query(`SELECT COUNT(*) FROM memories WHERE user_id = $1 AND created_at > $2`, [userId, monthStart.getTime()]),
+      client.query(`SELECT COUNT(*) FROM kioku_request_logs rl JOIN users u ON rl.api_key_id = u.api_key WHERE u.id = $1 AND rl.timestamp > $2`, [userId, monthStart.getTime()]),
+    ]));
 
     res.json({
       period: { start: monthStart.toISOString(), end: new Date().toISOString() },
@@ -5786,7 +5786,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (e instanceof RoomNotFoundError) return res.status(404).json({ error: "Room not found" });
       throw e;
     }
-    await pool.query('DELETE FROM room_messages WHERE room_id = $1', [roomId]);
+    await withRLS(userId, (client) => client.query('DELETE FROM room_messages WHERE room_id = $1', [roomId]));
     res.json({ success: true });
   }));
 
@@ -6797,11 +6797,11 @@ Do NOT:
     if (!user) return res.status(404).json({ error: "User not found" });
 
     // Gather memories
-    const userMemories = await pool.query(
+    const userMemories = await withRLS(userId, (client) => client.query(
       `SELECT id, content, type, importance, namespace, strength, emotional_valence,
               confidence, created_at, encrypted, iv, auth_tag
        FROM memories WHERE user_id = $1 ORDER BY created_at DESC`, [userId]
-    );
+    ));
 
     // Gather conversations (room messages from last 90 days)
     const ninetyDaysAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;

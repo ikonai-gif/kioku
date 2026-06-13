@@ -43,6 +43,7 @@ import { TRUST_POLICY_PROMPT_SECTION } from "./lib/luca-tools/trust-policy";
 import { recordLucaAudit, hashLucaInput, inferStatusFromResult } from "./lib/luca-tools/audit-log";
 import { checkToolPatternForSkillCreation } from "./skill-auto-creator";
 import { maybeAppendEISBlock } from "./eis-context";
+import { withRLS } from "./lib/rls";
 import { toSandboxKey, sandboxKeyForTurn } from "./lib/luca/pyodide-runner";
 import {
   readLucaEnv,
@@ -4342,10 +4343,10 @@ print("Converted MD to DOCX")
         if (!scheduledAt) return `Could not parse time "${when}". Try formats like "in 2 hours", "tomorrow 9am", or an ISO date.`;
 
         // Find a room for this user/agent to post to
-        const rooms = await pool.query(
+        const rooms = await withRLS(userId, (client) => client.query(
           `SELECT id FROM rooms WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
           [userId]
-        );
+        ));
         const roomId = rooms.rows[0]?.id || null;
 
         const task = await storage.createScheduledTask({
@@ -4384,10 +4385,10 @@ print("Converted MD to DOCX")
 
         const nextRunAt = calculateNextRun(cronExpr, tz);
 
-        const rooms = await pool.query(
+        const rooms = await withRLS(userId, (client) => client.query(
           `SELECT id FROM rooms WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
           [userId]
-        );
+        ));
         const roomId = rooms.rows[0]?.id || null;
 
         const task = await storage.createScheduledTask({
@@ -5204,7 +5205,7 @@ print("Converted MD to DOCX")
             } catch { /* ignore parse errors */ }
           }
           // Delete old version
-          await pool.query(`DELETE FROM memories WHERE user_id = $1 AND namespace = $2`, [userId, ns]);
+          await withRLS(userId, (client) => client.query(`DELETE FROM memories WHERE user_id = $1 AND namespace = $2`, [userId, ns]));
         }
 
         await storage.createMemory({
@@ -5710,7 +5711,7 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
 
         // If replacing an old memory, delete it first
         if (replacesId) {
-          await pool.query(`DELETE FROM memories WHERE id = $1 AND user_id = $2`, [replacesId, userId]);
+          await withRLS(userId, (client) => client.query(`DELETE FROM memories WHERE id = $1 AND user_id = $2`, [replacesId, userId]));
         }
 
         await storage.createMemory({
@@ -5734,12 +5735,12 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
         if (!memoryId || !reason) return "Missing required fields: memory_id, reason.";
 
         // Verify the memory belongs to this user before deleting
-        const check = await pool.query(`SELECT id FROM memories WHERE id = $1 AND user_id = $2`, [memoryId, userId]);
+        const check = await withRLS(userId, (client) => client.query(`SELECT id FROM memories WHERE id = $1 AND user_id = $2`, [memoryId, userId]));
         if (check.rows.length === 0) {
           return `Memory #${memoryId} not found or does not belong to this user.`;
         }
 
-        await pool.query(`DELETE FROM memories WHERE id = $1 AND user_id = $2`, [memoryId, userId]);
+        await withRLS(userId, (client) => client.query(`DELETE FROM memories WHERE id = $1 AND user_id = $2`, [memoryId, userId]));
 
         // Log the correction as a lesson
         await storage.createMemory({
