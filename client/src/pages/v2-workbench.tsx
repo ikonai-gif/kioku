@@ -32,6 +32,20 @@ import {
   Check,
   Smile,
   ShieldHalf,
+  Crown,
+  ShieldAlert,
+  MessageSquare,
+  Bot,
+  Brain,
+  GitBranch,
+  LayoutDashboard,
+  Palette,
+  Library,
+  FolderOpen,
+  Plug,
+  Activity,
+  CreditCard,
+  Sparkles,
 } from "lucide-react";
 import { useTheme } from "../App";
 import { useI18n } from "@/i18n";
@@ -108,6 +122,10 @@ export default function V2WorkbenchPage() {
       <SidebarLeft
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((v) => !v)}
+        onNewChat={() => {
+          setTask(null);
+          setInput("");
+        }}
         t={t}
       />
       <div className="flex flex-1 min-w-0 flex-col">
@@ -149,45 +167,146 @@ export default function V2WorkbenchPage() {
 function SidebarLeft({
   open,
   onToggle,
+  onNewChat,
   t,
 }: {
   open: boolean;
   onToggle: () => void;
+  onNewChat: () => void;
   t: (k: string) => string;
 }) {
+  // Full platform navigation — mirrors legacy AppLayout so /v2 keeps access
+  // to Boss Board, Luca Board, Rooms, Memory, Agents, Flows, Gallery,
+  // Knowledge, Files, Connectors, Dashboard, Live Feed, Billing.
+  const NAV: Array<{
+    href: string;
+    icon: typeof Crown;
+    labelKey: string;
+    section?: "agents" | "workspace" | "system";
+  }> = [
+    { href: "/", icon: Sparkles, labelKey: "v2.nav.home", section: "agents" },
+    { href: "/boss", icon: Crown, labelKey: "v2.nav.bossBoard", section: "agents" },
+    { href: "/luca/board", icon: ShieldAlert, labelKey: "v2.nav.lucaBoard", section: "agents" },
+    { href: "/rooms", icon: MessageSquare, labelKey: "v2.nav.rooms", section: "agents" },
+    { href: "/agents", icon: Bot, labelKey: "v2.nav.agents", section: "agents" },
+    { href: "/memory", icon: Brain, labelKey: "v2.nav.memory", section: "workspace" },
+    { href: "/flows", icon: GitBranch, labelKey: "v2.nav.flows", section: "workspace" },
+    { href: "/gallery", icon: Palette, labelKey: "v2.nav.gallery", section: "workspace" },
+    { href: "/knowledge", icon: Library, labelKey: "v2.nav.knowledge", section: "workspace" },
+    { href: "/files", icon: FolderOpen, labelKey: "v2.nav.files", section: "workspace" },
+    { href: "/connectors", icon: Plug, labelKey: "v2.nav.connectors", section: "workspace" },
+    { href: "/dashboard", icon: LayoutDashboard, labelKey: "v2.nav.dashboard", section: "system" },
+    { href: "/logs", icon: Activity, labelKey: "v2.nav.liveFeed", section: "system" },
+    { href: "/billing", icon: CreditCard, labelKey: "v2.nav.billing", section: "system" },
+  ];
+
   return (
     <div
       className={`${
-        open ? "w-56" : "w-12"
+        open ? "w-60" : "w-12"
       } shrink-0 border-r border-border bg-card transition-[width] duration-200 ease-out flex flex-col`}
     >
-      <button
-        onClick={onToggle}
-        className="m-2 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-        aria-label="toggle sidebar"
-        data-testid="v2-sidebar-toggle"
-      >
-        <PanelLeft className="h-4 w-4" />
-      </button>
-      {open && (
-        <div className="flex-1 overflow-y-auto px-2 pb-3 pt-1">
-          <div className="mb-2 px-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-            {t("v2.sidebar.history")}
-          </div>
-          <div className="space-y-0.5 text-xs">
-            <div className="cursor-pointer rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
-              {t("v2.sidebar.example1")}
+      <div className="flex items-center gap-1 p-2">
+        <button
+          onClick={onToggle}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="toggle sidebar"
+          data-testid="v2-sidebar-toggle"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+        {open && (
+          <button
+            onClick={onNewChat}
+            className="ml-auto flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            data-testid="v2-new-chat"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>{t("v2.nav.newChat")}</span>
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-1.5 pb-3 pt-1">
+        {!open && (
+          <button
+            onClick={onNewChat}
+            className="mb-2 flex h-8 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="new chat"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        )}
+        <NavGroup nav={NAV} section="agents" open={open} t={t} />
+        <NavDivider open={open} />
+        <NavGroup nav={NAV} section="workspace" open={open} t={t} />
+        <NavDivider open={open} />
+        <NavGroup nav={NAV} section="system" open={open} t={t} />
+
+        {open && (
+          <>
+            <NavDivider open={open} />
+            <div className="mb-1 mt-1 px-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+              {t("v2.sidebar.history")}
             </div>
-            <div className="cursor-pointer rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
-              {t("v2.sidebar.example2")}
+            <div className="space-y-0.5 text-xs">
+              <div className="cursor-pointer rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+                {t("v2.sidebar.example1")}
+              </div>
+              <div className="cursor-pointer rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+                {t("v2.sidebar.example2")}
+              </div>
+              <div className="cursor-pointer rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+                {t("v2.sidebar.example3")}
+              </div>
             </div>
-            <div className="cursor-pointer rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
-              {t("v2.sidebar.example3")}
-            </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
+  );
+}
+
+function NavGroup({
+  nav,
+  section,
+  open,
+  t,
+}: {
+  nav: Array<{ href: string; icon: typeof Crown; labelKey: string; section?: string }>;
+  section: string;
+  open: boolean;
+  t: (k: string) => string;
+}) {
+  const items = nav.filter((n) => n.section === section);
+  return (
+    <div className="space-y-0.5">
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <Link key={item.href} href={item.href}>
+            <a
+              className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground ${
+                open ? "" : "justify-center"
+              }`}
+              data-testid={`v2-nav-${item.href.replace(/\//g, "-")}`}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              {open && <span className="truncate">{t(item.labelKey)}</span>}
+            </a>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+function NavDivider({ open }: { open: boolean }) {
+  return (
+    <div
+      className={`my-2 border-t border-border ${open ? "mx-2" : "mx-1"}`}
+      aria-hidden
+    />
   );
 }
 
