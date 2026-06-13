@@ -40,6 +40,24 @@ export function eisToneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
+ * [LUCA-099] EIS PR3 -- OCC appraisal modulation, gated separately.
+ * Default false; adds no LLM call in v1 (rule-based). Never enable on prod
+ * without an explicit BOSS GO.
+ */
+export function eisAppraisalEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.EIS_APPRAISAL_ENABLED ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * [LUCA-099] EIS PR3 -- identity anchor re-injection, gated separately.
+ * Counters persona drift in long sessions (2412.00804) by periodically
+ * re-injecting top _identity memories. Default false.
+ */
+export function eisIdentityAnchorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.EIS_IDENTITY_ANCHOR_ENABLED ?? "").trim().toLowerCase() === "true";
+}
+
+/**
  * [LUCA-092 / BRO2-A37 corr.1] PAD->octant label already exists in prod as
  * padToEmotionLabel (server/emotional-state.ts) -- re-exported here for the
  * EIS surface instead of duplicating the octant map.
@@ -153,6 +171,27 @@ export async function buildEISContext(
 }
 
 /**
+ * [LUCA-099] EIS PR3 -- build an Identity Anchor block from the agent's top
+ * _identity memories. Re-injected periodically to counter persona drift in
+ * long sessions (2412.00804). Returns null when no identity memories exist.
+ */
+export async function buildIdentityAnchor(
+  userId: number,
+  agentId: number,
+): Promise<string | null> {
+  try {
+    const mems = await storage.searchMemories(userId, "", undefined, "_identity");
+    if (!mems || mems.length === 0) return null;
+    const top = mems.slice(0, 5).map((m: any) => `- ${m.content}`).join("\n");
+    if (!top) return null;
+    return `\n## Identity Anchor (who you are — hold steady)\n${top}\n`;
+  } catch (e) {
+    logger.warn({ component: "eis", agentId, err: String(e) }, "[eis] identity anchor build failed (non-fatal)");
+    return null;
+  }
+}
+
+/**
  * Flag-gated prompt augmentation. With EIS_ENABLED unset/false this is a
  * pure pass-through that performs zero storage calls.
  */
@@ -161,6 +200,7 @@ export async function maybeAppendEISBlock(
   agentId: number,
   userId: number,
   env: NodeJS.ProcessEnv = process.env,
+  opts?: { messageCount?: number },
 ): Promise<string> {
   if (!eisEnabled(env)) return systemPrompt;
   try {
@@ -171,7 +211,17 @@ export async function maybeAppendEISBlock(
     const toneHint = eisToneEnabled(env)
       ? buildToneHint(ctx.emotionLabel, ctx.pad)
       : "";
-    return systemPrompt + "\n\n" + formatEISBlock(ctx) + toneHint;
+    // [LUCA-099] PR3: identity anchor re-injected every K messages (default 20)
+    let anchorBlock = "";
+    if (eisIdentityAnchorEnabled(env)) {
+      const interval = Number(env.EIS_IDENTITY_ANCHOR_INTERVAL ?? "20") || 20;
+      const msgCount = opts?.messageCount ?? 0;
+      if (msgCount > 0 && msgCount % interval === 0) {
+        const anchor = await buildIdentityAnchor(userId, agentId);
+        if (anchor) anchorBlock = anchor;
+      }
+    }
+    return systemPrompt + "\n\n" + formatEISBlock(ctx) + toneHint + anchorBlock;
   } catch (e) {
     logger.warn({ component: "eis", err: String(e) }, "[eis] context build failed (non-fatal)");
     return systemPrompt;

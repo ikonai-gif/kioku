@@ -19,7 +19,7 @@
  */
 import { storage, pool } from "./storage";
 import { applyPADDeltas, padToEmotionLabel } from "./emotional-state";
-import { eisEnabled } from "./eis-context";
+import { eisEnabled, eisAppraisalEnabled } from "./eis-context";
 import logger from "./logger";
 
 export type EISEventType =
@@ -42,6 +42,56 @@ export const EIS_EVENT_DELTAS: Record<
   user_approval: { deltaP: 0.04, deltaA: -0.01, deltaD: 0.03 },
   user_rejection: { deltaP: -0.03, deltaA: 0.04, deltaD: -0.02 },
 };
+
+/**
+ * [LUCA-099] EIS PR3 -- OCC appraisal modulation (rule-based v1, no LLM).
+ *
+ * Modulates the base spec delta by event significance: goal-relevance and
+ * expectation-congruence derived from the event payload. Output multiplier
+ * is clamped to [0.25, 2.0] so a single appraisal never overwhelms the base
+ * table. Returns the multiplier plus the appraisal context (persisted to the
+ * last_appraisal_context audit column for observability).
+ */
+export interface AppraisalResult {
+  multiplier: number;
+  context: { goalRelevance: number; expectationCongruence: number; significance: number };
+}
+
+export function appraise(
+  eventType: EISEventType,
+  payload: Record<string, unknown> = {},
+): AppraisalResult {
+  // goal-relevance: how much this event bears on the agent's active goal.
+  // Derived from payload.importance (0..1) when present, else event-type prior.
+  const importance = typeof payload.importance === "number"
+    ? Math.max(0, Math.min(1, payload.importance))
+    : null;
+  const typePrior: Record<EISEventType, number> = {
+    new_memory_high_importance: 0.6,
+    memory_reinforcement: 0.3,
+    deliberation_consensus: 0.8,
+    deliberation_failed: 0.7,
+    user_approval: 0.7,
+    user_rejection: 0.6,
+  };
+  const goalRelevance = importance ?? typePrior[eventType] ?? 0.5;
+
+  // expectation-congruence: +1 outcome matched expectation, -1 violated it.
+  // payload.expected (boolean) when the caller knows; else neutral 0.
+  const expectationCongruence = typeof payload.expected === "boolean"
+    ? (payload.expected ? 1 : -1)
+    : 0;
+
+  // significance scales the delta: high goal-relevance amplifies, an
+  // expectation violation amplifies arousal-laden reactions.
+  const significance = goalRelevance * (1 + 0.3 * Math.abs(expectationCongruence));
+  const multiplier = Math.max(0.25, Math.min(2.0, 0.5 + significance));
+
+  return {
+    multiplier,
+    context: { goalRelevance, expectationCongruence, significance },
+  };
+}
 
 /**
  * Apply one EIS event to the agent's emotional state.
@@ -68,21 +118,36 @@ export async function handleEISEvent(
       dominance: Number(state?.dominance ?? 0),
     };
     const next = applyPADDeltas(current, deltas.deltaP, deltas.deltaA, deltas.deltaD);
-    const emotionLabel = padToEmotionLabel(next.pleasure, next.arousal, next.dominance);
+
+    // [LUCA-099] EIS PR3 -- OCC appraisal modulation (flag-gated). Scales the
+    // base deltas by event significance before applying. Off by default.
+    let appraisalContext: AppraisalResult["context"] | null = null;
+    let effective = next;
+    if (eisAppraisalEnabled(env)) {
+      const appraisal = appraise(eventType, payload);
+      appraisalContext = appraisal.context;
+      effective = applyPADDeltas(
+        current,
+        deltas.deltaP * appraisal.multiplier,
+        deltas.deltaA * appraisal.multiplier,
+        deltas.deltaD * appraisal.multiplier,
+      );
+    }
+    const emotionLabel = padToEmotionLabel(effective.pleasure, effective.arousal, effective.dominance);
 
     await storage.upsertAgentEmotionalState(agentId, userId, {
-      pleasure: next.pleasure,
-      arousal: next.arousal,
-      dominance: next.dominance,
+      pleasure: effective.pleasure,
+      arousal: effective.arousal,
+      dominance: effective.dominance,
       emotionLabel,
     });
 
-    // Audit columns (migrations/0027) -- best-effort, separate from the
+    // Audit columns (migrations/0027 + 0031) -- best-effort, separate from the
     // upsert so storage.ts stays untouched (PR3b owns that file).
     await pool
       .query(
-        `UPDATE agent_emotional_state SET last_event_type = $1, last_event_at = $2 WHERE agent_id = $3`,
-        [eventType, Date.now(), agentId],
+        `UPDATE agent_emotional_state SET last_event_type = $1, last_event_at = $2, last_appraisal_context = $3 WHERE agent_id = $4`,
+        [eventType, Date.now(), appraisalContext ? JSON.stringify(appraisalContext) : null, agentId],
       )
       .catch((e: unknown) => {
         logger.warn(
