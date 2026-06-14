@@ -14,6 +14,7 @@ import {
 import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, abortRoomTurn, isRoomTurnActive, getPartnerToolsForAgent, getLucaStudioToolNames } from "./deliberation";
 import { readLucaEnv } from "./lib/luca/env";
 import { buildRoomExport, serializeRoomExport, exportFilename, PatentRoomExportBlockedError } from "./room-export";
+import { buildSignedPdfA3, AuditKeyNotConfiguredError } from "./pdf-a3-export";
 import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
 import { runHealthCheck, acceptCurrentTruthAsBaseline } from "./lib/self-monitoring/health-job";
 import { runFabricationSelfTest, ensureSelfMonitoringRoom, getProbeFailStreaks } from "./lib/self-monitoring/fabrication";
@@ -2020,24 +2021,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // [BRO2-A8 / LUCA-072] Build order #3 PR1 — room audit export (read-only JSON).
   // Owner-only (rooms.user_id), no enumeration leak; patent rooms blocked 403.
-  // PR1 = JSON only; format param reserved for PR2 (PDF/A-3, Ed25519 per BRO4-002).
+  // PR2 [BRO4-002]: format=pdf-a3-signed adds a PDF/A-3-style container
+  // (embedded canonical JSON + XMP + Ed25519 signature). JSON is the default.
   app.get("/api/rooms/:id/export", asyncHandler(async (req, res) => {
     const userId = await getUser(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     const roomId = Number(req.params.id);
     if (!Number.isFinite(roomId)) return res.status(400).json({ error: "Bad room id" });
     const format = String(req.query.format ?? "json");
-    if (format !== "json") return res.status(400).json({ error: "Only format=json is supported in PR1" });
+    if (format !== "json" && format !== "pdf-a3-signed") {
+      return res.status(400).json({ error: "Supported formats: json, pdf-a3-signed" });
+    }
     try {
       const payload = await buildRoomExport(roomId, userId);
       if (payload === null) return res.status(404).json({ error: "Not found" });
       const body = serializeRoomExport(payload);
+      if (format === "pdf-a3-signed") {
+        const signed = await buildSignedPdfA3(roomId, body);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename="${exportFilename(roomId).replace(/\.json$/i, "")}.pdf"`);
+        res.setHeader("X-Kioku-Signer-Key-Id", signed.signerKeyId);
+        return res.send(signed.bytes);
+      }
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       res.setHeader("Content-Disposition", `attachment; filename="${exportFilename(roomId)}"`);
       return res.send(body);
     } catch (e) {
       if (e instanceof PatentRoomExportBlockedError) {
         return res.status(403).json({ error: "Export blocked: patent room (K12-K20 privacy rule)" });
+      }
+      if (e instanceof AuditKeyNotConfiguredError) {
+        return res.status(503).json({ error: "PDF signing not configured (KIOKU_AUDIT_PRIVATE_KEY missing)" });
       }
       throw e;
     }
