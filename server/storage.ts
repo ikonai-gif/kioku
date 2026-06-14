@@ -22,6 +22,7 @@ import { normalizeNamespace, isValidFactKey, INJECTION_ALWAYS_NAMESPACES } from 
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { provenanceWeight } from "./lib/memory-domain";
+import { gateRelationalPiiByConsent } from "./lib/relational-consent-gate";
 import { scoreEmotion } from "./emotion-scorer";
 import { embedText } from "./embeddings";
 import logger from "./logger";
@@ -1849,8 +1850,18 @@ export class Storage implements IStorage {
           AND (${inArray(memories.namespace, [...INJECTION_ALWAYS_NAMESPACES])}
                OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))`
     ).orderBy(desc(memories.importance), desc(memories.createdAt)));
+    // Phase 1a [BRO2-322 #5]: gate PII relational on the READ path by sensitive
+    // consent. checkMemoryConsent only covers writes; the injection path had no
+    // gate. Proposed-default (Variant A) — pending BRO4 ratification. Fail closed.
+    let consentSensitive = false;
+    try {
+      const cr = await runAsUser(userId, (client) =>
+        client.query("SELECT consent_sensitive FROM users WHERE id = $1", [userId]));
+      consentSensitive = cr.rows?.[0]?.consent_sensitive === true;
+    } catch { /* fail closed: treat as no sensitive consent (do not leak PII) */ }
+    const gated = gateRelationalPiiByConsent(results as any[], consentSensitive);
     const now = Date.now();
-    return results.map((m: any) => ({
+    return gated.map((m: any) => ({
       ...m,
       currentConfidence: computeDecayedConfidence(
         m.confidence ?? 1.0,
