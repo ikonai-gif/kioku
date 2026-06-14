@@ -22,7 +22,7 @@ import { normalizeNamespace, isValidFactKey, INJECTION_ALWAYS_NAMESPACES } from 
 import { randomBytes, createHash } from "crypto";
 import { computeDecayedStrength, computeDecayedConfidence } from "./memory-decay";
 import { provenanceWeight } from "./lib/memory-domain";
-import { gateRelationalPiiByConsent } from "./lib/relational-consent-gate";
+import { gateRelationalPiiByConsent, isRelationalConsentGranted } from "./lib/relational-consent-gate";
 import { scoreEmotion } from "./emotion-scorer";
 import { embedText } from "./embeddings";
 import logger from "./logger";
@@ -678,6 +678,7 @@ export async function initDb() {
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_basic BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_sensitive BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_relational BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_biometric BOOLEAN DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_ai_memory BOOLEAN DEFAULT TRUE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_updated_at BIGINT;
@@ -1850,16 +1851,21 @@ export class Storage implements IStorage {
           AND (${inArray(memories.namespace, [...INJECTION_ALWAYS_NAMESPACES])}
                OR ${memories.type} IN ('identity', 'relational', 'aesthetic', 'procedural'))`
     ).orderBy(desc(memories.importance), desc(memories.createdAt)));
-    // Phase 1a [BRO2-322 #5]: gate PII relational on the READ path by sensitive
-    // consent. checkMemoryConsent only covers writes; the injection path had no
-    // gate. Proposed-default (Variant A) — pending BRO4 ratification. Fail closed.
-    let consentSensitive = false;
+    // Phase 1.1 [BRO4 ratify]: gate PII relational on the READ path by RELATIONAL
+    // consent. relational PII has its own consent dimension (`consent_relational`),
+    // separate from health/sensitive — granted if either is true (consent_sensitive
+    // kept as backfilled fallback). checkMemoryConsent only covers writes; the
+    // injection path had no gate. Fail closed.
+    let relationalConsentGranted = false;
     try {
       const cr = await runAsUser(userId, (client) =>
-        client.query("SELECT consent_sensitive FROM users WHERE id = $1", [userId]));
-      consentSensitive = cr.rows?.[0]?.consent_sensitive === true;
-    } catch { /* fail closed: treat as no sensitive consent (do not leak PII) */ }
-    const gated = gateRelationalPiiByConsent(results as any[], consentSensitive);
+        client.query("SELECT consent_relational, consent_sensitive FROM users WHERE id = $1", [userId]));
+      relationalConsentGranted = isRelationalConsentGranted(
+        cr.rows?.[0]?.consent_relational,
+        cr.rows?.[0]?.consent_sensitive,
+      );
+    } catch { /* fail closed: treat as no relational consent (do not leak PII) */ }
+    const gated = gateRelationalPiiByConsent(results as any[], relationalConsentGranted);
     const now = Date.now();
     return gated.map((m: any) => ({
       ...m,

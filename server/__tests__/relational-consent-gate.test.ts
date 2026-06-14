@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   gateRelationalPiiByConsent,
   isRelationalPiiNamespace,
+  isRelationalConsentGranted,
   RELATIONAL_PII_NAMESPACES,
 } from "../lib/relational-consent-gate";
 
@@ -49,5 +50,23 @@ describe("relational-consent-gate", () => {
     const before = rows.length;
     gateRelationalPiiByConsent(rows, false);
     expect(rows.length).toBe(before);
+  });
+});
+
+
+// Phase 1.1 [BRO4 ratify] — relational consent = own dimension (OR fallback).
+describe("isRelationalConsentGranted", () => {
+  it("granted when consent_relational is true (regardless of sensitive)", () => {
+    expect(isRelationalConsentGranted(true, false)).toBe(true);
+    expect(isRelationalConsentGranted(true, true)).toBe(true);
+  });
+  it("granted via consent_sensitive fallback (backfill not yet run)", () => {
+    expect(isRelationalConsentGranted(false, true)).toBe(true);
+    expect(isRelationalConsentGranted(null, true)).toBe(true);
+  });
+  it("NOT granted when both false/absent (fail-closed)", () => {
+    expect(isRelationalConsentGranted(false, false)).toBe(false);
+    expect(isRelationalConsentGranted(null, null)).toBe(false);
+    expect(isRelationalConsentGranted(undefined, undefined)).toBe(false);
   });
 });
