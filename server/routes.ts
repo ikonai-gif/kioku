@@ -15,6 +15,7 @@ import { triggerAgentResponses, generateProactiveMessage, executePartnerTool, ab
 import { readLucaEnv } from "./lib/luca/env";
 import { buildRoomExport, serializeRoomExport, exportFilename, PatentRoomExportBlockedError } from "./room-export";
 import { buildSignedPdfA3, AuditKeyNotConfiguredError } from "./pdf-a3-export";
+import { parseMemoryBrowseFilters } from "./lib/memory-browse-filters";
 import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
 import { runHealthCheck, acceptCurrentTruthAsBaseline } from "./lib/self-monitoring/health-job";
 import { runFabricationSelfTest, ensureSelfMonitoringRoom, getProbeFailStreaks } from "./lib/self-monitoring/fabrication";
@@ -1661,10 +1662,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const page = Math.max(1, parseInt(req.query.page as string) || 1);
       const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
       const offset = (page - 1) * limit;
-      const [results, total] = await Promise.all([
-        storage.getMemories(userId, limit, offset),
-        storage.getMemoriesCount(userId),
-      ]);
+      const filters = parseMemoryBrowseFilters(req.query as Record<string, unknown>);
+      const { data: results, total } = await storage.browseMemories(userId, filters, limit, offset);
       const filtered = filterInternal(results);
       res.json({
         data: filtered.map((m: any) => stripEmbedding(m, includeEmbedding)),

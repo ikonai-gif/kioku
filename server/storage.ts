@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { eq, desc, ilike, or, sql, inArray } from "drizzle-orm";
+import { eq, desc, ilike, or, sql, inArray, and, gte, lte } from "drizzle-orm";
+import type { MemoryBrowseFilters } from "./lib/memory-browse-filters";
 import {
   users, agents, memories, memoryLinks, flows, rooms, roomMessages, logs, magicTokens, usageTracking, knowledgeDomains, aestheticPreferences,
   type User, type InsertUser,
@@ -1603,6 +1604,7 @@ export interface IStorage {
   resetAgentError(id: number, userId: number): Promise<boolean>;
 
   getMemories(userId: number, limit?: number): Promise<Memory[]>;
+  browseMemories(userId: number, filters?: MemoryBrowseFilters, limit?: number, offset?: number): Promise<{ data: Memory[]; total: number }>;
   getInjectionCandidates(userId: number, agentId: number): Promise<Memory[]>;
   searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
@@ -1799,6 +1801,41 @@ export class Storage implements IStorage {
         now
       ),
     }));
+  }
+
+  // [P2.1 PR-1] Filtered browse for the Memory Inspector UI. Same RLS GUC
+  // (app.user_id) + app-side userId filter as getMemories; adds optional
+  // type/agent/importance-range/date-window/namespace filters and returns
+  // {data,total} so pagination is accurate under the active filter set.
+  async browseMemories(userId: number, filters: MemoryBrowseFilters = {}, limit = 50, offset = 0): Promise<{ data: any[]; total: number }> {
+    const conds: any[] = [eq(memories.userId, userId)];
+    if (filters.namespace) conds.push(eq(memories.namespace, filters.namespace));
+    if (filters.type) conds.push(eq(memories.type, filters.type));
+    if (filters.agentId != null) conds.push(eq(memories.agentId, filters.agentId));
+    if (filters.importanceMin != null) conds.push(gte(memories.importance, filters.importanceMin));
+    if (filters.importanceMax != null) conds.push(lte(memories.importance, filters.importanceMax));
+    if (filters.createdAfter != null) conds.push(gte(memories.createdAt, filters.createdAfter));
+    if (filters.createdBefore != null) conds.push(lte(memories.createdAt, filters.createdBefore));
+    const whereExpr = and(...conds);
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.user_id', ${String(userId)}, true)`);
+      const rows = await tx.select().from(memories).where(whereExpr)
+        .orderBy(desc(memories.importance), desc(memories.createdAt)).limit(limit).offset(offset);
+      const countRows = await tx.select({ c: sql<number>`count(*)::int` }).from(memories).where(whereExpr);
+      const total = Number(countRows[0]?.c ?? 0);
+      const now = Date.now();
+      const data = rows.map((m: any) => ({
+        ...m,
+        currentConfidence: computeDecayedConfidence(
+          m.confidence ?? 1.0,
+          m.decayRate ?? 0.01,
+          m.lastReinforcedAt,
+          m.createdAt,
+          now
+        ),
+      }));
+      return { data, total };
+    });
   }
   // [cube-memory #1] Targeted always-inject load. Returns only the injection-
   // eligible universe (identity + episode summaries + profile types), agent-
