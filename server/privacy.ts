@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { pool } from "./storage";
 import { randomBytes } from "crypto";
+import { parseMemoryBrowseFilters } from "./lib/memory-browse-filters";
 
 // Async error wrapper
 function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
@@ -44,30 +45,38 @@ export function registerPrivacyRoutes(app: Express, getUser: (req: any) => Promi
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const search = (req.query.search as string) || "";
-    const type = (req.query.type as string) || "";
     const page = parseInt((req.query.page as string) || "1", 10);
     const limit = Math.min(parseInt((req.query.limit as string) || "50", 10), 100);
     const offset = (page - 1) * limit;
 
+    // P2.1 PR-2a — shared browse-filter vocabulary (same parser as GET /api/memories).
+    // type/namespace/agent_id/importance_min|max/created_after|before come via parser;
+    // `search` stays privacy-local (content ILIKE). created_* are epoch-ms (bigint column).
+    const f = parseMemoryBrowseFilters(req.query);
+
     let whereClause = "WHERE user_id = $1";
     const params: any[] = [userId];
     let paramIdx = 2;
+    const add = (col: string, op: string, value: any) => {
+      whereClause += ` AND ${col} ${op} $${paramIdx}`;
+      params.push(value);
+      paramIdx++;
+    };
 
-    if (search) {
-      whereClause += ` AND content ILIKE $${paramIdx}`;
-      params.push(`%${search}%`);
-      paramIdx++;
-    }
-    if (type) {
-      whereClause += ` AND type = $${paramIdx}`;
-      params.push(type);
-      paramIdx++;
-    }
+    if (search) add("content", "ILIKE", `%${search}%`);
+    if (f.type) add("type", "=", f.type);
+    if (f.namespace) add("namespace", "=", f.namespace);
+    if (f.agentId !== undefined) add("agent_id", "=", f.agentId);
+    if (f.importanceMin !== undefined) add("importance", ">=", f.importanceMin);
+    if (f.importanceMax !== undefined) add("importance", "<=", f.importanceMax);
+    if (f.createdAfter !== undefined) add("created_at", ">=", f.createdAfter);
+    if (f.createdBefore !== undefined) add("created_at", "<=", f.createdBefore);
 
     const [countResult, dataResult] = await Promise.all([
       pool.query(`SELECT COUNT(*) as count FROM memories ${whereClause}`, params),
       pool.query(
-        `SELECT id, content, type, importance, agent_name, namespace, created_at, LENGTH(content) as size
+        `SELECT id, content, type, importance, agent_name, agent_id, namespace,
+                provenance, verified, last_verified_at, created_at, LENGTH(content) as size
          FROM memories ${whereClause}
          ORDER BY created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
         [...params, limit, offset]
@@ -81,7 +90,11 @@ export function registerPrivacyRoutes(app: Express, getUser: (req: any) => Promi
         type: r.type,
         importance: r.importance,
         agentName: r.agent_name,
+        agentId: r.agent_id,
         namespace: r.namespace,
+        provenance: r.provenance,
+        verified: r.verified,
+        lastVerifiedAt: r.last_verified_at,
         createdAt: r.created_at,
         size: r.size,
       })),
