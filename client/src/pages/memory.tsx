@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Trash2, Brain, Plus, Download, Clock, GitBranch, MapPin, Shield, Pencil } from "lucide-react";
+import { Search, Trash2, Brain, Plus, Download, Clock, GitBranch, MapPin, Shield, ShieldCheck, Pencil } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -46,6 +46,13 @@ export default function MemoryPage() {
   const [search, setSearch] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [filterType, setFilterType] = useState<string | null>(null);
+  // P2.1 PR-2b — server-side browse filters (reuse /api/memories filters from PR-1)
+  const [filterNamespace, setFilterNamespace] = useState<string>("");
+  const [filterAgent, setFilterAgent] = useState<string>("");   // agent_id as string; "" = all
+  const [impMin, setImpMin] = useState<string>("");
+  const [impMax, setImpMax] = useState<string>("");
+  const [dateAfter, setDateAfter] = useState<string>("");        // yyyy-mm-dd
+  const [dateBefore, setDateBefore] = useState<string>("");
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editContent, setEditContent] = useState("");
@@ -66,10 +73,29 @@ export default function MemoryPage() {
     (window as any)._memSearchTimer = setTimeout(() => setDebouncedQ(v), 400);
   };
 
+  // Build server-side browse filter params (PR-1 vocabulary on /api/memories).
+  const browseParams = () => {
+    const qp = new URLSearchParams();
+    if (filterType) qp.set("type", filterType);
+    if (filterNamespace) qp.set("namespace", filterNamespace);
+    if (filterAgent) qp.set("agent_id", filterAgent);
+    if (impMin) qp.set("importance_min", impMin);
+    if (impMax) qp.set("importance_max", impMax);
+    if (dateAfter) qp.set("created_after", String(new Date(dateAfter).getTime()));
+    if (dateBefore) qp.set("created_before", String(new Date(dateBefore + "T23:59:59").getTime()));
+    qp.set("limit", "100");
+    return qp.toString();
+  };
+
   const { data: memories = [], isLoading } = useQuery<any[]>({
-    queryKey: ["/api/memories", debouncedQ],
+    queryKey: ["/api/memories", debouncedQ, filterType, filterNamespace, filterAgent, impMin, impMax, dateAfter, dateBefore],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/memories${debouncedQ ? `?q=${encodeURIComponent(debouncedQ)}` : ""}`);
+      // Semantic search (q) ignores structured filters; browse (no q) applies the
+      // PR-1 server-side filters across the whole store (not just the loaded page).
+      const url = debouncedQ
+        ? `/api/memories?q=${encodeURIComponent(debouncedQ)}`
+        : `/api/memories?${browseParams()}`;
+      const res = await apiRequest("GET", url);
       const data = await res.json();
       // API returns { data: [...], pagination: {...} } — unwrap
       return Array.isArray(data) ? data : (data.data ?? []);
@@ -90,6 +116,19 @@ export default function MemoryPage() {
   const filteredMemories = filterType
     ? (memories as any[]).filter((m: any) => m.type === filterType)
     : memories;
+
+  // Facet options derived from the current result set (reflects the loaded page).
+  const namespaceOptions = Array.from(
+    new Set((memories as any[]).map((m: any) => m.namespace).filter(Boolean))
+  ).sort() as string[];
+  const agentOptions = Array.from(
+    new Map(
+      (memories as any[])
+        .filter((m: any) => m.agentId != null)
+        .map((m: any) => [m.agentId, m.agentName || `#${m.agentId}`])
+    ).entries()
+  ) as [number, string][];
+  const hasAdvancedFilter = !!(filterNamespace || filterAgent || impMin || impMax || dateAfter || dateBefore);
 
   const updateMutation = useMutation({
     mutationFn: ({ id, content }: { id: number; content: string }) =>
@@ -232,6 +271,49 @@ export default function MemoryPage() {
         ))}
       </div>
 
+      {/* Advanced server-side filters (apply in browse mode; ignored during semantic search) */}
+      <div className="flex gap-2 flex-wrap items-center text-[11px]">
+        <select
+          value={filterNamespace}
+          onChange={e => setFilterNamespace(e.target.value)}
+          className="h-8 rounded-md bg-input/30 border border-border px-2 text-foreground"
+          data-testid="filter-namespace"
+        >
+          <option value="">all namespaces</option>
+          {namespaceOptions.map(ns => <option key={ns} value={ns}>{ns}</option>)}
+        </select>
+        <select
+          value={filterAgent}
+          onChange={e => setFilterAgent(e.target.value)}
+          className="h-8 rounded-md bg-input/30 border border-border px-2 text-foreground"
+          data-testid="filter-agent"
+        >
+          <option value="">all agents</option>
+          {agentOptions.map(([id, name]) => <option key={id} value={String(id)}>{name}</option>)}
+        </select>
+        <span className="text-muted-foreground">imp</span>
+        <input type="number" min="0" max="1" step="0.05" placeholder="min"
+          value={impMin} onChange={e => setImpMin(e.target.value)}
+          className="h-8 w-14 rounded-md bg-input/30 border border-border px-2 text-foreground" data-testid="filter-imp-min" />
+        <input type="number" min="0" max="1" step="0.05" placeholder="max"
+          value={impMax} onChange={e => setImpMax(e.target.value)}
+          className="h-8 w-14 rounded-md bg-input/30 border border-border px-2 text-foreground" data-testid="filter-imp-max" />
+        <input type="date" value={dateAfter} onChange={e => setDateAfter(e.target.value)}
+          className="h-8 rounded-md bg-input/30 border border-border px-2 text-foreground" data-testid="filter-date-after" />
+        <input type="date" value={dateBefore} onChange={e => setDateBefore(e.target.value)}
+          className="h-8 rounded-md bg-input/30 border border-border px-2 text-foreground" data-testid="filter-date-before" />
+        {hasAdvancedFilter && (
+          <button
+            className="h-8 px-2 rounded-md border border-border text-muted-foreground hover:text-foreground"
+            onClick={() => { setFilterNamespace(""); setFilterAgent(""); setImpMin(""); setImpMax(""); setDateAfter(""); setDateBefore(""); }}
+            data-testid="filter-reset"
+          >reset</button>
+        )}
+        {debouncedQ && (filterType || hasAdvancedFilter) && (
+          <span className="text-muted-foreground/60 italic">filters apply in browse (clear search)</span>
+        )}
+      </div>
+
       {/* Memory list */}
       {isLoading && (
         <div className="space-y-2">
@@ -299,6 +381,21 @@ export default function MemoryPage() {
                   )}
                   <span className="text-[10px] text-muted-foreground/60">{timeAgo(mem.createdAt)}</span>
                   <span className="text-[10px] text-muted-foreground/50" title={t("memory.importanceTooltip")}>{t("memory.importance")}: {mem.importance.toFixed(2)}</span>
+
+                  {/* Provenance + verified (honesty layer) */}
+                  {mem.provenance && (
+                    <span
+                      className={cn(
+                        "text-[10px] px-1.5 py-0.5 rounded-full inline-flex items-center gap-1",
+                        mem.verified ? "bg-emerald-400/10 text-emerald-400" : "bg-muted text-muted-foreground"
+                      )}
+                      title={`provenance: ${mem.provenance} · ${mem.verified ? "verified" : "unverified"}`}
+                      data-testid={`badge-provenance-${mem.id}`}
+                    >
+                      {mem.verified && <ShieldCheck className="w-3 h-3" />}
+                      {mem.provenance}
+                    </span>
+                  )}
 
                   {/* Confidence indicator */}
                   <span className="inline-flex items-center gap-1 text-[10px]" title={`Confidence: ${(conf * 100).toFixed(0)}% | Reinforced ${mem.reinforcements ?? 0}x`}>
