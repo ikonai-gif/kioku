@@ -67,6 +67,10 @@ const STATE_TRANSITIONS: Record<MeetingState, readonly MeetingState[]> = {
 const participantSpec = z.object({
   agent_id: z.number().int().positive(),
   participation_mode: z.enum(["observe", "approve", "autonomous"]).default("approve"),
+  // Phase 1 — opt-in: the owner enrolls THIS participant's meeting memory carry-over.
+  // Default false preserves the privacy invariant ("no memory by default"). This is the
+  // only API path that can set carry_over_memory=true; required for room_decision to fire.
+  carry_over_memory: z.boolean().optional().default(false),
 });
 
 const createMeetingSchema = z.object({
@@ -225,10 +229,10 @@ export function registerMeetingRoutes(
           for (const p of participants) {
             const { rows } = await client.query(
               `INSERT INTO meeting_participants
-                 (meeting_id, agent_id, owner_user_id, participation_mode)
-               VALUES ($1, $2, $3, $4)
-               RETURNING id, meeting_id, agent_id, owner_user_id, participation_mode, joined_at, left_at`,
-              [meeting.id, p.agent_id, userId, p.participation_mode],
+                 (meeting_id, agent_id, owner_user_id, participation_mode, carry_over_memory)
+               VALUES ($1, $2, $3, $4, $5)
+               RETURNING id, meeting_id, agent_id, owner_user_id, participation_mode, carry_over_memory, joined_at, left_at`,
+              [meeting.id, p.agent_id, userId, p.participation_mode, p.carry_over_memory],
             );
             participantRows.push(rows[0]);
           }
@@ -482,7 +486,7 @@ export function registerMeetingRoutes(
       if (!parsed.success) {
         return res.status(400).json({ error: "invalid_request", issues: parsed.error.issues });
       }
-      const { agent_id, participation_mode } = parsed.data;
+      const { agent_id, participation_mode, carry_over_memory } = parsed.data;
 
       const client = await pool.connect();
       try {
@@ -518,10 +522,10 @@ export function registerMeetingRoutes(
         try {
           const { rows: inserted } = await client.query(
             `INSERT INTO meeting_participants
-               (meeting_id, agent_id, owner_user_id, participation_mode)
-             VALUES ($1, $2, $3, $4)
-             RETURNING id, meeting_id, agent_id, owner_user_id, participation_mode, joined_at, left_at`,
-            [id, agent_id, userId, participation_mode],
+               (meeting_id, agent_id, owner_user_id, participation_mode, carry_over_memory)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id, meeting_id, agent_id, owner_user_id, participation_mode, carry_over_memory, joined_at, left_at`,
+            [id, agent_id, userId, participation_mode, carry_over_memory],
           );
           await client.query("COMMIT");
           logger.info(

@@ -28,6 +28,7 @@ interface Participant {
   agent_id: number;
   owner_user_id: number;
   participation_mode: string;
+  carry_over_memory: boolean;
   joined_at: Date;
   left_at: Date | null;
 }
@@ -274,7 +275,7 @@ class FakePg {
 
     // INSERT INTO meeting_participants
     if (/INSERT\s+INTO\s+meeting_participants/i.test(s)) {
-      const [meeting_id, agent_id, owner_user_id, participation_mode] = params!;
+      const [meeting_id, agent_id, owner_user_id, participation_mode, carry_over_memory] = params!;
       const active = this.participants.find(
         (p) => p.meeting_id === meeting_id && p.agent_id === agent_id && p.left_at == null,
       );
@@ -289,6 +290,7 @@ class FakePg {
         agent_id,
         owner_user_id,
         participation_mode,
+        carry_over_memory: carry_over_memory ?? false,
         joined_at: new Date(),
         left_at: null,
       };
@@ -419,6 +421,20 @@ describe("Meeting Room API", () => {
     expect(res.body.id).toMatch(/-/);
     expect(res.body.participants).toHaveLength(1);
     expect(res.body.state).toBe("pending");
+  });
+
+  it("POST /api/meetings — persists carry_over_memory opt-in (default false)", async () => {
+    const app = makeApp(1);
+    const res = await request(app)
+      .post("/api/meetings")
+      .send({ room_id: 10, participants: [{ agent_id: 100, carry_over_memory: true }] });
+    expect(res.status).toBe(201);
+    expect(res.body.participants[0].carry_over_memory).toBe(true);
+    const res2 = await request(app)
+      .post("/api/meetings")
+      .send({ room_id: 10, participants: [{ agent_id: 101 }] });
+    expect(res2.status).toBe(201);
+    expect(res2.body.participants[0].carry_over_memory).toBe(false);
   });
 
   it("POST /api/meetings — 403 when room owned by another user", async () => {
