@@ -1610,6 +1610,7 @@ export interface IStorage {
   getInjectionCandidates(userId: number, agentId: number): Promise<Memory[]>;
   searchMemories(userId: number, query: string, queryEmbedding?: number[], namespace?: string): Promise<Memory[]>;
   createMemory(data: InsertMemory): Promise<Memory>;
+  hasRecentUserToldDuplicate(userId: number, content: string, sinceMs: number): Promise<boolean>;
   updateMemory(id: number, userId: number, patch: { content?: string; importance?: number }): Promise<Memory | undefined>;
   deleteMemory(id: number, userId: number): Promise<boolean>;
   purgeMemories(userId: number, scope: 'all' | 'agent', agentId?: string): Promise<number>;
@@ -2093,6 +2094,17 @@ export class Storage implements IStorage {
       }
     }
     return mem;
+  }
+  // P1 [BRO4 spec] — duplicate suppression for user_told ingest. True if an
+  // identical-content user_told memory was created for this user within sinceMs.
+  async hasRecentUserToldDuplicate(userId: number, content: string, sinceMs: number): Promise<boolean> {
+    const cutoff = Date.now() - sinceMs;
+    const rows = await this.txAsUser(userId, (tx) => tx
+      .select({ id: memories.id })
+      .from(memories)
+      .where(sql`${memories.userId} = ${userId} AND ${memories.provenance} = 'user_told' AND ${memories.content} = ${content} AND ${memories.createdAt} >= ${cutoff}`)
+      .limit(1));
+    return rows.length > 0;
   }
   async getMemory(id: number, userId: number): Promise<Memory | undefined> {
     return this.txAsUser(userId, (tx) => tx.select().from(memories).where(sql`${memories.id} = ${id} AND ${memories.userId} = ${userId}`).limit(1).then((r: any[]) => r[0]));

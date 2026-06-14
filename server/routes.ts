@@ -16,6 +16,7 @@ import { readLucaEnv } from "./lib/luca/env";
 import { buildRoomExport, serializeRoomExport, exportFilename, PatentRoomExportBlockedError } from "./room-export";
 import { buildSignedPdfA3, AuditKeyNotConfiguredError } from "./pdf-a3-export";
 import { parseMemoryBrowseFilters } from "./lib/memory-browse-filters";
+import { ingestUserToldMemory } from "./lib/user-told-ingest";
 import { collectCapabilitiesTruth } from "./lib/self-monitoring/collect";
 import { runHealthCheck, acceptCurrentTruthAsBaseline } from "./lib/self-monitoring/health-job";
 import { runFabricationSelfTest, ensureSelfMonitoringRoom, getProbeFailStreaks } from "./lib/self-monitoring/fabrication";
@@ -2406,6 +2407,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Broadcast via WebSocket
     broadcastToRoom(roomId, msg);
+
+    // P1 [BRO4 spec] — tag a user_told memory from this human message (ingest
+    // layer, not Luca). Fire-and-forget + fail-open: never blocks messaging.
+    void ingestUserToldMemory(storage, userId, content.trim())
+      .catch((e) => logger.error({ source: "user-told-ingest", err: e }, "user_told ingest failed"));
 
     // Trigger agent responses to the human's message
     const room = await storage.getRoom(roomId);
