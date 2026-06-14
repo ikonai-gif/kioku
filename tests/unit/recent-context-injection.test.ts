@@ -1,12 +1,13 @@
 /**
- * R474 — 48h RECENT_CONTEXT injection (smoke).
+ * R474 — 30d PROJECT_CONTEXT injection (smoke).
  *
  * Verifies:
  *   1) buildRecentContextBlock formats 3 fake memories with the expected
  *      header and content lines.
  *   2) Empty result → empty string (no header leak, no throw).
- *   3) SQL filters match spec: types in (commitment, procedural), namespace
- *      _projects, 48h window, importance >= 0.8, limit 10.
+ *   3) SQL filters match spec: types in (commitment, procedural, semantic,
+ *      episodic, reflection), namespace _projects, 720h window,
+ *      importance >= 0.85, limit 15.
  *   4) buildPartnerPrompt renders the block AHEAD of "## CORE IDENTITY" so
  *      recent context is closest to the user message.
  */
@@ -36,7 +37,7 @@ describe("R474 — buildRecentContextBlock", () => {
       { id: 3, type: "commitment", namespace: "_projects", importance: 0.85, content: "Reply to BRO1 in Meeting Room within 4 hours of tag", created_at: Date.now() },
     ]);
     const block = await buildRecentContextBlock(pool, 10, 16);
-    expect(block).toContain("[RECENT_CONTEXT — last 48h]");
+    expect(block).toContain("[PROJECT_CONTEXT — last 30d]");
     expect(block).toContain("Ship Luca memory modernization PR by Friday");
     expect(block).toContain("Always run preflight SELECT before DELETE on Supabase");
     expect(block).toContain("Reply to BRO1 in Meeting Room within 4 hours of tag");
@@ -64,18 +65,18 @@ describe("R474 — buildRecentContextBlock", () => {
     expect(params[0]).toBe(10);
     expect(params[1]).toBe(16);
     expect(params[2]).toBe("_projects");
-    expect(params[3]).toEqual(["commitment", "procedural"]);
-    expect(params[4]).toBe(0.8);
-    // sinceMs ≈ now - 48h (allow 5s drift for slow CI)
-    const expected = Date.now() - 48 * 3600 * 1000;
+    expect(params[3]).toEqual(["commitment", "procedural", "semantic", "episodic", "reflection"]);
+    expect(params[4]).toBe(0.85);
+    // sinceMs ≈ now - 720h (allow 5s drift for slow CI)
+    const expected = Date.now() - 720 * 3600 * 1000;
     expect(Math.abs(params[5] - expected)).toBeLessThan(5000);
-    expect(params[6]).toBe(10);
+    expect(params[6]).toBe(15);
   });
 });
 
 describe("R474 — buildPartnerPrompt ordering", () => {
   it("renders recentContextBlock AHEAD of coreIdentityBlock in the dynamic half", () => {
-    const recent = "[RECENT_CONTEXT — last 48h]\n- fresh project note (importance: 0.90, type: commitment)\n";
+    const recent = "[PROJECT_CONTEXT — last 30d]\n- fresh project note (importance: 0.90, type: commitment)\n";
     const core = "## CORE IDENTITY (ground truth every turn — overrides any retrieved memory)\nagent_id=16 | name=Luca\n";
     const prompt = buildPartnerPrompt(
       "Luca",
@@ -91,7 +92,7 @@ describe("R474 — buildPartnerPrompt ordering", () => {
       core,
       recent,
     );
-    const recentIdx = prompt.indexOf("[RECENT_CONTEXT — last 48h]");
+    const recentIdx = prompt.indexOf("[PROJECT_CONTEXT — last 30d]");
     const coreIdx = prompt.indexOf("## CORE IDENTITY");
     expect(recentIdx).toBeGreaterThan(-1);
     expect(coreIdx).toBeGreaterThan(-1);
@@ -102,6 +103,6 @@ describe("R474 — buildPartnerPrompt ordering", () => {
   it("omits the block cleanly when not provided (no undefined leak)", () => {
     const prompt = buildPartnerPrompt("Luca", "", "## WHO YOU ARE\nYou are Luca.\n");
     expect(prompt).not.toContain("undefined");
-    expect(prompt).not.toContain("[RECENT_CONTEXT");
+    expect(prompt).not.toContain("[PROJECT_CONTEXT");
   });
 });

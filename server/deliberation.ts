@@ -8947,10 +8947,11 @@ export function parseSuppressNamespaces(input: unknown): string[] {
 }
 
 /**
- * R474 — fetch + format the 48h RECENT_CONTEXT block.
+ * R474 — fetch + format the 30d PROJECT_CONTEXT block.
  *
- * Pulls high-importance commitments/procedural rules from the _projects
- * namespace written in the last 48 hours and renders them as a compact
+ * Pulls high-importance project memories (commitment, procedural, semantic,
+ * episodic, reflection) from the _projects namespace written in the last
+ * 30 days and renders them as a compact
  * block to inject at the top of Luca's dynamic system-prompt half.
  *
  * created_at is bigint epoch ms (shared/schema.ts:99) — we compute the
@@ -8963,10 +8964,10 @@ export async function buildRecentContextBlock(
   userId: number,
   agentId: number,
 ): Promise<string> {
-  const HOURS = 48;
-  const IMPORTANCE_MIN = 0.8;
-  const LIMIT = 10;
-  const TYPES = ["commitment", "procedural"];
+  const HOURS = 720;
+  const IMPORTANCE_MIN = 0.85;
+  const LIMIT = 15;
+  const TYPES = ["commitment", "procedural", "semantic", "episodic", "reflection"];
   const NAMESPACE = "_projects";
 
   const sinceMs = Date.now() - HOURS * 3600 * 1000;
@@ -8987,7 +8988,7 @@ export async function buildRecentContextBlock(
   if (!r.rows || r.rows.length === 0) {
     logger.debug(
       { component: "deliberation", event: "recent_context_empty", userId, agentId, hours: HOURS, namespace: NAMESPACE, importance_min: IMPORTANCE_MIN },
-      "[recent-context] no rows matched 48h window",
+      "[project-context] no rows matched 720h window",
     );
     return "";
   }
@@ -8997,7 +8998,7 @@ export async function buildRecentContextBlock(
     const imp = Number(row.importance ?? 0).toFixed(2);
     return `- ${clean.slice(0, 300)} (importance: ${imp}, type: ${row.type})`;
   });
-  return `[RECENT_CONTEXT — last 48h]\n${lines.join("\n")}\n`;
+  return `[PROJECT_CONTEXT — last 30d]\n${lines.join("\n")}\n`;
 }
 
 function buildSystemPrompt(name: string, description: string, memoryContext: string, emotionContext?: { pleasure: number; arousal: number; dominance: number; emotionLabel: string } | null, relationship?: any | null): string {
