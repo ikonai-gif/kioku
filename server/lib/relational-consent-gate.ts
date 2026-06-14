@@ -27,13 +27,26 @@ export function isRelationalPiiNamespace(namespace: string | null | undefined): 
 }
 
 /**
- * Remove PII relational rows from an injection-candidate set when the user has
- * not granted sensitive consent. Pure + side-effect free for easy unit testing.
+ * Phase 1.1 [BRO4 ratify]: relational PII has its OWN consent dimension
+ * (`consent_relational`), separate from health/sensitive (`consent_sensitive`).
+ * Granted if EITHER flag is true — `consent_sensitive` is kept as a backfilled
+ * fallback so existing sensitive-consenters are not silently degraded.
+ */
+export function isRelationalConsentGranted(
+  consentRelational: boolean | null | undefined,
+  consentSensitive: boolean | null | undefined,
+): boolean {
+  return consentRelational === true || consentSensitive === true;
+}
+
+/**
+ * Remove PII relational rows from an injection-candidate set when relational
+ * consent has NOT been granted. Pure + side-effect free for easy unit testing.
  */
 export function gateRelationalPiiByConsent<T extends { namespace?: string | null }>(
   rows: readonly T[],
-  consentSensitive: boolean,
+  relationalConsentGranted: boolean,
 ): T[] {
-  if (consentSensitive) return [...rows];
+  if (relationalConsentGranted) return [...rows];
   return rows.filter((r) => !isRelationalPiiNamespace(r.namespace));
 }
