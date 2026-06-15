@@ -2307,6 +2307,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
     // Broadcast to WebSocket subscribers
     broadcastToRoom(Number(req.params.id), msg);
+    if (!agentId) {
+      void ingestUserToldMemory(storage, userId, content.trim())
+        .catch((e) => logger.error({ source: 'user-told-ingest', err: e }, 'user_told ingest failed'));
+    }
     res.json(msg);
 
     // PR-A.6 — fire-and-forget summarizer for any attachment(s).
@@ -2710,6 +2714,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           timestamp: new Date(),
         });
       } catch (err) { logger.warn({ err }, "telegram-inbound: ws broadcast failed"); }
+
+      void ingestUserToldMemory(storage, BOSS_USER_ID, truncated)
+        .catch((e) => logger.error({ source: 'user-told-ingest', err: e }, 'user_told ingest failed'));
 
       return res.status(200).json({ ok: true });
     } catch (err: any) {
