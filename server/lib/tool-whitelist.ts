@@ -9,28 +9,32 @@
 
 /** Logical tool names that count as "observed" data sources. */
 export const TOOL_OBSERVED_WHITELIST: Set<string> = new Set([
-  "web_search",
-  "read_url",
-  "read_file",
+  // NOTE: these are RUNTIME tool names as they appear in tool_activity_log,
+  // NOT the names from tool definitions. The runtime prefixes several tools
+  // with `luca_` (luca_read_url, luca_search, luca_analyze_image, ...) while
+  // others carry no prefix (read_cloud_file, gmail_search, workspace_read).
+  // Verified against production tool_activity_log 2026-06-15 (BRO2).
+  // External data / search
+  "luca_read_url",
+  "luca_search",
+  "luca_analyze_image",
+  "watch_video",
+  // Files / cloud
   "read_cloud_file",
   "search_cloud_files",
-  "gmail_read",
-  "gmail_search",
-  "search_emails",
-  "read_email_thread",
-  "inbox_read",
-  "inbox_list",
-  "analyze_image",
-  "listen_audio",
-  "watch_video",
-  "luca_read_repo",
-  "sandbox_read_file",
-  "sandbox_list_files",
   "workspace_read",
   "workspace_list",
-  "list_tasks",
+  // Email
+  "gmail_search",
   "gmail_accounts_status",
+  // Code / system / calendar
+  "luca_read_repo",
+  "list_tasks",
   "luca_memory_schema",
+  "luca_calendar_list",
+  // Notion reads
+  "luca_notion_fetch",
+  "luca_notion_search",
 ]);
 
 /**
