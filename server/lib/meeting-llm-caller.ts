@@ -24,6 +24,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { LlmCaller } from "./meeting-turn-runner";
 import { LLM_TIMEOUT_MS } from "./meeting-turn-runner";
 import { withAnthropicBreaker } from "./anthropic-client";
+import {
+  makeOpenRouterClient,
+  withOpenRouterBreaker,
+  normalizeOpenRouterSlug,
+  HAS_OPENROUTER_KEY,
+} from "./openrouter-client";
 import { pool } from "../storage";
 import logger from "../logger";
 
@@ -33,25 +39,56 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 const DEFAULT_MODEL = process.env.MEETING_LLM_MODEL || "claude-sonnet-4-6";
 const DEFAULT_MAX_TOKENS = Number(process.env.MEETING_LLM_MAX_TOKENS ?? 2048);
 
-interface AgentLlmCreds {
+export interface AgentLlmCreds {
   llmApiKey: string | null;
   llmProvider: string | null;
+  llmModel: string | null;
 }
 
 async function loadAgentCreds(agentId: number): Promise<AgentLlmCreds | null> {
   const { rows } = await pool.query(
-    `SELECT "llmApiKey" AS "llmApiKey", "llmProvider" AS "llmProvider"
+    `SELECT "llmApiKey" AS "llmApiKey", "llmProvider" AS "llmProvider",
+            "llmModel" AS "llmModel"
        FROM agents WHERE id = $1`,
     [agentId],
   );
   return rows.length > 0 ? rows[0] : null;
 }
 
-function resolveClient(creds: AgentLlmCreds | null): Anthropic | null {
-  if (creds?.llmApiKey && creds.llmProvider === "anthropic") {
-    return new Anthropic({ apiKey: creds.llmApiKey });
+/**
+ * Resolved transport for a meeting turn: either an Anthropic client (native
+ * path) or an OpenRouter client (OpenAI-compatible, used for Grok / Kimi /
+ * DeepSeek / GPT and any other OpenRouter-hosted model). The Anthropic path is
+ * unchanged; OpenRouter is an added branch so a room can mix independent agents
+ * on heterogeneous models.
+ */
+type Transport =
+  | { kind: "anthropic"; client: Anthropic; model: string }
+  | { kind: "openrouter"; model: string; customKey: string | null };
+
+export function resolveTransport(creds: AgentLlmCreds | null): Transport | null {
+  const provider = creds?.llmProvider ?? null;
+
+  // OpenRouter branch: per-agent model required; per-agent key optional
+  // (falls back to the shared OPENROUTER_API_KEY breaker path).
+  if (provider === "openrouter") {
+    if (!creds?.llmModel) return null;
+    const hasKey = Boolean(creds.llmApiKey) || HAS_OPENROUTER_KEY;
+    if (!hasKey) return null;
+    return {
+      kind: "openrouter",
+      model: normalizeOpenRouterSlug(creds.llmModel),
+      customKey: creds.llmApiKey ?? null,
+    };
   }
-  if (ANTHROPIC_API_KEY) return new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+
+  // Anthropic branch (unchanged): per-agent key, else shared key.
+  if (creds?.llmApiKey && provider === "anthropic") {
+    return { kind: "anthropic", client: new Anthropic({ apiKey: creds.llmApiKey }), model: creds.llmModel || DEFAULT_MODEL };
+  }
+  if (ANTHROPIC_API_KEY) {
+    return { kind: "anthropic", client: new Anthropic({ apiKey: ANTHROPIC_API_KEY }), model: creds?.llmModel || DEFAULT_MODEL };
+  }
   return null;
 }
 
@@ -61,8 +98,8 @@ function resolveClient(creds: AgentLlmCreds | null): Anthropic | null {
  */
 export async function makeMeetingLlmCaller(agentId: number): Promise<LlmCaller> {
   const creds = await loadAgentCreds(agentId);
-  const client = resolveClient(creds);
-  if (!client) {
+  const transport = resolveTransport(creds);
+  if (!transport) {
     throw new Error("no_llm_provider");
   }
 
@@ -82,7 +119,7 @@ export async function makeMeetingLlmCaller(agentId: number): Promise<LlmCaller> 
       return { role: (isSelf ? "assistant" : "user") as "user" | "assistant", content: text };
     });
     if (messages.length === 0 || messages[messages.length - 1].role !== "user") {
-      // Anthropic requires the first + last non-system message be `user`.
+      // Anthropic / OpenAI both require the last non-system message be `user`.
       messages.push({ role: "user", content: "[your turn]" });
     }
 
@@ -93,9 +130,39 @@ export async function makeMeetingLlmCaller(agentId: number): Promise<LlmCaller> 
       (t as any).unref?.();
     });
 
-    const callPromise = withAnthropicBreaker(client, (c) =>
+    // ---- OpenRouter branch (Grok / Kimi / DeepSeek / GPT, OpenAI-compatible) ----
+    if (transport.kind === "openrouter") {
+      const orMessages = [
+        { role: "system" as const, content: systemText },
+        ...messages,
+      ];
+      const run = (client: import("openai").default) =>
+        client.chat.completions.create({
+          model: transport.model,
+          max_tokens: DEFAULT_MAX_TOKENS,
+          messages: orMessages,
+        });
+      // Per-agent custom key uses its own client (isolates the shared breaker);
+      // otherwise route through the shared-key breaker.
+      const callPromise = transport.customKey
+        ? run(makeOpenRouterClient(transport.customKey))
+        : withOpenRouterBreaker(run);
+      const resp: any = await Promise.race([callPromise, timeoutPromise]);
+      const text = (resp?.choices?.[0]?.message?.content ?? "").trim();
+      if (!text) {
+        logger.warn(
+          { agentId, model: transport.model, finishReason: resp?.choices?.[0]?.finish_reason },
+          "[meeting-llm] empty openrouter response",
+        );
+        return { content: "(no response)", visibility: "all" };
+      }
+      return { content: text, visibility: "all" };
+    }
+
+    // ---- Anthropic branch (native, unchanged behavior) ----
+    const callPromise = withAnthropicBreaker(transport.client, (c) =>
       c.messages.create({
-        model: DEFAULT_MODEL,
+        model: transport.model,
         max_tokens: DEFAULT_MAX_TOKENS,
         system: systemText,
         messages,
