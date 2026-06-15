@@ -1,11 +1,13 @@
 /**
  * KIOKU™ — Sprint 1 v2 (R373) — Honesty Layer application constraint
  *
- * Invariant: the remember tool (Luca's self-write path) MUST NOT allow
- * Luca to set verified=true or provenance != 'luca_inferred'. R372 case:
- * Luca lied about her own tool fires (telemetry showed otherwise). If she
- * could write `verified=true` to a self-claim, she'd lock that lie into
- * retrieval.
+ * Invariant (Sprint 2 / P2 update): the remember tool (Luca's self-write
+ * path) MUST NOT allow Luca to set verified=true or to control provenance
+ * via toolInput. Provenance is system-computed: 'tool_observed' when a
+ * whitelisted observation tool fired earlier in the turn, else 'luca_inferred'
+ * — never taken from toolInput. verified stays literal false. R372 case:
+ * Luca lied about her own tool fires; if she could self-set verified/provenance
+ * she'd lock that lie into retrieval.
  *
  * This is enforced application-side (not DB CHECK) because:
  *   1. /api/admin/insert-memory (master-key only) MUST be able to set
@@ -49,16 +51,23 @@ describe("Sprint 1 v2 — remember tool honesty constraint", () => {
     expect(rememberCase.length).toBeGreaterThan(500);
   });
 
-  it("hard-codes provenance='luca_inferred' in INSERT (cannot be overridden by toolInput)", () => {
+  it("provenance is system-computed (param), NOT taken from toolInput", () => {
+    // P2: provenance is passed as a positional param ($15 = computedProvenance),
+    // computed from whitelisted prior tools — never from toolInput. The INSERT
+    // must use a $-placeholder for provenance immediately before literal false.
     expect(rememberCase).toMatch(
-      /INSERT\s+INTO\s+memories[\s\S]*?'luca_inferred'\s*,\s*false/
+      /INSERT\s+INTO\s+memories[\s\S]*?\$\d+\s*,\s*false/
     );
+    // computedProvenance is derived, not read off toolInput.provenance
+    expect(rememberCase).toMatch(/computedProvenance/);
+    expect(rememberCase).toMatch(/fromObservedTool/);
   });
 
   it("hard-codes verified=false in INSERT (cannot be overridden by toolInput)", () => {
-    // The INSERT VALUES must contain literal false for verified, not a variable
+    // verified stays a literal false directly after the provenance param.
+    // This is the honesty invariant that survives P2: the agent never self-verifies.
     expect(rememberCase).toMatch(
-      /VALUES\s*\([^)]*'luca_inferred'\s*,\s*false\s*,/
+      /VALUES\s*\([^)]*,\s*false\s*,/
     );
   });
 

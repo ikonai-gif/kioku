@@ -28,6 +28,7 @@ import {
   supportsVision,
 } from "./lib/multimodal-history";
 import logger from "./logger";
+import { isObservedTool } from "./lib/tool-whitelist";
 import { persistAssetSource, workspaceEnabled, listWorkspace, saveAssetAndSign, getSignedUrl, listAgentIdsWithStorage } from "./workspace-storage";
 import { fetchRelevantMemories, formatMemoryContext, reinforceAccessedMemories, type MemoryLink } from "./memory-injection";
 import { fastAppraisal } from "./fast-appraisal";
@@ -1734,7 +1735,7 @@ export interface ExecutePartnerToolOptions {
   // non-empty, the `remember` tool case checks that at least one had real
   // output before allowing the write. Prevents fabricated memories from
   // text-only turns. Other tools ignore this field.
-  priorToolResults?: Array<{ content: string; is_error?: boolean }>;
+  priorToolResults?: Array<{ content: string; is_error?: boolean; toolName?: string }>;
 }
 
 export async function executePartnerTool(
@@ -6045,14 +6046,22 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
           const rawFactKey = typeof toolInput.fact_key === "string" ? toolInput.fact_key.trim() : "";
           const factKey = isValidFactKey(rawFactKey) ? rawFactKey : null;
 
+          // Determine provenance: 'tool_observed' when any prior tool in this turn
+          // was a whitelisted observation tool; otherwise 'luca_inferred'.
+          // verified stays false — the agent cannot self-verify.
+          const fromObservedTool = (options?.priorToolResults ?? []).some(
+            (r) => r.toolName != null && isObservedTool(r.toolName),
+          );
+          const computedProvenance = fromObservedTool ? "tool_observed" : "luca_inferred";
+
           // Single INSERT reused by both paths below (kept textually identical so
           // the user_id/agent_id ownership contract — pinned by remember-tool.test —
-          // is unchanged).
+          // is unchanged). Provenance is passed as $15 to avoid string interpolation.
           const insertMemorySql =
             `INSERT INTO memories (user_id, agent_id, agent_name, content, type, namespace, importance, emotional_valence, provenance, verified, confidence, created_at, expires_at, ccp_y, fact_key, valid_from)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'luca_inferred', false, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $15, false, $9, $10, $11, $12, $13, $14)
              RETURNING id`;
-          const insertMemoryParams = [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance, factKey, now];
+          const insertMemoryParams = [userId, agentId, agentName, enrichedContent, memType, namespace, importance, valence, finalConfidence, now, expiresAt, temporalStance, factKey, now, computedProvenance];
 
           // [BRO2-325] 2.1b bi-temporal invalidation. With a fact_key we run the
           // write in ONE transaction: insert the new fact, close prior ACTIVE
@@ -6085,10 +6094,10 @@ Total estimated cost: ~$${cost} (Veo 3 Fast + ElevenLabs + Suno)`;
                 }
                 const r = await client.query(insertMemorySql, insertMemoryParams);
                 newId = r.rows[0]?.id;
-                // New provenance from this tool path is always 'luca_inferred'.
+                // Use the computed provenance for supersede eligibility check.
                 for (const row of active.rows) {
                   if (row.namespace === "_boss_decisions") continue;
-                  if (!canSupersede("luca_inferred", row.provenance)) continue;
+                  if (!canSupersede(computedProvenance, row.provenance)) continue;
                   const upd = await client.query(
                     `UPDATE memories SET valid_to = $1 WHERE id = $2 AND valid_to IS NULL`,
                     [now, row.id]
@@ -7521,7 +7530,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
             // remember in iter 2 leaves the gate's priorToolResults empty in
             // iter 2 (false negative). Scope: this single Claude turn — does
             // not persist across separate triggerAgentResponses calls.
-            const cumulativeToolResults: Array<{ content: string; is_error: boolean }> = [];
+            const cumulativeToolResults: Array<{ toolName: string; content: string; is_error: boolean }> = [];
             for (let toolIter = 0; toolIter < maxToolIterations; toolIter++) {
               // Feature #4: stop if user clicked Stop
               if (__isAborted()) { reply = reply || "[остановлено]"; break; }
@@ -7617,6 +7626,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                 const priorToolResults = [
                   ...cumulativeToolResults,
                   ...toolResults.map((r) => ({
+                    toolName: toolUseBlocks.find((b) => b.type === "tool_use" && b.id === r.tool_use_id)?.name,
                     content: typeof r.content === "string"
                       ? r.content
                       : Array.isArray(r.content)
@@ -7649,6 +7659,7 @@ This block is regenerated from DB every turn. If anything here contradicts a ret
                 // iteration sees this result. Excludes nothing — gate logic
                 // does its own filtering (is_error, self-referential remembers).
                 cumulativeToolResults.push({
+                  toolName: block.name,
                   content: result,
                   is_error: false,
                 });
